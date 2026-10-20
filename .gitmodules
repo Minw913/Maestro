@@ -1,0 +1,3 @@
+[submodule "vendor/coral"]
+	path = vendor/coral
+	url = https://github.com/Human-Agent-Society/CORAL.git

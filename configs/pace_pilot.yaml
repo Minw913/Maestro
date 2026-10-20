@@ -1,0 +1,23 @@
+n_agents: 4
+slots: 2
+rounds: 20
+warm_opportunities_per_agent: 5
+warm_concurrency: 4
+# Explicit formal solver/verifier core pool. Increase together with the
+# qualified platform capacity; 8 cores permit two instance workers per warm agent.
+cpu_workers: 4
+instance_workers: 1
+mode: pace
+seed: 0
+coral:
+  backend_factory: maestro.backends.coral.backend:default_factory
+  checkout: vendor/coral
+  revision: '0123dfb939b35228cf2c1fde224cd0561e727408'
+pace:
+  panel_manifest: data/training/panel.json
+  heldout_manifest: data/heldout/panel.json
+  seed_solver: data/seed_solver
+  contract:
+    image: ''
+    hardware_id: UNSPECIFIED
+    toolchain_digest: UNSPECIFIED

@@ -1,0 +1,7 @@
+# syntax=docker/dockerfile:1
+# Use an audited, digest-pinned Linux Python image with the frozen solver
+# toolchain (e.g. a declared C++ compiler for source-building solvers).
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+RUN command -v python3 && mkdir -p /candidate /input /scratch
+WORKDIR /scratch
