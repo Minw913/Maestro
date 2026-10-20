@@ -166,6 +166,15 @@ class StrictCodexBackend(CoralBackend):
             return {"calls": 0, "known_input_tokens": 0, "known_output_tokens": 0,
                     "input_tokens": None, "output_tokens": None, "unresolved_requests": 0}
 
+    def _planning_provider_id(self, account):
+        """Use the metered provider receipt identity, never the local thread ID."""
+        with self.budget_store._lock:
+            rows = self.budget_store.connection.execute("""SELECT p.provider_request_id
+                FROM provider_receipts p JOIN inference_reservations r
+                ON r.reservation_id=p.reservation_id
+                WHERE r.account=? AND r.status='COMPLETED'""", (account,)).fetchall()
+        return rows[0][0] if len(rows) == 1 else ""
+
     def plan_with_receipt(self, state, round_index, context, *, deadline):
         assembled = build_context(state, context.get("board", context))
         assembled["harness_context"] = self._planning_view(state)
@@ -194,7 +203,7 @@ class StrictCodexBackend(CoralBackend):
             proxy.assert_resolved()
             usage = self._usage(account)
             receipt = PlanningReceipt(account, account, stable_hash(assembled), response.response_hash,
-                response.thread_id, usage.get("input_tokens"), usage.get("output_tokens"),
+                self._planning_provider_id(account), usage.get("input_tokens"), usage.get("output_tokens"),
                 actual_requests=usage["calls"])
             try:
                 if usage["calls"] != 1 or time.monotonic() >= deadline:
@@ -294,12 +303,18 @@ class StrictCodexBackend(CoralBackend):
                     # Recoverable tool input/virtual-path errors remain tool
                     # feedback. Never expose arbitrary host exception text.
                     return {"error":type(error).__name__, "message":"Tool operation rejected; check the virtual path and phase permissions."}
-            prompt = ("Implement only the admitted plan using maestro_tool. Its virtual roots are solver/, "
+            prompt = ("GENERATION: the controller has admitted your plan and issued its signed EditGrant. "
+                "Implement it using the external maestro_tool workspace service. Its virtual paths are "
+                "separate from the read-only Codex host: authorized service write/batch operations are "
+                "permitted here, while native host writes remain forbidden. Its virtual roots are solver/, "
                 "private/ (your durable notes/skills), public/ (verified shared board/champion, read-only). "
-                "Use read/list/search/write and isolated shell for bounded debugging. Shell changes are scratch-only; "
+                "Use read/list/search/write and isolated shell for bounded debugging. Use action=batch with "
+                "operations=[{action:read,path:...},...] for related file reads, and one batch for related file writes. "
+                "Each batch permits at most eight file operations, checks the grant for every operation, and stops "
+                "at the first error; earlier writes remain. Shell is a separate action. Shell changes are scratch-only; "
                 "persist code with write. Do not run formal eval or access credentials, panel or authority. "
                 "You have at most three actual inference requests total across revisions, including continuations. "
-                "Batch related tool operations where possible and finish promptly.\n" +
+                "Native parallel tool calls may be disabled; use the explicit batch action to save inference requests.\n" +
                 json.dumps({"plan": asdict(plan), "direction": self._directions.get(state.agent_id, {}),
                     "revision": revision, "tool_cpu_remaining": max(0, remaining_cpu)}, ensure_ascii=False))
             try:
@@ -389,7 +404,8 @@ def strict_factory(config, root=None):
     runner = DockerRunner(image)
     runner.preflight(image=image)
     client = AutonomousCodexClient(model=settings["model"], work_root=authority/"native",
-                                  executable=settings.get("codex_executable"))
+                                  executable=settings.get("codex_executable"),
+                                  reasoning_effort=settings.get("codex_reasoning_effort", "low"))
     toy = Path(settings.get("smoke_graph", Path(__file__).resolve().parents[4]/"fixtures/toy_graphs/star5.gr"))
     assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
     store = BudgetStore(authority/"requests.sqlite")

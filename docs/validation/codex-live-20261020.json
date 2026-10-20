@@ -1,0 +1,161 @@
+{
+  "date": "2026-10-20",
+  "qualification": "strict_native_codex_connection_file_tools_memory_requests",
+  "status": "PASSED",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "low",
+  "cli_version": "codex-cli 0.156.1",
+  "auth_method": "chatgpt",
+  "external_api_key_required": false,
+  "phase_requests": {
+    "CONTINUITY_READ": 1,
+    "GENERATION": 3,
+    "PLAN_RO": 1
+  },
+  "actual_requests": 5,
+  "terminal_receipts": 5,
+  "unresolved_requests": 0,
+  "known_input_tokens": 21889,
+  "known_output_tokens": 433,
+  "cache_read_input_tokens": 3072,
+  "wall_seconds": 26.344,
+  "checks": {
+    "authoritative_usage_receipts": true,
+    "file_tools_only": true,
+    "fourth_generation_dispatch_denied": true,
+    "generation_three_requests": true,
+    "historical_unknown_unchanged": true,
+    "memory_to_code_verified": true,
+    "missing_grant_denied_without_dispatch": true,
+    "model_origin_batched_file_tools": true,
+    "model_origin_file_tools": true,
+    "new_process_restored_memory_read": true,
+    "planning_one_request": true,
+    "private_memory_updated": true,
+    "private_snapshot_restored": true,
+    "public_memory_unchanged": true,
+    "public_memory_write_denied": true
+  },
+  "tool_trace": [
+    {
+      "action": "batch",
+      "operation_count": 2,
+      "origin": "model",
+      "path": "<batch>",
+      "phase": "GENERATION",
+      "success": true
+    },
+    {
+      "action": "read",
+      "content_sha256": "067ceab7bc1fdfd6deccbba39c24fa5c423c72cae9bddde864cf17b068abd530",
+      "origin": "model",
+      "path": "private/notes.md",
+      "phase": "GENERATION",
+      "success": true
+    },
+    {
+      "action": "read",
+      "content_sha256": "2770dae36ad450f785facb2c2d1016e51df87aaff448cf9c357463f790fb6285",
+      "origin": "model",
+      "path": "public/board.json",
+      "phase": "GENERATION",
+      "success": true
+    },
+    {
+      "action": "batch",
+      "operation_count": 2,
+      "origin": "model",
+      "path": "<batch>",
+      "phase": "GENERATION",
+      "success": true
+    },
+    {
+      "action": "write",
+      "content_sha256": "36bd4d363dc73154347e2a50e79e57effa17edf929dbe3e3baba904497b412ee",
+      "origin": "model",
+      "path": "solver/probe.py",
+      "phase": "GENERATION",
+      "success": true
+    },
+    {
+      "action": "write",
+      "content_sha256": "4459a54c609a08d1b82d1794586d7a1ab0195ee3a2b3fe500990cc0e049e40e1",
+      "origin": "model",
+      "path": "private/notes.md",
+      "phase": "GENERATION",
+      "success": true
+    },
+    {
+      "action": "read",
+      "content_sha256": "4459a54c609a08d1b82d1794586d7a1ab0195ee3a2b3fe500990cc0e049e40e1",
+      "origin": "model",
+      "path": "private/notes.md",
+      "phase": "CONTINUITY_READ",
+      "success": true,
+      "broker_phase": "PLAN_RO"
+    }
+  ],
+  "provider_receipts": [
+    {
+      "provider_request_id": "resp_0e839dd8defe3ff9016ad7d9f4d5388194bb058787416f2e90",
+      "request_hash": "dcdd4465d3ed7646b02d6c800aa838e9e355fd90e08ed4e54c50918fff647803",
+      "protocol": "/responses",
+      "input_tokens": 3821,
+      "output_tokens": 213,
+      "usage_complete": 1
+    },
+    {
+      "provider_request_id": "resp_04dbff7bcb44a4e7016ad7d9fc3de0819386bf9963c039f996",
+      "request_hash": "b6319c1ed936b5838e4fbfc68a138bef55c3b88607b6db1a468651c0b71bbe4c",
+      "protocol": "/responses",
+      "input_tokens": 4287,
+      "output_tokens": 45,
+      "usage_complete": 1
+    },
+    {
+      "provider_request_id": "resp_04dbff7bcb44a4e7016ad7d9fea0308193ae2e334c33d8df4f",
+      "request_hash": "d1f0c525bccae5ad376b9afe5920d0243ea24d2da07c05dfd736fb4af50c7bd6",
+      "protocol": "/responses",
+      "input_tokens": 4436,
+      "output_tokens": 131,
+      "usage_complete": 1
+    },
+    {
+      "provider_request_id": "resp_04dbff7bcb44a4e7016ad7da02bbf081939f23b2494f75b9bb",
+      "request_hash": "b1bd10dccc6577ad462e40e9b45e449517100c6dae07de742e887c6a1d3c8e31",
+      "protocol": "/responses",
+      "input_tokens": 4619,
+      "output_tokens": 18,
+      "usage_complete": 1
+    },
+    {
+      "provider_request_id": "resp_04dbff7bcb44a4e7016ad7da07a6c081938703d25bd179a40f",
+      "request_hash": "409e1e41f67150302f11279a0c3c5291961731846c94b219669f8f06ff519009",
+      "protocol": "/responses",
+      "input_tokens": 4726,
+      "output_tokens": 26,
+      "usage_complete": 1
+    }
+  ],
+  "native_host_sandbox": "read-only",
+  "candidate_executed": false,
+  "warm_start_started": false,
+  "formal_evaluation_started": false,
+  "shell_and_physical_executor_qualified": false,
+  "token_ceiling_enforced": false,
+  "historical_unknown_preserved": true,
+  "historical_note": "Three isolated historical diagnostic requests remain UNKNOWN: original probe, acceptance-1 generation header timeout, acceptance-4 planning header timeout. No refund or automatic redispatch. Independent successful qualification cannot resolve their old usage.",
+  "evidence_relative_path": "artifacts/codex-live-qualification-20261020/acceptance-5/result.json",
+  "regression": {
+    "tests": 581,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "wall_seconds": 171.18
+  },
+  "receipt_identity_semantics": "provider_request_id holds the upstream response ID (resp_*), not the native thread ID or HTTP request ID.",
+  "trace_phase_semantics": "CONTINUITY_READ uses a PLAN_RO read-only broker. Primary planning makes no tool calls.",
+  "diagnostic_charged_calls_including_original": 17,
+  "historical_unresolved_requests": 3,
+  "post_live_reporting_fix": "PlanningReceipt now uses the stored provider response ID rather than the native thread ID; the full regression was rerun, with no additional model requests."
+}

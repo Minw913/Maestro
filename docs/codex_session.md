@@ -15,7 +15,9 @@ workers, five instance workers per candidate and five warm opportunities each.
 This revision does not start Warm Start.
 The runnable configuration pins `coral.codex_cli_version` to the qualified
 installed binary. A changed CLI version requires repeating the native wire
-qualification before updating that pin.
+qualification before updating that pin. `coral.codex_reasoning_effort: low` is also
+frozen: both effective configuration and every native turn override desktop
+preferences, and mismatches are rejected before inference.
 
 The native `AutonomousCodexClient` uses Codex app-server with the existing
 ChatGPT sign-in. Each phase has an ephemeral loopback Responses provider with
@@ -38,11 +40,15 @@ hard limit; token ceilings are accounting estimates**, not claimed hard caps.
 Planning receives frozen source/history/own memory in one structured request;
 there is no interactive tool round trip under that one-request cap. Generation
 uses a real native agent tool loop. Its only exposed tool is `maestro_tool`:
-read/list/search/write/mkdir/remove and isolated shell/debug. `StageToolBroker`
+read/list/search/write/mkdir/remove, bounded file batches, and isolated shell/debug. `StageToolBroker`
 exposes virtual solver, own private notes/skills, and read-only shared verified
 memory. Shell runs a detached snapshot in a networkless container with bounded
 CPU, memory, pids and wall time. Scratch edits do not persist: use the write tool
-for lasting code changes. Grants are checked before every operation and again
+for lasting code changes. `action=batch` accepts at most eight file operations;
+nested batches and shell within a batch are rejected. Every primitive operation
+counts against the tool allowance and rechecks authorization. Batches stop at the
+first error; prior writes remain. Use batches for related reads/writes because
+Codex 0.156.1 can set `parallel_tool_calls=false`. Grants are checked before every operation and again
 after waiting for CPU. The debug CPU budget is cumulative across repairs; an
 interrupted invitation cannot reopen with a new tool budget after restart.
 Fixed toy prechecks are separately bounded by the existing one-CPU-second
@@ -79,6 +85,41 @@ CLI also documents `--ignore-user-config`: configuration is ignored while
 authentication still uses `CODEX_HOME`. The adapter invokes the native executable
 directly, including the npm-installed Windows `codex.exe`; it does not interpolate
 prompts through a shell.
+
+## Explicit real connection qualification
+
+The following command requires explicit authorization for up to five real
+requests. It creates a single-use output root and never starts the experiment
+engine, warm bootstrap, toy precheck, candidate shell, or formal evaluation:
+
+```sh
+python -m maestro --root artifacts/connection-qualification codex-qualify --live --model gpt-6-astra --reasoning-effort low --phase-seconds 300
+```
+
+The fixed envelope is one structured planning request, three generation requests
+under a signed EditGrant, then one restored-memory read from a new native process.
+The deadlines are 120/300/120 seconds. A batch reads private/shared memory, a second
+batch writes code/private notes, and the third generation request finalizes.
+Negative grant/shared-write checks and an extra local exhausted-quota request do
+not forward model requests. A one-request continuity read may end at the expected
+local continuation denial; every forwarded request still needs a terminal usage
+receipt. Existing output roots cannot be reused, and there is no automatic retry
+or directory rotation after failure.
+
+Response framing is detected from a bounded SSE/JSON prefix, including streams
+without a recognizable Content-Type. Tools and terminal frames are still fully
+validated before delivery. Safe evidence includes HTTP status, response request
+identity when available, event types, static error labels, request hashes and
+usage. Only a proven connect/TLS failure before entering POST can be classified
+never-dispatched; calls remain consumed. A truncated dispatched stream remains
+UNKNOWN.
+
+Historical diagnostic UNKNOWNs remain immutable, charged and separate. A fresh
+qualification after a fix requires explicit authorization; success cannot prove
+an older request finished. Use `--historical-unknown PATH --historical-sha256 HASH`
+to attest preserved evidence. An UNKNOWN in the experiment being resumed still
+blocks that experiment until trusted reconciliation. See the implementation report
+for actual current results and the independent executor/data prerequisites.
 
 ## Profiles and what the budget means
 

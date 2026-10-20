@@ -67,13 +67,14 @@ def _fake_chatgpt_home(root):
         "tokens": {"id_token": token, "access_token": token,
             "refresh_token": "synthetic-unprivileged-refresh", "account_id": "synthetic-account"},
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}), encoding="utf-8")
-    (root/"config.toml").write_text('cli_auth_credentials_store="file"\n', encoding="utf-8")
+    (root/"config.toml").write_text('cli_auth_credentials_store="file"\nmodel_reasoning_effort="ultra"\n', encoding="utf-8")
 
 
 def _assert_native_backend_contract(value):
     """A forced fake tool response must not conceal a broken model manifest."""
     assert value.get("store") is False
     assert value.get("stream") is True
+    assert value.get("reasoning", {}).get("effort") == "low"
     forbidden = {"background", "conversation", "max_output_tokens", "max_tool_calls", "metadata",
         "moderation", "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier",
         "temperature", "top_logprobs", "top_p", "truncation", "user", "previous_response_id"}

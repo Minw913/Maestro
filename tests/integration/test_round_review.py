@@ -348,3 +348,34 @@ def test_close_preserves_authority_until_late_generation_cleanup_finishes(tmp_pa
         if closer:
             closer.join(timeout=3)
         engine.close()
+
+
+def test_grant_expiring_before_initial_verification_never_dispatches(tmp_path):
+    from maestro.agents.planner import mock_plan
+    from maestro.execution.grants import GrantAuthority, GrantError
+    from maestro.types import AgentState
+
+    class SlowAuthority(GrantAuthority):
+        entered = False
+        issued = None
+        def issue(self, **kwargs):
+            self.issued = super().issue(**kwargs)
+            return self.issued
+        def verify(self, *args, **kwargs):
+            self.entered = True
+            # Deterministically model authority persistence/host scheduling
+            # crossing the deadline before the first provider dispatch.
+            time.sleep(.3)
+            return super().verify(*args, **kwargs)
+
+    with ExperimentEngine(tmp_path, RunConfig()) as engine:
+        engine.grants = SlowAuthority()
+        state = AgentState('a', 'parent', .5)
+        plan = mock_plan(state, 0, 1)
+        assert engine._generate('expired-grant', 0, 'a', state, plan, 'MAIN', time.monotonic()+.2) is None
+        assert engine.grants.entered
+        assert engine.budgets.snapshot('expired-grant:0:a:generation')['calls'] == 0
+        assert not engine.ledger.connection.execute('SELECT 1 FROM candidates').fetchone()
+        with pytest.raises(GrantError):
+            GrantAuthority.verify(engine.grants, engine.grants.issued, agent_id='a',
+                plan_version_id=plan.version_id, parent_hash=plan.parent_hash, epoch=0)

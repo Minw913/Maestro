@@ -9,6 +9,7 @@ is exposed. One broker is shared by all calls in a stage, including repairs.
 from __future__ import annotations
 
 from contextlib import nullcontext
+import json
 import math
 from pathlib import Path, PurePosixPath
 import shutil
@@ -31,6 +32,14 @@ _FORBIDDEN = {".git", ".codex", ".claude", ".opencode", ".ssh", ".aws",
               ".coral_agent_id", "__pycache__", ".pytest_cache"}
 _DEVICES = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
             *(f"lpt{i}" for i in range(1, 10))}
+_FILE_ACTION_FIELDS = {
+    "read": {"path"}, "list": {"path"},
+    "search": {"path", "query", "max_results"},
+    "write": {"path", "content", "executable"},
+    "mkdir": {"path"}, "remove": {"path"},
+}
+_MAX_BATCH_OPERATIONS = 8
+_MAX_TOOL_OUTPUT_BYTES = 256 * 1024
 
 
 class ToolScopeExpired(PermissionError):
@@ -67,6 +76,11 @@ class StageToolBroker:
     unforgeable controller-owned ``grant_checker``; no arguments supplied by the
     model can substitute for that callback. Public memory is controller-published
     and always read-only. Private files persist through Coral WorkspaceStore.
+
+    File-only ``batch`` calls run sequentially and are not transactional. All
+    operation schemas and path permissions are checked before the first action;
+    runtime failures stop the batch without undoing completed actions. The batch
+    wrapper and every attempted operation each consume one tool-call allowance.
     """
 
     def __init__(self, workspace: AgentWorkspace, *, phase: str, deadline: float,
@@ -165,10 +179,61 @@ class StageToolBroker:
             self._calls += 1
             handlers = {"read": self._read, "list": self._list, "search": self._search,
                         "write": self._write, "remove": self._remove,
-                        "mkdir": self._mkdir, "shell": self._shell}
+                        "mkdir": self._mkdir, "shell": self._shell, "batch": self._batch}
             if action not in handlers:
                 raise ValueError("Unknown tool action")
             return handlers[action](args)
+
+    def _batch(self, args):
+        operations = args.get("operations")
+        if (set(args) != {"operations"} or not isinstance(operations, list)
+                or not 1 <= len(operations) <= _MAX_BATCH_OPERATIONS):
+            raise ValueError("batch needs only an operations array with 1 to 8 file actions")
+        validated = []
+        # Reject malformed or unauthorized later operations before an earlier
+        # write can commit. File existence is deliberately checked at execution
+        # time so a batch may write a file and then read it.
+        for operation in operations:
+            if not isinstance(operation, dict):
+                raise ValueError("Each batch operation must be a flat JSON object")
+            operation = dict(operation)
+            action = operation.pop("action", None)
+            if not isinstance(action, str) or action not in _FILE_ACTION_FIELDS:
+                raise ValueError("batch accepts file actions only; shell and nested batch are forbidden")
+            if not set(operation) <= _FILE_ACTION_FIELDS[action] or "path" not in operation:
+                raise ValueError("Unknown or missing batch operation fields")
+            writing = action in {"write", "mkdir", "remove"}
+            scope, path = self._path(operation["path"], write=writing)
+            if action in {"write", "remove"} and path == self._roots[scope]:
+                raise PermissionError("A virtual root cannot be replaced or removed")
+            if action == "write":
+                if operation["path"].endswith("/"):
+                    raise PermissionError("write needs a file path, not a directory path")
+                content = operation.get("content")
+                if not isinstance(content, str) or ("executable" in operation
+                        and type(operation["executable"]) is not bool):
+                    raise ValueError("write needs text content and an optional boolean executable")
+                if len(content.encode("utf-8")) > self.max_file_bytes:
+                    raise ValueError("Write exceeds the stage file allowance")
+            if action == "search":
+                query, cap = operation.get("query"), operation.get("max_results", 64)
+                if not isinstance(query, str) or not query or len(query) > 256:
+                    raise ValueError("Search needs a nonempty bounded literal query")
+                if type(cap) is not int or not 1 <= cap <= 128:
+                    raise ValueError("max_results must be an integer between 1 and 128")
+            validated.append((action, operation))
+        if self.max_calls - self._calls < len(validated):
+            raise ToolScopeExpired("Stage tool call allowance cannot cover this batch")
+        results = []
+        for action, operation in validated:
+            # call() rechecks deadline, grant and allowance immediately before
+            # each action. Never catch a revoked grant or UNKNOWN as file feedback.
+            result = self.call(action, operation)
+            results.append({"action": action, "result": result})
+            response = {"results": results, "completed": len(results)}
+            if len(json.dumps(response, ensure_ascii=False, allow_nan=False).encode("utf-8")) > _MAX_TOOL_OUTPUT_BYTES:
+                raise ValueError("Batch response exceeds 256 KiB; completed actions are not rolled back")
+        return response
 
     def _path(self, name: str, *, write: bool = False) -> tuple[str, Path]:
         if not isinstance(name, str) or len(name) > 1024:
@@ -440,14 +505,25 @@ MAESTRO_TOOL_SPEC = {
         "During GENERATION write/mkdir/remove solver/ or private/ files; public/ stays read-only. "
         "shell executes a networkless CPU-bounded scratch copy of solver/ with private memory at "
         "/input/private and public memory at /input/public. Shell edits do not persist; use write "
-        "for lasting changes. Never request host paths or credentials."),
+        "for lasting changes. batch runs 1 to 8 related file operations sequentially, e.g. read "
+        "private and public memory together, or write solver and private notes together. It forbids "
+        "shell/nested batches, is not transactional, stops at the first error, and returns at most "
+        "256 KiB. The wrapper and each operation consume one tool-call allowance. "
+        "Never request host paths or credentials."),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["read", "list", "search", "write", "mkdir", "remove", "shell"]},
+            "action": {"type": "string", "enum": ["read", "list", "search", "write", "mkdir", "remove", "shell", "batch"]},
             "path": {"type": "string"}, "content": {"type": "string"},
             "query": {"type": "string"}, "command": {"type": "string"},
             "max_results": {"type": "integer"}, "executable": {"type": "boolean"},
+            "operations": {"type": "array", "minItems": 1, "maxItems": _MAX_BATCH_OPERATIONS,
+                "items": {"type": "object", "properties": {
+                    "action": {"type": "string", "enum": list(_FILE_ACTION_FIELDS)},
+                    "path": {"type": "string"}, "content": {"type": "string"},
+                    "query": {"type": "string"}, "max_results": {"type": "integer"},
+                    "executable": {"type": "boolean"},
+                }, "required": ["action", "path"], "additionalProperties": False}},
         },
         "required": ["action"], "additionalProperties": False,
     },

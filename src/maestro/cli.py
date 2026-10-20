@@ -49,6 +49,14 @@ def build_parser():
     codex_check=sub.add_parser('codex-check',help='Check local ChatGPT Codex sign-in without reading credentials')
     codex_check.add_argument('--probe',action='store_true',help='Run one real, tool-free structured Codex turn')
     codex_check.add_argument('--strict',action='store_true',help='Check native autonomous app-server protocol and login without inference')
+    qualify=sub.add_parser('codex-qualify',help='Bounded real Codex connection qualification; never starts an experiment')
+    qualify.add_argument('--live',action='store_true',help='Explicitly enable at most five real model requests')
+    qualify.add_argument('--model',required=True,help='Frozen model to qualify using the existing ChatGPT login')
+    qualify.add_argument('--reasoning-effort',choices=['low','medium','high','xhigh','max','ultra'],default='low',help='Frozen effort; does not inherit desktop preferences')
+    qualify.add_argument('--executable',help='Optional native Codex executable')
+    qualify.add_argument('--phase-seconds',type=float,default=120)
+    qualify.add_argument('--historical-unknown',help='Read-only legacy UNKNOWN database to hash-attest')
+    qualify.add_argument('--historical-sha256',help='Expected SHA256 of the historical evidence file')
     for command in ('bootstrap','run','resume','smoke','final-eval'):
         item=sub.add_parser(command)
         item.add_argument('--config')
@@ -106,6 +114,15 @@ def main(argv=None):
                     'completed_session_turns':response.completed_turns,
                     'actual_inference_requests':response.actual_inference_requests,
                     'input_tokens':response.input_tokens,'output_tokens':response.output_tokens}
+        elif args.command=='codex-qualify':
+            if not args.live:
+                raise ValueError('codex-qualify requires --live to authorize its bounded real requests')
+            from maestro.backends.codex_session.qualification import run_qualification
+            result=run_qualification(args.root,model=args.model,executable=args.executable,
+                historical_path=args.historical_unknown,historical_sha256=args.historical_sha256,
+                phase_seconds=args.phase_seconds,reasoning_effort=args.reasoning_effort)
+            print(canonical_json(result))
+            return 0 if result.get('status')=='PASSED' else 2
         elif args.command in ('bootstrap','run','resume','smoke','final-eval'):
             from maestro.loop import ExperimentEngine
             config=_config(args)

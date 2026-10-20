@@ -39,10 +39,32 @@ _HEADER_ALLOWLIST = frozenset({
 _SAFE_OUTPUT = frozenset({"message", "reasoning", "compaction"})
 _FUNCTION_OUTPUT = frozenset({"function_call", "custom_tool_call"})
 _KNOWN_REJECTIONS = frozenset({400, 401, 403, 404, 405, 413, 415, 422, 429})
+_SSE_EVENT_TYPES = frozenset({
+    "error", "response.created", "response.in_progress", "response.completed",
+    "response.failed", "response.incomplete", "response.output_item.added",
+    "response.output_item.done", "response.content_part.added", "response.content_part.done",
+    "response.output_text.delta", "response.output_text.done", "response.refusal.delta",
+    "response.refusal.done", "response.function_call_arguments.delta",
+    "response.function_call_arguments.done", "response.custom_tool_call_input.delta",
+    "response.custom_tool_call_input.done", "response.reasoning_summary_part.added",
+    "response.reasoning_summary_part.done", "response.reasoning_summary_text.delta",
+    "response.reasoning_summary_text.done", "response.reasoning_text.delta",
+    "response.reasoning_text.done",
+})
 
 
 class QuotaProxyError(RuntimeError):
     """A deliberately sanitized native transport failure."""
+
+
+class _UpstreamTransportError(QuotaProxyError):
+    """Trusted transport-stage evidence, without exception text or credentials."""
+    def __init__(self, stage, cause_class):
+        super().__init__("Native upstream transport failed")
+        self.stage, self.cause_class = stage, cause_class
+        # connect() is explicit: an exception there proves request() was never
+        # entered. Failures during/after request() remain ambiguous.
+        self.never_dispatched = stage == "upstream_connect"
 
 
 class _TlsResponse:
@@ -75,11 +97,20 @@ class _TlsResponse:
 def _https_upstream(path, headers, body, timeout):
     """No proxy environment, redirects, URL parameters, or alternate origin."""
     connection = http.client.HTTPSConnection(_UPSTREAM_HOST, 443, timeout=timeout)
+    stage = "upstream_connect"
     try:
+        connection.connect()
+        stage = "upstream_post"
         connection.request("POST", _UPSTREAM_PATH + path, body=body, headers=headers)
+        stage = "upstream_headers"
         return _TlsResponse(connection, connection.getresponse())
+    except Exception as error:
+        with suppress(Exception):
+            connection.close()
+        raise _UpstreamTransportError(stage, type(error).__name__) from None
     except BaseException:
-        connection.close()
+        with suppress(Exception):
+            connection.close()
         raise
 
 
@@ -182,6 +213,14 @@ class CodexQuotaProxy:
               http_status INTEGER,error_type TEXT NOT NULL,error_code TEXT NOT NULL,
               exception_class TEXT NOT NULL,stage TEXT NOT NULL,response_format TEXT NOT NULL,
               known_rejected INTEGER NOT NULL)""")
+            columns = {row[1] for row in store.connection.execute("PRAGMA table_info(codex_gateway_transport)")}
+            for name, definition in (
+                    ("response_request_id", "TEXT NOT NULL DEFAULT ''"),
+                    ("sse_event_types_json", "TEXT NOT NULL DEFAULT '[]'"),
+                    ("never_dispatched", "INTEGER NOT NULL DEFAULT 0"),
+                    ("upstream_media_type", "TEXT NOT NULL DEFAULT ''")):
+                if name not in columns:
+                    store.connection.execute(f"ALTER TABLE codex_gateway_transport ADD COLUMN {name} {definition}")
 
     def start(self):
         with self._lock:
@@ -324,8 +363,15 @@ class CodexQuotaProxy:
                                           "id": "at_"+str(uuid.uuid4()), "tools": admitted})
             else:
                 value["tools"] = admitted
-            instruction = ("Only the direct maestro_tool function is available. Call maestro_tool with its "
-                "declared action/path/content/command fields. Native namespaces, functions.exec, shell, "
+            instruction = ("Only the direct maestro_tool function is available. It is an external controller "
+                "RPC, with virtual workspace paths separate from the read-only Codex host filesystem. "
+                "In GENERATION an admitted EditGrant authorizes its solver/ and private/ writes; the "
+                "native host remains read-only and public/ is always read-only. Do not infer denial of "
+                "these service writes from the native host sandbox; respect actual broker denials. "
+                "Call maestro_tool with its "
+                "declared action/path/content/command/operations fields. For related file operations use "
+                "action=batch with at most eight operations in one call; nested batches and shell in a batch "
+                "are forbidden. Each operation is authorized separately. Native namespaces, functions.exec, shell, "
                 "clock, wait, web, approvals, and other host tools are unavailable. Use the broker's "
                 "read/list/search for memory, write for persistent changes, and shell for isolated debugging.")
         else:
@@ -349,13 +395,17 @@ class CodexQuotaProxy:
             return
         raise QuotaProxyError("Native response requested a forbidden host tool")
 
-    def _collect(self, response, path):
+    def _collect(self, response, path, observations=None):
         """Return buffered bytes, terminal response and a protocol violation."""
+        observations = observations if observations is not None else {}
+        observations.setdefault("sse_event_types", [])
         content_type = next((str(v).lower() for k, v in response.headers.items()
                              if k.lower() == "content-type"), "")
         raw, pending, terminal, violation = bytearray(), bytearray(), None, False
         terminal_failure = False
-        is_sse = "text/event-stream" in content_type
+        is_sse = True if "text/event-stream" in content_type else None
+        if is_sse:
+            observations["detected_format"] = "sse"
         for chunk in response.iter_bytes(self.deadline):
             if time.monotonic() >= self.deadline:
                 raise TimeoutError("Native inference deadline elapsed")
@@ -364,16 +414,30 @@ class CodexQuotaProxy:
             raw.extend(chunk)
             if len(raw) > self.max_response_bytes:
                 raise QuotaProxyError("Native response exceeded its byte allowance")
-            if not is_sse:
+            if is_sse is None:
+                # The native backend sometimes returns valid SSE with another
+                # MIME type. Detect bounded framing rather than passing raw
+                # bytes through or treating every HTTP 200 body as JSON.
+                is_sse = self._detect_sse(raw)
+                if is_sse is None:
+                    continue
+                observations["detected_format"] = "sse" if is_sse else "json"
+                if is_sse:
+                    pending.extend(raw)
+            elif is_sse:
+                pending.extend(chunk)
+            if is_sse is not True:
                 continue
-            pending.extend(chunk)
             while True:
                 separator = re.search(br"\r?\n\r?\n", pending)
                 if separator is None:
                     break
                 event = bytes(pending[:separator.start()])
                 del pending[:separator.end()]
-                data = b"\n".join(line[5:].lstrip(b" ") for line in event.splitlines()
+                lines = event.splitlines()
+                if lines and lines[0].startswith(b"\xef\xbb\xbf"):
+                    lines[0] = lines[0][3:]
+                data = b"\n".join(line[5:].lstrip(b" ") for line in lines
                                    if line.startswith(b"data:"))
                 if not data or data == b"[DONE]":
                     continue
@@ -381,6 +445,15 @@ class CodexQuotaProxy:
                 if not isinstance(value, dict):
                     raise QuotaProxyError("Native SSE event is malformed")
                 kind = value.get("type")
+                if kind in _SSE_EVENT_TYPES and kind not in observations["sse_event_types"]:
+                    observations["sse_event_types"].append(kind)
+                if kind == "error":
+                    # An error frame alone is diagnostic evidence, not proof
+                    # the provider stopped execution. No raw message is kept.
+                    error = value.get("error", value)
+                    if isinstance(error, dict):
+                        observations["error_type"] = self._safe_label(error.get("type"))
+                        observations["error_code"] = self._safe_label(error.get("code"))
                 if "item" in value or kind in {"response.output_item.added", "response.output_item.done"}:
                     try:
                         self._validate_item(value.get("item"))
@@ -414,7 +487,7 @@ class CodexQuotaProxy:
                 if pending:
                     del raw[-len(pending):]
                 break
-        if not is_sse:
+        if is_sse is False:
             value = _strict_json(raw)
             if isinstance(value, dict) and ((path == "/responses/compact" and value.get("object") == "response.compaction")
                                            or value.get("status") in {"completed", "failed", "incomplete"}):
@@ -433,11 +506,34 @@ class CodexQuotaProxy:
                     violation = True
         return bytes(raw), terminal, violation, terminal_failure, is_sse
 
+    @staticmethod
+    def _detect_sse(raw):
+        """Sniff only bounded, unambiguous JSON/SSE prefixes across chunks."""
+        prefix = bytes(raw[:8193]).lstrip(b" \t\r\n")
+        if prefix and len(prefix) < 3 and b"\xef\xbb\xbf".startswith(prefix):
+            return None
+        if prefix.startswith(b"\xef\xbb\xbf"):
+            prefix = prefix[3:].lstrip(b" \t\r\n")
+        if not prefix:
+            if len(raw) > 8192:
+                raise QuotaProxyError("Native response framing prefix exceeded its allowance")
+            return None
+        if prefix[:1] in (b"{", b"["):
+            return False
+        markers = (b":", b"data:", b"event:", b"id:", b"retry:")
+        if any(prefix.startswith(marker) for marker in markers):
+            return True
+        if len(raw) <= 8192 and any(marker.startswith(prefix) for marker in markers):
+            return None
+        raise QuotaProxyError("Native response framing is not admitted JSON or SSE")
+
     def _handle(self, handler):
         reservation = response = None
         completed = False
         status, error_type, error_code, exception_class = None, "", "", ""
         stage, response_format, known_rejected = "request_validation", "", False
+        response_request_id, never_dispatched, upstream_media_type = "", False, ""
+        observations = {"sse_event_types": []}
         diagnostic_recorded = False
         handler._maestro_body_consumed = False
 
@@ -445,9 +541,15 @@ class CodexQuotaProxy:
             nonlocal diagnostic_recorded
             if reservation is not None and not diagnostic_recorded:
                 with self.store._transaction():
-                    self.store.connection.execute("INSERT INTO codex_gateway_transport VALUES(?,?,?,?,?,?,?,?)",
-                        (reservation, status, error_type, error_code, exception_class,
-                         stage, response_format, int(known_rejected)))
+                    self.store.connection.execute("""INSERT INTO codex_gateway_transport(
+                        reservation_id,http_status,error_type,error_code,exception_class,stage,
+                        response_format,known_rejected,response_request_id,sse_event_types_json,
+                        never_dispatched,upstream_media_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (reservation, status, error_type or observations.get("error_type", ""),
+                         error_code or observations.get("error_code", ""), exception_class,
+                         stage, observations.get("detected_format", response_format), int(known_rejected), response_request_id,
+                         json.dumps(observations["sse_event_types"], separators=(",", ":")),
+                         int(never_dispatched), upstream_media_type))
                 diagnostic_recorded = True
 
         def reject(code, message):
@@ -482,8 +584,12 @@ class CodexQuotaProxy:
             with self._lock:
                 self._responses[id(response)] = response
             status = response.status if type(response.status) is int and 100 <= response.status <= 599 else None
+            request_ids = [value for key, value in response.headers.items() if key.lower() == "x-request-id"]
+            if len(request_ids) == 1:
+                response_request_id = self._safe_request_id(request_ids[0])
             content_type = next((str(value).lower() for key, value in response.headers.items()
                                  if key.lower() == "content-type"), "")
+            upstream_media_type = self._safe_media_type(content_type)
             response_format = ("sse" if "text/event-stream" in content_type else
                                "json" if "application/json" in content_type else
                                "html" if "text/html" in content_type else "other")
@@ -497,7 +603,7 @@ class CodexQuotaProxy:
                     completed = True
                 raise QuotaProxyError("Native upstream did not return an admitted response")
             stage = "upstream_read"
-            raw, terminal, violation, terminal_failure, is_sse = self._collect(response, path)
+            raw, terminal, violation, terminal_failure, is_sse = self._collect(response, path, observations)
             stage = "response_validation"
             terminal_error = terminal.get("error")
             if isinstance(terminal_error, dict):
@@ -523,6 +629,17 @@ class CodexQuotaProxy:
             handler.send_header("Connection", "close")
             handler.end_headers()
             handler.wfile.write(raw)
+        except _UpstreamTransportError as error:
+            exception_class = self._safe_label(error.cause_class, exception=True)
+            stage, never_dispatched = error.stage, error.never_dispatched
+            if reservation is not None and never_dispatched:
+                # Persist proof before releasing the active slot. Calls, bytes
+                # and the conservative token charge stay consumed; this is not
+                # a provider completion or a timer-based refund.
+                record_diagnostic()
+                self.store.finish(reservation)
+                completed = True
+            reject(502, "Native inference transport did not complete")
         except BudgetExceeded as error:
             exception_class = self._safe_label(type(error).__name__, exception=True)
             reject(429, "Native inference quota is consumed or unresolved")
@@ -550,6 +667,16 @@ class CodexQuotaProxy:
     def _safe_label(value, *, exception=False):
         pattern = r"[A-Za-z_][A-Za-z0-9_]{0,63}" if exception else r"[a-z][a-z0-9_]{0,63}"
         return value if isinstance(value, str) and re.fullmatch(pattern, value) else ""
+
+    @staticmethod
+    def _safe_request_id(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value) else ""
+
+    @staticmethod
+    def _safe_media_type(value):
+        media_type = value.split(";", 1)[0].strip().lower() if isinstance(value, str) else ""
+        return media_type if len(media_type) <= 128 and re.fullmatch(
+            r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", media_type) else ""
 
     def _rejection_fields(self, response):
         """Extract only bounded static error labels; never persist raw errors."""
@@ -593,6 +720,11 @@ class CodexQuotaProxy:
                 JOIN inference_reservations r ON r.reservation_id=t.reservation_id
                 WHERE r.account=? AND (t.http_status IS NULL OR t.http_status!=200 OR t.exception_class!='')
                 ORDER BY r.rowid""", (self.account,)).fetchall()
+            evidence = self.store.connection.execute("""SELECT t.http_status,t.error_type,t.error_code,
+                t.exception_class,t.stage,t.response_format,t.known_rejected,t.response_request_id,
+                t.sse_event_types_json,t.never_dispatched,t.upstream_media_type FROM codex_gateway_transport t
+                JOIN inference_reservations r ON r.reservation_id=t.reservation_id
+                WHERE r.account=? ORDER BY r.rowid""", (self.account,)).fetchall()
         with self._lock:
             value.update({"actual_requests": value["calls"], "request_count_unknown": False,
                           "budget_unit": "actual_inference_request",
@@ -606,6 +738,11 @@ class CodexQuotaProxy:
             value["transport_errors"] = [{"http_status": row[0], "error_type": row[1], "error_code": row[2],
                 "exception_class": row[3], "stage": row[4], "response_format": row[5],
                 "known_rejected": bool(row[6])} for row in errors]
+            value["transport_evidence"] = [{"http_status": row[0], "error_type": row[1], "error_code": row[2],
+                "exception_class": row[3], "stage": row[4], "response_format": row[5],
+                "known_rejected": bool(row[6]), "response_request_id": row[7],
+                "sse_event_types": json.loads(row[8]), "never_dispatched": bool(row[9]),
+                "upstream_media_type": row[10]} for row in evidence]
         return value
 
     def assert_resolved(self):

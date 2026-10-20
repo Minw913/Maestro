@@ -98,15 +98,25 @@ Read [docs/operations.md](docs/operations.md), [docs/PACE_ADAPTER.md](docs/PACE_
 
 ## Validated local delivery
 
-Before the instance-worker revision, 276 tests passed with no skips in the target
-repository, including the real pinned Coral subprocess grader contract. That
-revision's complete simulation used ten warm opportunities per agent and passed
-ledger replay (320 settlements). Historical evidence remains in
-`artifacts/review-validation/` and `artifacts/review-smoke-final/reports/`; its
-authenticated Codex JSON probe also passed. The new instance-worker and five-wave
-warm revision's regressions have now been rerun under the user's later testing
-authorization: **515 passed, zero failures or skips, in 145.39 seconds**, including
-the installed Codex binary against a fake upstream. Current source/test evidence and the still-unresolved real
-connection probe are recorded in `artifacts/strict-codex-validation/` and
-`IMPLEMENTATION_REPORT.md`. Warm Start itself has not been launched. Full
-physical Linux/PACE qualification remains a deployment next action.
+Strict native Codex connection qualification passed using cached ChatGPT login,
+Codex CLI 0.156.1, `gpt-6-astra`, and explicit low reasoning effort. The final run
+took **26.344 seconds**: one planning, three generation, and one restored-memory
+read request, with **five terminal usage receipts and zero unresolved requests**.
+Actual model-origin batches read memory and wrote code/private notes. Missing
+grants, public-memory writes, and a fourth generation dispatch were denied.
+See the [sanitized evidence](docs/validation/codex-live-20261020.json) and
+[implementation report](IMPLEMENTATION_REPORT.md).
+
+The full no-model regression passed **581 tests, zero failures or skips, in
+171.18 seconds**, including the installed native binary against fake credentials
+and a fake upstream, ticket launch, synchronous auctions, backfill and settlement.
+Local evidence is under `artifacts/codex-live-qualification-20261020/`.
+Three isolated historical diagnostic requests remain UNKNOWN and charged; new
+success does not resolve their old execution or usage. All diagnostic attempts
+and the original probe total 17 charged calls. No automatic retries or refunds.
+
+**Warm Start has not been launched.** The live qualification executed file tools
+only, not candidate code, shell, toy prechecks or formal evaluations. Real PACE
+data and Linux/rootless Docker containment still require independent qualification.
+Older validation records remain in `artifacts/review-validation/`,
+`artifacts/review-smoke-final/` and `artifacts/strict-codex-validation/`.

@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 import queue
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +45,7 @@ class _Process:
         self.mode, self.session, self.messages = mode, session, []
         self.returncode, self.terminated, self.held = None, False, held
         self.config = config or {"mcp_servers": {}, "plugins": {}, "features": {"hooks": False}, "notify": []}
+        self.config.setdefault("model_reasoning_effort", "low")
         self.config.setdefault("model_providers", {PROVIDER_NAME: {
             "base_url": "http://127.0.0.1:1234/phase/capability", "wire_api": "responses",
             "requires_openai_auth": True, "supports_websockets": False,
@@ -148,6 +151,7 @@ def test_complete_native_turn_and_isolated_provider(tmp_path):
     assert settings[f"model_providers.{PROVIDER_NAME}.stream_max_retries"] == "0"
     assert settings["features.shell_tool"] == "false"
     assert settings["features.hooks"] == "false"
+    assert settings["model_reasoning_effort"] == '"low"'
     assert process.terminated
     start = next(message["params"] for message in process.messages if message.get("method") == "thread/start")
     assert start["environments"] == []
@@ -156,6 +160,8 @@ def test_complete_native_turn_and_isolated_provider(tmp_path):
     turn = next(message["params"] for message in process.messages if message.get("method") == "turn/start")
     assert turn["outputSchema"] == {"type": "object"}
     assert turn["sandboxPolicy"] == {"type": "readOnly", "networkAccess": False}
+    assert turn["effort"] == "low"
+    assert response.reasoning_effort == "low"
 
 
 def test_brokered_dynamic_tool_loop(tmp_path):
@@ -182,6 +188,8 @@ def test_resume_keeps_private_memory_and_updates_phase_provider(tmp_path):
     resume = next(message["params"] for message in process.messages if message.get("method") == "thread/resume")
     assert resume["threadId"] == "private-thread"
     assert resume["modelProvider"] == PROVIDER_NAME
+    turn = next(message["params"] for message in process.messages if message.get("method") == "turn/start")
+    assert turn["effort"] == "low"
     assert not any(message.get("method") == "thread/start" for message in process.messages)
     assert "http://127.0.0.1:1234/phase/capability" in " ".join(starts[0][0])
 
@@ -283,3 +291,57 @@ def test_inherited_provider_cannot_substitute_credentials_or_headers(tmp_path, f
     with pytest.raises(AppServerProtocolError, match="Inherited provider credentials"):
         _run(client)
     assert not any(message.get("method") == "thread/start" for message in process.messages)
+
+
+def test_ignored_reasoning_override_rejects_inherited_ultra_before_thread_or_dispatch(tmp_path):
+    process = _Process(config={"model_reasoning_effort": "ultra", "features": {"hooks": False}, "notify": []})
+    client, starts = _client(tmp_path, process)
+    with pytest.raises(AppServerProtocolError, match="frozen reasoning effort"):
+        _run(client)
+    assert 'model_reasoning_effort="low"' in starts[0][0]
+    assert not any(message.get("method") in {"thread/start", "turn/start"} for message in process.messages)
+    assert process.terminated
+
+
+def test_explicit_reasoning_effort_is_used_by_config_and_each_turn(tmp_path):
+    process = _Process(config={"model_reasoning_effort": "high", "features": {"hooks": False}, "notify": []})
+    client, starts = _client(tmp_path, process, reasoning_effort="high")
+    response = _run(client)
+    assert 'model_reasoning_effort="high"' in starts[0][0]
+    turn = next(message["params"] for message in process.messages if message.get("method") == "turn/start")
+    assert turn["effort"] == "high"
+    assert response.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize("effort", [None, True, 1, "", "auto", "extreme", "LOW"])
+def test_invalid_reasoning_effort_fails_before_process_start(tmp_path, effort):
+    with pytest.raises(ValueError, match="supported native reasoning effort"):
+        _client(tmp_path, _Process(), reasoning_effort=effort)
+
+
+@pytest.mark.parametrize("supports_effort", [True, False])
+def test_preflight_qualifies_effort_rpc_without_inference(tmp_path, monkeypatch, supports_effort):
+    client, starts = _client(tmp_path, _Process())
+    def run(argv, **_kwargs):
+        if "generate-json-schema" in argv:
+            directory = Path(argv[argv.index("--out")+1])
+            (directory/"v2").mkdir()
+            (directory/"v2"/"ThreadStartParams.json").write_text(json.dumps({
+                "properties": {name: {} for name in ("dynamicTools", "environments", "modelProvider")}}))
+            properties = {name: {} for name in ("outputSchema", "environments", "sandboxPolicy")}
+            if supports_effort:
+                properties["effort"] = {}
+            (directory/"v2"/"TurnStartParams.json").write_text(json.dumps({"properties": properties}))
+            (directory/"DynamicToolCallParams.json").write_text(json.dumps({
+                "required": ["arguments", "callId", "threadId", "tool", "turnId"]}))
+        return SimpleNamespace(returncode=0, stdout="codex-cli test\n", stderr="")
+    monkeypatch.setattr("maestro.backends.codex_session.autonomous_client._run", run)
+    if supports_effort:
+        report = client.preflight(require_login=False)
+        assert report["reasoning_effort"] == "low"
+        assert report["app_server_reasoning_effort_override"] is True
+        assert report["native_inference_started"] is False
+    else:
+        with pytest.raises(Exception, match="protocol is not qualified"):
+            client.preflight(require_login=False)
+    assert starts == []

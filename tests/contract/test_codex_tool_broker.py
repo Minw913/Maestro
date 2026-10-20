@@ -1,5 +1,6 @@
 """Offline dynamic-tool isolation checks. No container or model is started."""
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import time
 
@@ -354,3 +355,205 @@ def test_writing_existing_executable_preserves_mode_unless_explicitly_changed(tm
     assert modes[-1] == 0o700
     tools.call("write", {"path": "solver/run", "content": "data", "executable": False})
     assert modes[-1] == 0o600
+
+
+def test_batch_reads_memory_then_persists_solver_and_memory_together(tmp_path):
+    ws, tools = broker(tmp_path)
+    response = tools({"action": "batch", "operations": [
+        {"action": "read", "path": "private/notes.md"},
+        {"action": "read", "path": "public/board.md"},
+    ]})
+    assert response == {"results": [
+        {"action": "read", "result": {"content": "local memory\n", "bytes": 13}},
+        {"action": "read", "result": {"content": "published observation\n", "bytes": 22}},
+    ], "completed": 2}
+    response = tools({"action": "batch", "operations": [
+        {"action": "write", "path": "solver/new.py", "content": "answer = 42\n"},
+        {"action": "write", "path": "private/notes.md", "content": "remember 42\n"},
+        {"action": "read", "path": "solver/new.py"},
+    ]})
+    assert response["completed"] == 3
+    assert response["results"][-1]["result"]["content"] == "answer = 42\n"
+    assert (ws.private / "notes.md").read_text() == "remember 42\n"
+    assert tools.usage()["calls"] == 7  # Two wrappers plus five file operations.
+    assert tools.usage()["cpu_seconds"] == 0 and not tools.runner.calls
+
+
+@pytest.mark.parametrize("operation", [
+    {"action": "write", "path": "public/board.md", "content": "forbidden"},
+    {"action": "read", "path": "solver/../private/notes.md"},
+    {"action": "write", "path": "private/auth.json", "content": "forbidden"},
+])
+def test_batch_validates_all_path_permissions_before_any_mutation(tmp_path, operation):
+    ws, tools = broker(tmp_path)
+    with pytest.raises(PermissionError):
+        tools({"action": "batch", "operations": [
+            {"action": "write", "path": "solver/new.py", "content": "must not commit"},
+            operation,
+        ]})
+    assert not (ws.solver / "new.py").exists()
+    assert tools.usage()["calls"] == 1  # Only the rejected wrapper was attempted.
+
+
+@pytest.mark.parametrize("operations", [
+    [], [{"action": "read", "path": "solver/run"}] * 9,
+    [{"action": "batch", "operations": [{"action": "read", "path": "solver/run"}]}],
+    [{"action": "shell", "command": "true"}],
+    [{"action": "read", "path": "solver/run", "host_path": "/etc/passwd"}],
+    [{"action": "read", "path": "solver/run", "content": "irrelevant"}],
+    [{"action": "write", "path": "solver/new", "content": 12}],
+    [{"action": "write", "path": "solver/new", "content": "x", "executable": 1}],
+    [{"action": "search", "path": "solver", "query": "x", "max_results": True}],
+    [{"action": "read"}], ["read solver/run"],
+])
+def test_batch_rejects_nesting_shell_unknown_and_invalid_fields(tmp_path, operations):
+    _, tools = broker(tmp_path)
+    with pytest.raises(ValueError):
+        tools({"action": "batch", "operations": operations})
+    assert tools.usage()["calls"] == 1
+    assert not tools.runner.calls
+
+
+def test_batch_rejects_unknown_wrapper_fields(tmp_path):
+    _, tools = broker(tmp_path)
+    with pytest.raises(ValueError, match="only"):
+        tools({"action": "batch", "operations": [{"action": "read", "path": "solver/run"}],
+               "path": "solver"})
+
+
+def test_plan_batch_keeps_solver_and_private_memory_readonly(tmp_path):
+    ws, tools = broker(tmp_path, phase="PLAN_RO", grant_checker=None)
+    assert tools({"action": "batch", "operations": [
+        {"action": "read", "path": "private/notes.md"},
+        {"action": "list", "path": "solver"},
+    ]})["completed"] == 2
+    with pytest.raises(PermissionError):
+        tools({"action": "batch", "operations": [
+            {"action": "write", "path": "private/notes.md", "content": "bad"},
+        ]})
+    assert (ws.private / "notes.md").read_text() == "local memory\n"
+
+
+def test_batch_allowance_accounts_for_each_operation_before_mutation(tmp_path):
+    ws, tools = broker(tmp_path, max_calls=2)
+    with pytest.raises(ToolScopeExpired, match="cover this batch"):
+        tools({"action": "batch", "operations": [
+            {"action": "write", "path": "solver/new", "content": "x"},
+            {"action": "read", "path": "private/notes.md"},
+        ]})
+    assert not (ws.solver / "new").exists()
+    assert tools.usage()["calls"] == 1
+    assert tools.call("read", {"path": "solver/run"})
+    with pytest.raises(ToolScopeExpired, match="allowance"):
+        tools.call("list", {"path": "solver"})
+
+
+def test_batch_rechecks_revoked_grant_between_operations_without_rollback(tmp_path, monkeypatch):
+    state = {"valid": True}
+    def check():
+        if not state["valid"]:
+            raise PermissionError("grant revoked between batch operations")
+    ws, tools = broker(tmp_path, grant_checker=check)
+    original_write = tools._write
+    def write(args):
+        result = original_write(args)
+        state["valid"] = False
+        return result
+    monkeypatch.setattr(tools, "_write", write)
+    with pytest.raises(PermissionError, match="between batch"):
+        tools({"action": "batch", "operations": [
+            {"action": "write", "path": "solver/first", "content": "completed"},
+            {"action": "write", "path": "private/second", "content": "blocked"},
+        ]})
+    assert (ws.solver / "first").read_text() == "completed"
+    assert not (ws.private / "second").exists()
+    assert tools.usage()["calls"] == 2
+
+
+def test_batch_rechecks_deadline_between_operations(tmp_path, monkeypatch):
+    _, tools = broker(tmp_path)
+    original_read = tools._read
+    def read(args):
+        result = original_read(args)
+        tools.deadline = time.monotonic() - 1
+        return result
+    monkeypatch.setattr(tools, "_read", read)
+    with pytest.raises(ToolScopeExpired, match="expired"):
+        tools({"action": "batch", "operations": [
+            {"action": "read", "path": "private/notes.md"},
+            {"action": "read", "path": "public/board.md"},
+        ]})
+    assert tools.usage()["calls"] == 2
+
+
+def test_batch_runtime_failure_stops_remaining_actions(tmp_path):
+    ws, tools = broker(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        tools({"action": "batch", "operations": [
+            {"action": "write", "path": "solver/completed", "content": "done"},
+            {"action": "read", "path": "private/missing"},
+            {"action": "write", "path": "solver/not-attempted", "content": "blocked"},
+        ]})
+    assert (ws.solver / "completed").read_text() == "done"
+    assert not (ws.solver / "not-attempted").exists()
+    assert tools.usage()["calls"] == 3
+
+
+def test_batch_unknown_exception_propagates_and_stops_remaining_actions(tmp_path, monkeypatch):
+    ws, tools = broker(tmp_path)
+    def unknown(args):
+        raise ToolExecutionUnknown("unresolved executor barrier")
+    monkeypatch.setattr(tools, "_read", unknown)
+    with pytest.raises(ToolExecutionUnknown) as caught:
+        tools({"action": "batch", "operations": [
+            {"action": "read", "path": "private/notes.md"},
+            {"action": "write", "path": "solver/not-attempted", "content": "blocked"},
+        ]})
+    assert caught.value.execution_unknown and caught.value.inflight_unknown
+    assert not (ws.solver / "not-attempted").exists()
+
+
+def test_batch_combined_response_limit_counts_json_utf8_and_stops_following_writes(tmp_path):
+    ws, tools = broker(tmp_path)
+    # Each input and individual escaped result fits its limit; the two escaped
+    # control-character payloads exceed the combined 256 KiB output cap.
+    (ws.private / "large-a").write_text("\x01" * (32 * 1024), encoding="utf-8")
+    (ws.public / "large-b").write_text("\x02" * (32 * 1024), encoding="utf-8")
+    with pytest.raises(ValueError, match="256 KiB; completed actions are not rolled back"):
+        tools({"action": "batch", "operations": [
+            {"action": "read", "path": "private/large-a"},
+            {"action": "read", "path": "public/large-b"},
+            {"action": "write", "path": "solver/not-attempted", "content": "blocked"},
+        ]})
+    assert not (ws.solver / "not-attempted").exists()
+    assert tools.usage()["calls"] == 3
+    # A small UTF-8 batch still returns an array safely within the client cap.
+    response = tools({"action": "batch", "operations": [
+        {"action": "read", "path": "private/notes.md"},
+        {"action": "read", "path": "public/board.md"},
+    ]})
+    assert len(json.dumps(response, ensure_ascii=False).encode("utf-8")) <= 256 * 1024
+
+
+def test_batch_maximum_eight_operations_and_existing_cpu_budget_are_preserved(tmp_path):
+    runner = Runner([metered(cpu=2), metered(cpu=3)])
+    _, tools = broker(tmp_path, runner=runner, cpu_budget=5)
+    tools.call("shell", {"command": "true"})
+    assert tools({"action": "batch", "operations": [
+        {"action": "read", "path": "private/notes.md"} for _ in range(8)
+    ]})["completed"] == 8
+    assert tools.usage()["calls"] == 10 and tools.usage()["cpu_seconds"] == 2
+    tools.call("shell", {"command": "true"})
+    assert [limits.cpu_seconds for _, limits in runner.calls] == [5, 3]
+    assert tools.usage()["cpu_seconds"] == 5
+
+
+def test_batch_schema_limits_nested_operations_to_trusted_file_fields():
+    schema = MAESTRO_TOOL_SPEC["inputSchema"]
+    batch = schema["properties"]["operations"]
+    assert "batch" in schema["properties"]["action"]["enum"]
+    assert batch["minItems"] == 1 and batch["maxItems"] == 8
+    assert batch["items"]["additionalProperties"] is False
+    assert not {"batch", "shell"} & set(batch["items"]["properties"]["action"]["enum"])
+    assert not {"args", "operations", "cwd", "env", "token", "mounts", "host_path"} & set(
+        batch["items"]["properties"])

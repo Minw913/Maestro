@@ -32,7 +32,7 @@ from maestro.bootstrap.director import make_direction_briefs
 from maestro.bootstrap.warm_start import balanced_schedule, validate_warm_completion
 from maestro.execution.dispatcher import Dispatcher
 from maestro.execution.generation import precheck_mock
-from maestro.execution.grants import GrantAuthority
+from maestro.execution.grants import GrantAuthority, GrantError
 from maestro.execution.budgets import BudgetStore
 from maestro.execution.cpu_pool import GlobalCpuPool
 from maestro.backends.mock import MockEvaluator
@@ -539,8 +539,17 @@ class ExperimentEngine:
                 epoch=revision,expires_at=expires)
             with self.ledger.transaction() as db:
                 db.execute('INSERT INTO edit_grants VALUES(?,?)',(grant.grant_id,canonical_json(grant)))
-            self.grants.verify(grant,agent_id=a,plan_version_id=plan.version_id,
-                parent_hash=plan.parent_hash,epoch=revision)
+            try:
+                self.grants.verify(grant,agent_id=a,plan_version_id=plan.version_id,
+                    parent_hash=plan.parent_hash,epoch=revision)
+            except GrantError:
+                self.grants.revoke(grant)
+                # Persisting the grant can cross the common window boundary.
+                # That is a no-dispatch deadline, not an authorization failure
+                # that should interrupt late callback accounting/cleanup.
+                if time.monotonic() >= deadline or time.time() >= grant.expires_at:
+                    break
+                raise
             start=time.monotonic()
             candidate=None
             passed=False
@@ -596,12 +605,16 @@ class ExperimentEngine:
                 db.execute('INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)',
                     (f'{e}:{r}:{a}:{revision}',e,r,a,candidate['candidate_hash'],int(passed),canonical_json({'reason':last_reason,'revision':revision,'toy_only':True})))
             if passed:
-                old=self.ledger.connection.execute('SELECT 1 FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
-                if not old:
-                    self.ledger.record_candidate(candidate['candidate_hash'],candidate)
-                elif c.mode!='mock':
-                    canonical=self.ledger.connection.execute('SELECT payload FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
-                    candidate={**candidate,'candidate_path':json.loads(canonical[0])['candidate_path']}
+                # Peer generation callbacks share this SQLite connection. Keep
+                # the lookup, first publication and canonical-path read under
+                # the same lock used by every authority transaction.
+                with self.ledger._lock:
+                    old=self.ledger.connection.execute('SELECT 1 FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
+                    if not old:
+                        self.ledger.record_candidate(candidate['candidate_hash'],candidate)
+                    elif c.mode!='mock':
+                        canonical=self.ledger.connection.execute('SELECT payload FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
+                        candidate={**candidate,'candidate_path':json.loads(canonical[0])['candidate_path']}
                 return candidate
         self.ledger.event('GENERATION_FAILED',{'agent_id':a,'reason':last_reason},e,r)
         return None

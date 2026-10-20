@@ -32,6 +32,7 @@ PROVIDER_NAME = "maestro_quota"
 TOOL_SPEC = {"type": "function", **MAESTRO_TOOL_SPEC}
 _BASE_ENV = {"OPENAI_BASE_URL", "OPENAI_API_BASE", "CHATGPT_BASE_URL",
              "CODEX_CHATGPT_BASE_URL", "CODEX_BASE_URL"}
+_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class AutonomousResponse:
     turn_id: str
     response_hash: str
     tool_calls: int
+    reasoning_effort: str = "low"
 
 
 class AppServerProtocolError(BackendUnavailable):
@@ -183,9 +185,12 @@ class AutonomousCodexClient:
 
     def __init__(self, *, model: str, work_root: str | Path, executable=None,
                  factory=None, environment=None, timeout=300,
-                 max_response_bytes=8 * 1024 * 1024, max_tool_calls=128):
+                 max_response_bytes=8 * 1024 * 1024, max_tool_calls=128,
+                 reasoning_effort="low"):
         if not isinstance(model, str) or not model.strip():
             raise ValueError("An explicit Codex model is required")
+        if not isinstance(reasoning_effort, str) or reasoning_effort not in _REASONING_EFFORTS:
+            raise ValueError("An explicit supported native reasoning effort is required")
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
                 or not math.isfinite(timeout) or timeout <= 0):
             raise ValueError("Positive finite Codex timeout required")
@@ -193,7 +198,8 @@ class AutonomousCodexClient:
             raise ValueError("Invalid accepted event byte allowance")
         if type(max_tool_calls) is not int or max_tool_calls < 1:
             raise ValueError("Positive host tool-call allowance required")
-        self.model, self.executable = model, resolve_codex(executable)
+        self.model, self.reasoning_effort = model, reasoning_effort
+        self.executable = resolve_codex(executable)
         self.root = Path(work_root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.factory = factory or subprocess.Popen
@@ -246,7 +252,7 @@ class AutonomousCodexClient:
                 turn = json.loads((Path(directory)/"v2"/"TurnStartParams.json").read_text())
                 dynamic = json.loads((Path(directory)/"DynamicToolCallParams.json").read_text())
                 if (not {"dynamicTools", "environments", "modelProvider"} <= set(start["properties"])
-                        or not {"outputSchema", "environments", "sandboxPolicy"} <= set(turn["properties"])
+                        or not {"outputSchema", "environments", "sandboxPolicy", "effort"} <= set(turn["properties"])
                         or not {"arguments", "callId", "threadId", "tool", "turnId"}
                             <= set(dynamic["required"])):
                     raise ValueError("required protocol capabilities missing")
@@ -256,11 +262,13 @@ class AutonomousCodexClient:
             raise TimeoutError("Codex local preflight completed after its deadline")
         return {**report, "cli_version": version.stdout.strip().splitlines()[0],
                 "app_server_dynamic_tools": True, "native_inference_started": False,
+                "reasoning_effort": self.reasoning_effort, "app_server_reasoning_effort_override": True,
                 "request_accounting_boundary": "maestro_pre_dispatch_gateway"}
 
     def _argv(self, base_url, extension_settings=None):
         settings = {
             "model_provider": PROVIDER_NAME,
+            "model_reasoning_effort": self.reasoning_effort,
             f"model_providers.{PROVIDER_NAME}.name": "MAESTRO quota gateway",
             f"model_providers.{PROVIDER_NAME}.base_url": base_url,
             f"model_providers.{PROVIDER_NAME}.wire_api": "responses",
@@ -456,14 +464,23 @@ class AutonomousCodexClient:
                     or effective.get("notify") not in (None, [])):
                 raise AppServerProtocolError("Inherited hooks or command notifications remain enabled")
             _assert_oauth_provider(effective, base_url)
+            if effective.get("model_reasoning_effort") != self.reasoning_effort:
+                raise AppServerProtocolError("Codex did not honor the frozen reasoning effort")
             params = {"model": self.model, "modelProvider": PROVIDER_NAME,
                 "cwd": str(self.root), "approvalPolicy": "never", "sandbox": "read-only",
                 "runtimeWorkspaceRoots": [str(self.root)],
                 "baseInstructions": ("You are a MAESTRO research coding agent. Use only the supplied "
-                    "phase context and maestro_tool. The host enforces plan-first, resource limits, "
-                    "private/shared memory boundaries, and formal experiment tickets. Never request "
-                    "native host tools or unbrokered execution."),
-                "developerInstructions": "The phase prompt and broker define your current permissions."}
+                    "phase context and maestro_tool, an RPC service for a separate controller-owned virtual "
+                    "workspace. Its solver/, private/ and public/ paths are service paths, not paths in "
+                    "this Codex host's filesystem. The native host stays read-only. The controller enforces "
+                    "plan-first, resource limits, private/shared memory boundaries and evaluation tickets. "
+                    "Never request native host tools or unbrokered execution."),
+                "developerInstructions": ("The Codex host sandbox and the external maestro_tool service "
+                    "have separate permissions, as with a remote document service. A read-only host does "
+                    "not prohibit writes through that service when GENERATION has an admitted EditGrant. "
+                    "Use maestro_tool write/batch for those authorized solver/ and private/ changes; "
+                    "public/ is always read-only. PLAN_RO has no write authorization. Respect every "
+                    "actual tool denial and never substitute native host file or shell tools.")}
             if session_id is None:
                 params.update({"dynamicTools": [TOOL_SPEC], "environments": [], "ephemeral": False})
                 started = wait_response(rpc.request("thread/start", params))
@@ -480,6 +497,7 @@ class AutonomousCodexClient:
                 raise AppServerProtocolError("Codex did not honor the required phase isolation settings")
             turn_params = {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
                 "model": self.model, "approvalPolicy": "never", "environments": [],
+                "effort": self.reasoning_effort,
                 "sandboxPolicy": {"type": "readOnly", "networkAccess": False}}
             if output_schema is not None:
                 turn_params["outputSchema"] = output_schema
@@ -502,7 +520,7 @@ class AutonomousCodexClient:
                     if final_text is None:
                         raise AppServerProtocolError("Codex completed without a final agent message")
                     return AutonomousResponse(final_text, thread_id, turn_id,
-                        hashlib.sha256(final_text.encode()).hexdigest(), tool_calls)
+                        hashlib.sha256(final_text.encode()).hexdigest(), tool_calls, self.reasoning_effort)
         finally:
             phase_done.set()
             rpc.close()

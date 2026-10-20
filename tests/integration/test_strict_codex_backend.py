@@ -108,6 +108,7 @@ def test_planning_is_readonly_and_has_one_actual_dispatch(setup):
     backend,state,_,forwarded = setup
     decision,receipt,context = planned(backend,state)
     assert decision.plan and receipt.actual_requests == 1 and len(forwarded) == 1
+    assert receipt.provider_request_id == 'resp_unit'  # Provider identity, not private-thread.
     assert context['agent_id']=='a'
     assert state.pending_plan is None
     assert not backend._agents

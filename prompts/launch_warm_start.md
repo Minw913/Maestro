@@ -12,10 +12,10 @@
 
 启动前必须确认：
 
-1. 使用已登录Codex/ChatGPT，无external API token。`strict_v1_factory` 已接入原生app-server、请求代理和隔离工具broker；核对实际源码、CLI版本pin及最新验收证据。严格V1要求每次实际inference发送前持久认领配额：规划1次、generation最多3次（包括续推理、压缩、重试与所有修复）。CLI turn不等于一次inference。原生工具循环、memory与配额的本地协议测试不能替代真实模型上游资格验收。**当前真实连接探针有1次UNKNOWN，见 `IMPLEMENTATION_REPORT.md` 和 `artifacts/strict-codex-validation/`；须先获得可信完成/取消证据，不能按等待时间判定已完成。** 完成后才能进行新的连接资格检查；保留旧调用成本，不退款或清零。只有JSON提案pilot、存在未决请求或没有真实连接通过证据时，停止启动并列出next action，不自动改跑mock、pilot或外部API backend。
+1. 使用已登录Codex/ChatGPT，无external API token。`strict_v1_factory` 已接入原生app-server、请求代理和隔离工具broker；核对实际源码、CLI/model/effort pins 与最新验收。2026-10-20 的严格真实连接已通过，证据见 `docs/validation/codex-live-20261020.json` 与 `IMPLEMENTATION_REPORT.md`；验收配置为 CLI 0.156.1、gpt-6-astra、`coral.codex_reasoning_effort: low`。保留有界file batch和逐操作grant检查。严格V1要求每次实际inference发送前持久认领配额：规划1次、generation最多3次（包括续推理、压缩、重试与所有修复）；CLI turn不等于一次inference。版本或协议变化须重新资格验收，不能用JSON pilot或本地模拟替代。3个历史诊断UNKNOWN保留隔离、计费，不退款/清零/自动重发，也不能宣称已完成；独立新验收不等于恢复这些旧请求。正在恢复的实验若有未决请求或执行scope，必须停止并取得可信完成/取消证据；不能新建目录绕过。只有JSON pilot、最新真实连接证据缺失或不匹配时，报告next action，不自动改跑mock、pilot或external API。
 2. 真实training panel/reference、可执行seed及checksums已冻结；toy precheck与正式panel分离。填写YAML中实际镜像digest、hardware/toolchain标识，不能制造数据或分数。执行机必须支持Linux rootless Docker/cgroup-v2，已分配20个评估CPU及并发容器内存。Windows登录成功不能替代隔离资格验收；在Linux上使用真实仓库路径及Python环境。
 3. 阅读最新回归报告，代码或环境变更后运行相关无模型测试：`tests/contract/test_codex_quota_proxy.py`、`test_codex_autonomous_client.py`、`test_codex_tool_broker.py`、`test_instance_workers.py`、`test_round_resources.py`、`test_container_quiescence.py`、`test_ticket_dispatcher.py`及 `tests/integration/test_strict_codex_backend.py`、`test_v1_episodes.py`、`test_heldout.py`。安装版CLI的 `test_codex_native_wire.py` 通过 `MAESTRO_RUN_NATIVE_WIRE=1` 启用，仍使用虚构登录和模拟上游。模拟测试成功不代表物理平台qualification；真实资格验收缺失时报告缺口，不直接用正式warm试跑代替。不要另跑旧proposal probe来代替严格接入检查。
-4. 检查未决模型请求、容器及 `CLAIMED/LAUNCHING/RUNNING/UNKNOWN` jobs。需要可信执行器证据才能reconcile；新建目录不能绕过未决执行。不可复用资源配置不同的旧warm checkpoint。
+4. 检查本实验及共享执行资源的未决模型请求、容器及 `CLAIMED/LAUNCHING/RUNNING/UNKNOWN` jobs。需要可信执行器证据才能reconcile；历史诊断单独保留；若旧请求仍可能占用本执行资源则须先确认隔离，禁止对未决实验原样重发或新建目录绕过。不可复用资源配置不同的旧warm checkpoint。
 
 任一必要条件不满足，报告具体阻塞、文件/接口与next action，不发起warm模型调用或正式评估，不把未启动写成成功。条件全部满足后保存解析后的配置，在唯一artifact root运行以下命令。`python`必须指向已安装MAESTRO和固定Coral的目标Linux环境：
 

@@ -465,6 +465,8 @@ def test_production_upstream_uses_fixed_tls_origin_and_disables_redirect(monkeyp
         def __init__(self, host, port, timeout):
             calls.append((host, port, timeout))
             self.sock = None
+        def connect(self):
+            calls.append("connect")
         def request(self, method, path, body, headers):
             calls.append((method, path))
         def getresponse(self):
@@ -480,5 +482,178 @@ def test_production_upstream_uses_fixed_tls_origin_and_disables_redirect(monkeyp
     monkeypatch.setattr(http.client, "HTTPSConnection", Connection)
     response = _https_upstream("/responses", {"Authorization": "Bearer never-log"}, b"{}", 1)
     assert response.status == 302
-    assert calls == [("chatgpt.com", 443, 1), ("POST", "/backend-api/codex/responses")]
+    assert calls == [("chatgpt.com", 443, 1), "connect", ("POST", "/backend-api/codex/responses")]
     response.close()
+
+
+@pytest.mark.parametrize("content_type", ["application/octet-stream", "application/json", "text/plain", ""])
+def test_sse_completion_with_nonstandard_mime_is_validated_and_receipted(gateway, content_type):
+    _store, make = gateway
+    response = FakeResponse(content_type=content_type)
+    response.headers["X-Request-ID"] = "req_qualified-123"
+    proxy, base = make(lambda *_args: response)
+    status, body = request(base)
+    assert status == 200
+    assert b"response.completed" in body
+    usage = proxy.usage()
+    assert usage["actual_requests"] == 1
+    assert usage["provider_receipts"] == 1
+    assert usage["unresolved_requests"] == 0
+    evidence = usage["transport_evidence"][0]
+    assert evidence["response_format"] == "sse"
+    assert evidence["sse_event_types"] == ["response.completed"]
+    assert evidence["response_request_id"] == "req_qualified-123"
+    assert evidence["upstream_media_type"] == content_type
+
+
+@pytest.mark.parametrize("prefix", [b"", b"\r\n: heartbeat\r\n\r\nevent: response.completed\r\n", b"\xef\xbb\xbf"])
+def test_sse_framing_detection_handles_byte_split_prefixes(gateway, prefix):
+    _store, make = gateway
+    wire = prefix + terminal()
+    response = FakeResponse([bytes([value]) for value in wire], content_type="application/octet-stream")
+    proxy, base = make(lambda *_args: response)
+    assert request(base)[0] == 200
+    assert proxy.usage()["unresolved_requests"] == 0
+    assert proxy.usage()["transport_evidence"][0]["response_format"] == "sse"
+
+
+def test_nonstandard_mime_sse_cannot_bypass_forbidden_tool_validation(gateway):
+    _store, make = gateway
+    forbidden = {"type": "function_call", "name": "exec", "arguments": "{}", "call_id": "call_bad"}
+    response = FakeResponse([event({"type": "response.output_item.done", "item": forbidden}),
+                             terminal(output=[forbidden])], content_type="application/octet-stream")
+    proxy, base = make(lambda *_args: response, allowed_tool_names=("maestro_tool",))
+    status, body = request(base)
+    assert status == 502
+    assert b"call_bad" not in body
+    usage = proxy.usage()
+    assert usage["unresolved_requests"] == 0
+    assert usage["protocol_violations"] == 1
+    assert usage["transport_evidence"][0]["sse_event_types"] == [
+        "response.output_item.done", "response.completed"]
+
+
+def test_nonstandard_mime_truncated_sse_remains_unknown_and_blocks_retry(gateway):
+    _store, make = gateway
+    response = FakeResponse([event({"type": "response.created", "response": {"id": "resp_started"}}),
+                             b"data: {\"type\":\"response.comp"], content_type="application/octet-stream")
+    proxy, base = make(lambda *_args: response)
+    assert request(base)[0] == 502
+    usage = proxy.usage()
+    assert usage["provider_receipts"] == 0
+    assert usage["unresolved_requests"] == 1
+    assert usage["transport_evidence"][0]["sse_event_types"] == ["response.created"]
+    assert request(base)[0] == 429
+
+
+def test_json_compact_with_nonstandard_mime_remains_supported(gateway):
+    _store, make = gateway
+    result = {"object": "response.compaction", "id": "cmp_1", "output": []}
+    response = FakeResponse([json.dumps(result).encode()], content_type="application/octet-stream")
+    proxy, base = make(lambda *_args: response)
+    status, body = request(base, suffix="/responses/compact")
+    assert status == 200
+    assert json.loads(body)["id"] == "cmp_1"
+    assert proxy.usage()["unresolved_requests"] == 0
+    assert proxy.usage()["transport_evidence"][0]["response_format"] == "json"
+
+
+def test_sse_error_records_only_safe_labels_and_does_not_prove_completion(gateway):
+    store, make = gateway
+    error = {"type": "error", "error": {"type": "server_error", "code": "stream_error",
+             "message": "Bearer private-stream-secret"}}
+    response = FakeResponse([event({"type": "Bearer-private-event-secret"}), event(error)],
+                            content_type="Application/Octet-Stream; private-account=secret")
+    response.headers["X-Request-ID"] = "Bearer private-request-id-secret"
+    proxy, base = make(lambda *_args: response)
+    assert request(base)[0] == 502
+    usage = proxy.usage()
+    assert usage["unresolved_requests"] == 1
+    evidence = usage["transport_evidence"][0]
+    assert evidence["error_type"] == "server_error"
+    assert evidence["error_code"] == "stream_error"
+    assert evidence["sse_event_types"] == ["error"]
+    assert evidence["response_request_id"] == ""
+    assert evidence["upstream_media_type"] == "application/octet-stream"
+    dump = "\n".join(store.connection.iterdump())
+    assert "private-stream-secret" not in dump
+    assert "private-event-secret" not in dump
+    assert "private-request-id-secret" not in dump
+    assert "private-account" not in dump
+
+
+@pytest.mark.parametrize("request_id", ["x"*129, "req/x", "req\nprivate", ""])
+def test_response_request_id_is_bounded_and_strictly_sanitized(gateway, request_id):
+    _store, make = gateway
+    response = FakeResponse()
+    response.headers["X-Request-ID"] = request_id
+    proxy, base = make(lambda *_args: response)
+    assert request(base)[0] == 200
+    assert proxy.usage()["transport_evidence"][0]["response_request_id"] == ""
+
+
+def test_undecided_whitespace_framing_has_a_small_bound(gateway):
+    _store, make = gateway
+    response = FakeResponse([b" "*8193, terminal()], content_type="application/octet-stream")
+    proxy, base = make(lambda *_args: response)
+    assert request(base)[0] == 502
+    assert proxy.usage()["unresolved_requests"] == 1
+
+
+@pytest.mark.parametrize("failure_stage", ["connect", "request", "headers"])
+def test_only_proven_pre_post_connect_failure_releases_active_slot(gateway, monkeypatch, failure_stage):
+    store, make = gateway
+    calls = []
+    class Connection:
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def connect(self):
+            calls.append("connect")
+            if failure_stage == "connect":
+                raise ssl.SSLError("Bearer private-connect-secret")
+        def request(self, *_args, **_kwargs):
+            calls.append("request")
+            if failure_stage == "request":
+                raise ssl.SSLError("Bearer private-post-secret")
+        def getresponse(self):
+            calls.append("headers")
+            raise ssl.SSLError("Bearer private-headers-secret")
+        def close(self):
+            pass
+    monkeypatch.setattr(http.client, "HTTPSConnection", Connection)
+    proxy, base = make(_https_upstream, max_calls=1)
+    assert request(base)[0] == 502
+    usage = proxy.usage()
+    assert usage["calls"] == 1
+    assert usage["provider_receipts"] == 0
+    assert usage["unresolved_requests"] == (0 if failure_stage == "connect" else 1)
+    assert usage["transport_evidence"][0]["never_dispatched"] is (failure_stage == "connect")
+    assert usage["transport_evidence"][0]["stage"] == {
+        "connect": "upstream_connect", "request": "upstream_post", "headers": "upstream_headers"}[failure_stage]
+    assert "request" not in calls if failure_stage == "connect" else "request" in calls
+    assert request(base)[0] == 429
+    assert "private-" not in "\n".join(store.connection.iterdump())
+
+
+def test_old_transport_schema_is_migrated_without_losing_rows(gateway):
+    store, make = gateway
+    store.connection.execute("""CREATE TABLE codex_gateway_transport(
+        reservation_id TEXT PRIMARY KEY REFERENCES inference_reservations(reservation_id),
+        http_status INTEGER,error_type TEXT NOT NULL,error_code TEXT NOT NULL,
+        exception_class TEXT NOT NULL,stage TEXT NOT NULL,response_format TEXT NOT NULL,
+        known_rejected INTEGER NOT NULL)""")
+    store.create("old:1:a:GENERATION", max_calls=1, max_request_bytes=1000,
+                 max_output_tokens=10, deadline=time.time()+10)
+    reservation = store.reserve("old:1:a:GENERATION", "old-request", request_bytes=20, output_tokens=10)
+    store.finish(reservation, failed=True)
+    store.connection.execute("INSERT INTO codex_gateway_transport VALUES(?,?,?,?,?,?,?,?)",
+        (reservation, 503, "server_error", "internal_error", "QuotaProxyError", "upstream_status", "json", 0))
+    proxy, base = make(lambda *_args: FakeResponse())
+    assert request(base)[0] == 200
+    old = store.connection.execute("SELECT * FROM codex_gateway_transport WHERE reservation_id=?", (reservation,)).fetchone()
+    assert old["http_status"] == 503
+    assert old["response_request_id"] == ""
+    assert old["sse_event_types_json"] == "[]"
+    assert old["never_dispatched"] == 0
+    assert old["upstream_media_type"] == ""
+    assert store.snapshot("old:1:a:GENERATION")["active"] == 1

@@ -63,10 +63,14 @@ must separately verify resource limits on the intended Linux platform.
 2. Install the exact cloned backend: `python -m pip install -e vendor/coral`. The live preflight verifies both Git HEAD and Python's actual import path.
 3. Supply frozen training/reference manifests, a solver directory with the contract executable, and a disjoint heldout panel. `docs/PACE_ADAPTER.md` defines the formats.
 4. `configs/warm_start.yaml` selects native Codex with the existing ChatGPT login,
-   brokered autonomous tools and hard 1/3 actual-request quotas. Run
+   brokered autonomous tools and hard 1/3 actual-request quotas. Model reasoning
+   effort is explicitly frozen in `coral.codex_reasoning_effort` (currently low). Run
    `python -m maestro codex-check --strict` for a no-inference login/protocol check;
    it does not qualify live inference or physical containment. Read the current
-   connection/UNKNOWN evidence in `IMPLEMENTATION_REPORT.md` before launch. The
+   connection/UNKNOWN evidence in `IMPLEMENTATION_REPORT.md` before launch.
+   An explicitly authorized `codex-qualify --live` tests only the connection,
+   file tools and memory with a single-use five-request envelope; it never
+   substitutes for Linux executor/data qualification. The
    older `configs/codex_session_pilot.yaml` only proposes JSON files and counts
    turns; `configs/pace_pilot.yaml` selects the older external-provider Coral
    runtime. Neither is a substitute for strict native Codex. See `docs/codex_session.md`.
