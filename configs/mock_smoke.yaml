@@ -6,7 +6,8 @@ warm_concurrency: 4
 cpu_workers: 4
 instance_workers: 1
 seed: 0
-mode: mock
+execution_mode: mock
+benchmark: pace
 profile: v1_cooperative
 refresh_interval: 3
 generation_calls: 3

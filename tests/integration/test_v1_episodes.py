@@ -148,7 +148,7 @@ def test_checkpoint_tamper_fails_and_resume_no_extra_payment(tmp_path):
 
 def test_real_mode_has_no_silent_mock_fallback(tmp_path):
     with pytest.raises(MaestroError,match='panel_manifest'):
-        ExperimentEngine(tmp_path,RunConfig(mode='pace'))
+        ExperimentEngine(tmp_path,RunConfig(execution_mode='real'))
 
 
 def test_exact_duplicate_keeps_priority_copy_without_extra_credit(tmp_path):

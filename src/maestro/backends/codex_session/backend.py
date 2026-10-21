@@ -195,7 +195,7 @@ class CodexSessionBackend(CoralBackend):
         if not self.seed_solver.is_dir() or self._precheck is None:
             raise BackendUnavailable("A verified seed directory and fixed bounded toy precheck are required")
         if self.simulation:
-            if config is not None and config.mode != "mock":
+            if config is not None and config.execution_mode != "mock":
                 raise BackendUnavailable("Simulated session interface cannot enter real PACE mode")
             auth = {"authenticated": False, "simulation": True}
         else:

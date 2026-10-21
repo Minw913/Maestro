@@ -59,7 +59,7 @@ The bootstrap command prints its checkpoint path. Reuse that exact checkpoint fo
 
 Source versions, prompts, output and verifier artifacts are immutable; wallet and admission facts are in SQLite. Private agent repositories do not share Git object stores. Public views contain only champion code and verified summaries. OS containment, not directory names or a prompt, enforces live isolation.
 
-## Real Coral and PACE mode
+## Real execution with Coral and the PACE benchmark
 
 For an existing ChatGPT Codex login, check the connection without an external API token:
 
@@ -120,3 +120,7 @@ only, not candidate code, shell, toy prechecks or formal evaluations. Real PACE
 data and Linux/rootless Docker containment still require independent qualification.
 Older validation records remain in `artifacts/review-validation/`,
 `artifacts/review-smoke-final/` and `artifacts/strict-codex-validation/`.
+
+Configuration uses `execution_mode: mock | real` and `benchmark: pace`.
+See [execution configuration](docs/operations.md#execution-configuration) for
+instance counts, CPU limits, CLI overrides, and incompatible historical records.

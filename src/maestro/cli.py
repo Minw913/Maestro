@@ -22,8 +22,10 @@ def _config(args):
         config=RunConfig()
     if getattr(args,'seed',None) is not None:
         config=replace(config,seed=args.seed)
-    if getattr(args,'mode',None):
-        config=replace(config,mode=args.mode)
+    overrides = {name: getattr(args, name) for name in ('execution_mode', 'benchmark')
+                 if getattr(args, name, None) is not None}
+    if overrides:
+        config = replace(config, **overrides)
     return config
 
 
@@ -61,7 +63,8 @@ def build_parser():
         item=sub.add_parser(command)
         item.add_argument('--config')
         item.add_argument('--seed',type=int)
-        item.add_argument('--mode',choices=['mock','pace'])
+        item.add_argument('--execution-mode', choices=['mock','real'], help='Simulated evaluation or real execution')
+        item.add_argument('--benchmark', choices=['pace'], help='Benchmark task (PACE only)')
         if command=='run':
             item.add_argument('--bootstrap',required=True)
             item.add_argument('--policy',choices=['first_price','uniform','ucb'],default='first_price')
@@ -126,7 +129,16 @@ def main(argv=None):
         elif args.command in ('bootstrap','run','resume','smoke','final-eval'):
             from maestro.loop import ExperimentEngine
             config=_config(args)
-            if args.command=='smoke' and config.mode!='mock':
+            if args.command=='resume':
+                from maestro.storage import Ledger
+                with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
+                    row = ledger.connection.execute('SELECT config_json,config_hash FROM episodes WHERE id=?', (args.episode,)).fetchone()
+                    if row is None:
+                        raise ValueError('Unknown episode')
+                    RunConfig.from_dict(json.loads(row['config_json']))
+                    if row['config_hash'] != config.hash:
+                        raise ValueError('Resume config hash mismatch')
+            if args.command=='smoke' and config.execution_mode!='mock':
                 raise MaestroError('smoke is explicitly simulated; use bootstrap/run for real evaluation')
             with ExperimentEngine(args.root,config) as engine:
                 if args.command=='bootstrap':
@@ -156,7 +168,7 @@ def main(argv=None):
         elif args.command=='status':
             from maestro.storage import Ledger
             with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
-                query='SELECT id,policy,mode,status FROM episodes'+(' WHERE id=?' if args.episode else '')
+                query='SELECT id,policy,execution_mode,benchmark,status FROM episodes'+(' WHERE id=?' if args.episode else '')
                 result={'episodes':[dict(r) for r in ledger.connection.execute(query,(args.episode,) if args.episode else ())]}
         elif args.command=='eval' or (args.command=='agent' and args.agent_command=='candidate-submit'):
             result=_control_request('candidate-submit',{'grant_id':args.grant,'worktree':args.worktree})

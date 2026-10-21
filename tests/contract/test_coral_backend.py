@@ -209,7 +209,7 @@ def test_unconfirmed_scope_stop_quarantines_generation(tmp_path,termination_erro
 def test_fake_runtime_cannot_enter_live_mode(tmp_path):
     driver, runtime, boundary, state = backend(tmp_path)
     with pytest.raises(BackendUnavailable):
-        driver.preflight(RunConfig(mode="pace"))
+        driver.preflight(RunConfig(execution_mode="real"))
     driver.close()
 
 

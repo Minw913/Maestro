@@ -34,15 +34,15 @@ def report(root,episode_id=None):
             stats=db.execute('SELECT sum(x) admitted,count(*) decisions FROM final_allocations WHERE episode_id=? AND round_index>=0',(e,)).fetchone()
             invites=db.execute('SELECT count(*) FROM invitations WHERE episode_id=? AND round_index>=0',(e,)).fetchone()[0]
             cfg=json.loads(ep['config_json'])
-            row={'episode_id':e,'policy':ep['policy'],'mode':ep['mode'],'status':ep['status'],
+            row={'episode_id':e,'policy':ep['policy'],'execution_mode':ep['execution_mode'],'benchmark':ep['benchmark'],'status':ep['status'],
                 'profile':cfg.get('profile','v1_cooperative'),
                 'inference_budget_unit':'session_turn' if cfg.get('profile')=='codex_session_pilot' else 'provider_request',
                 'warm_id':ep['bootstrap_id'],'final_training_score':checkpoint.get('board',{}).get('champion_score'),
                 'admitted_slots':stats['admitted'] or 0,'invitations':invites,
                 'generation_nonadmissions':invites-(stats['admitted'] or 0),
                 'costs':costs,'heldout_score':None,'heldout_status':'NOT_RUN',
-                'reserved_cpu_seconds':(stats['admitted'] or 0)*(cfg['panel_size']*cfg['instance_cpu_seconds']+cfg['verification_cpu_seconds']),
-                'calibration_scope':'funded_only_selection_biased','outcome_label':'simulated' if ep['mode']=='mock' else 'pace_style_internal'}
+                'reserved_cpu_seconds':(stats['admitted'] or 0)*(cfg['evaluation_instance_count']*cfg['cpu_seconds_per_instance']+cfg['verification_cpu_seconds']),
+                'calibration_scope':'funded_only_selection_biased','outcome_label':'simulated' if ep['execution_mode']=='mock' else 'pace_style_internal'}
             errors=[]
             for s in db.execute('SELECT * FROM settlements WHERE episode_id=?',(e,)):
                 submission=db.execute('SELECT payload FROM round_submissions WHERE episode_id=? AND round_index=? AND agent_id=?',(e,s['round_index'],s['agent_id'])).fetchone()
@@ -102,7 +102,7 @@ def _trajectory_svg(path,rows):
     max_round=max((r['round_index'] for r in rows),default=1)
     pieces=['<svg xmlns="http://www.w3.org/2000/svg" width="820" height="420" viewBox="0 0 820 420">',
         '<rect width="820" height="420" fill="white"/>',
-        '<text x="60" y="25" font-size="16">Verified training champion (see mode labels in summary.json)</text>',
+        '<text x="60" y="25" font-size="16">Verified training champion (see execution_mode and benchmark labels in summary.json)</text>',
         '<path d="M60 50 V360 H770" fill="none" stroke="#333"/>']
     for tick in range(6):
         score=tick/5

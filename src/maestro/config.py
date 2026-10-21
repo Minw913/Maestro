@@ -30,7 +30,8 @@ class RunConfig:
     bid_cap: Decimal = Decimal('100')
     initial_wealth: Decimal = Decimal('2000')
     seed: int = 0
-    mode: str = 'mock'
+    execution_mode: str = 'mock'
+    benchmark: str = 'pace'
     profile: str = 'v1_cooperative'
     generation_calls: int = 3
     planning_calls: int = 1
@@ -41,14 +42,13 @@ class RunConfig:
     memory_bytes: int = 1073741824
     pids_max: int = 32
     output_bytes: int = 1048576
-    panel_size: int = 20
-    instance_cpu_seconds: float = 30
+    evaluation_instance_count: int = 20
+    cpu_seconds_per_instance: float = 30
     verification_cpu_seconds: float = 20
     max_candidate_revisions: int = 3
     failures: dict = field(default_factory=dict)
     coral: dict = field(default_factory=dict)
     pace: dict = field(default_factory=dict)
-    initialization_mode: str = 'common_seed_directed_warm'
 
     def __post_init__(self):
         for name in ('reward_scale','catchup_fraction','bid_cap','initial_wealth'):
@@ -61,36 +61,36 @@ class RunConfig:
                 raise ValueError(f'{name} must be a positive integer')
         if self.slots > self.n_agents:
             raise ValueError('slots exceeds agent population')
-        if self.mode not in ('mock', 'pace'):
-            raise ValueError('mode must be explicitly mock or pace')
+        if self.execution_mode not in ('mock', 'real'):
+            raise ValueError('execution_mode must be explicitly mock or real')
+        if self.benchmark != 'pace':
+            raise ValueError('benchmark must be pace')
         if type(self.seed) is not int:
             raise ValueError('seed must be an integer')
-        if self.initialization_mode!='common_seed_directed_warm':
-            raise ValueError('Only common_seed_directed_warm initialization is implemented')
         for name in ('failures','coral','pace'):
             if not isinstance(getattr(self,name),dict):
                 raise ValueError(f'{name} must be a mapping')
         if self.profile not in ('v1_cooperative', 'codex_session_pilot'):
             raise ValueError('full profiles require explicit separate configuration; V1 is the executable profile')
-        if self.profile == 'codex_session_pilot' and self.mode != 'pace':
-            raise ValueError('codex_session_pilot requires real pace mode; smoke stays explicitly simulated')
+        if self.profile == 'codex_session_pilot' and self.execution_mode != 'real':
+            raise ValueError('codex_session_pilot requires execution_mode=real and benchmark=pace; smoke stays explicitly simulated')
         if self.generation_calls > 3 or self.planning_calls > 1:
             raise ValueError('V1 inference call caps exceeded')
         if self.reward_scale <= 0 or not 0 <= self.catchup_fraction <= 1 or self.bid_cap < 0:
             raise ValueError('invalid reward/bid units')
         if self.initial_wealth < self.rounds * self.bid_cap:
             raise ValueError('V1 requires ample wealth >= rounds * bid_cap')
-        for name in ('planning_window_seconds','generation_window_seconds','preparation_cpu_seconds','generation_cpu_seconds','memory_bytes','pids_max','output_bytes','panel_size','instance_cpu_seconds','verification_cpu_seconds'):
+        for name in ('planning_window_seconds','generation_window_seconds','preparation_cpu_seconds','generation_cpu_seconds','memory_bytes','pids_max','output_bytes','evaluation_instance_count','cpu_seconds_per_instance','verification_cpu_seconds'):
             value=getattr(self,name)
             if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<=0:
                 raise ValueError(f'{name} must be positive')
-        for name in ('memory_bytes','pids_max','output_bytes','panel_size'):
+        for name in ('memory_bytes','pids_max','output_bytes','evaluation_instance_count'):
             if type(getattr(self,name)) is not int:
                 raise ValueError(f'{name} must be an integer')
 
     @property
     def reserved_cpu_seconds(self):
-        return self.panel_size * self.instance_cpu_seconds + self.verification_cpu_seconds
+        return self.evaluation_instance_count * self.cpu_seconds_per_instance + self.verification_cpu_seconds
 
     @property
     def warm_batch_width(self):
@@ -103,15 +103,15 @@ class RunConfig:
             raise ValueError('candidate_count must be a positive integer')
         return min(candidate_count, self.cpu_workers)
 
-    def effective_instance_workers(self, candidate_batch_width, panel_size=None):
+    def effective_instance_workers(self, candidate_batch_width, evaluation_instance_count=None):
         """Divide the same frozen CPU pool between candidate evaluators."""
         if type(candidate_batch_width) is not int or candidate_batch_width < 1:
             raise ValueError('candidate_batch_width must be a positive integer')
         if candidate_batch_width > self.cpu_workers:
             raise ValueError('candidate_batch_width exceeds cpu_workers')
-        count = self.panel_size if panel_size is None else panel_size
+        count = self.evaluation_instance_count if evaluation_instance_count is None else evaluation_instance_count
         if type(count) is not int or count < 1:
-            raise ValueError('panel_size must be a positive integer')
+            raise ValueError('evaluation_instance_count must be a positive integer')
         # The global executor pool enforces the total. A ceiling rather than
         # floor allows leftover cores to serve some candidates immediately.
         fair_ceiling = (self.cpu_workers + candidate_batch_width - 1) // candidate_batch_width
@@ -126,6 +126,8 @@ class RunConfig:
 
     @classmethod
     def from_dict(cls, value):
+        if not isinstance(value, dict):
+            raise ValueError("Configuration must be a mapping")
         known = {f.name for f in fields(cls)}
         unknown = set(value) - known
         if unknown:
@@ -133,14 +135,29 @@ class RunConfig:
         return cls(**value)
 
 
+def _unique_mapping(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f'Duplicate config key: {key}')
+        result[key] = value
+    return result
+
+
 def load_config(path: str | Path) -> RunConfig:
     path = Path(path)
     if path.suffix.lower() == '.json':
-        value = json.loads(path.read_text(encoding='utf-8'))
+        value = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=_unique_mapping)
     else:
         try:
             import yaml
         except ImportError as exc:
             raise MaestroError('YAML configuration requires PyYAML; JSON is supported without it') from exc
-        value = yaml.safe_load(path.read_text(encoding='utf-8'))
+        class UniqueLoader(yaml.SafeLoader):
+            pass
+        def mapping(loader, node):
+            loader.flatten_mapping(node)
+            return _unique_mapping(loader.construct_pairs(node))
+        UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+        value = yaml.load(path.read_text(encoding='utf-8'), Loader=UniqueLoader)
     return RunConfig.from_dict(value or {})

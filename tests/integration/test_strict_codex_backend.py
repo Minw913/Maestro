@@ -194,7 +194,7 @@ def test_private_memory_frozen_for_next_episode_without_session_leak(setup):
 def test_simulation_cannot_claim_real_pace_qualification(setup):
     backend,_,_,_=setup
     with pytest.raises(RuntimeError,match='Simulated'):
-        backend.preflight(replace(backend.config,mode='pace'))
+        backend.preflight(replace(backend.config,execution_mode='real'))
 
 
 def test_restart_cannot_reopen_generation_with_a_fresh_tool_cpu_budget(setup):
@@ -284,7 +284,7 @@ def test_strict_requests_flow_through_first_price_ticket_and_settlement(setup,tm
     with ExperimentEngine(tmp_path/'controller',config,evaluator=TicketedScorer()) as engine:
         # Enter the live adapter callback path only; scoring stays an explicitly
         # simulated fixture. No model, benchmark or warm run is launched.
-        engine.config=replace(config,mode='pace')
+        engine.config=replace(config,execution_mode='real')
         engine.backend=backend
         engine.ledger.create_episode('unit','first_price',engine.config,{'a':state})
         parent=backend.prepare_seed()

@@ -11,7 +11,7 @@ All dataclasses are serializable with root `to_jsonable` helper. IDs/hashes stri
 - `Submission(agent_id, plan_version_id, value, bid, eligible=True)` immutable.
 - `AgentState(agent_id, parent_hash, parent_score, wealth=Decimal('2000'), history=[], lessons=[], pending_plan=None, last_planning_round=-999, needs_refresh=False, ucb_n=0, ucb_total=Decimal(0))` mutable, independent factories.
 - `EvaluationResult(job_id,candidate_hash,score,valid,status='COMPLETED',cpu_seconds=0,wall_seconds=0,diagnostics={},instance_results=())` immutable.
-- `RunConfig`: frozen with n_agents=4,slots=2,rounds=20,warm_opportunities_per_agent=10,refresh_interval=3,reward_scale=Decimal100,catchup_fraction=Decimal.25,bid_cap=Decimal100,initial_wealth=Decimal2000,seed=0,mode='mock',profile='v1_cooperative',generation_calls=3,planning_calls=1,generation_window_seconds=300,resource limits, failures=dict. root will implement `config.to_dict()/from_dict()/load_config(path)`.
+- `RunConfig`: frozen with n_agents=4,slots=2,rounds=20,warm_opportunities_per_agent=10,refresh_interval=3,reward_scale=Decimal100,catchup_fraction=Decimal.25,bid_cap=Decimal100,initial_wealth=Decimal2000,seed=0,execution_mode='mock',benchmark='pace',profile='v1_cooperative',generation_calls=3,planning_calls=1,generation_window_seconds=300,resource limits, failures=dict. root will implement `config.to_dict()/from_dict()/load_config(path)`.
 
 ## Pure market/agents/bootstrap (owner market agent)
 

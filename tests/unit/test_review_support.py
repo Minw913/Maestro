@@ -58,9 +58,9 @@ def test_session_turn_cannot_pretend_to_be_metered_request():
 
 
 def test_session_pilot_is_a_separate_live_profile():
-    with pytest.raises(ValueError, match='real pace'):
+    with pytest.raises(ValueError, match='execution_mode=real'):
         RunConfig(profile='codex_session_pilot')
-    config = RunConfig(mode='pace', profile='codex_session_pilot')
+    config = RunConfig(execution_mode='real', profile='codex_session_pilot')
     assert config.profile != RunConfig().profile
 
 
@@ -83,7 +83,7 @@ def test_unknown_session_planning_remains_visible_in_resource_costs(tmp_path):
         def close(self):
             pass
     with ExperimentEngine(tmp_path,RunConfig(n_agents=1,slots=1,rounds=1,warm_opportunities_per_agent=1)) as engine:
-        engine.config=replace(engine.config,mode='pace',profile='codex_session_pilot')
+        engine.config=replace(engine.config,execution_mode='real',profile='codex_session_pilot')
         engine.backend=Backend()
         states={'a':AgentState('a','p',.5)}
         engine.ledger.create_episode('pilot','first_price',engine.config,states)

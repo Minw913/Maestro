@@ -98,7 +98,7 @@ CPU, wall, memory, pids and output limits.
 For a round, candidate evaluation concurrency is
 `batch_width = min(admission_capacity, cpu_workers)`, and the frozen per-candidate
 width is
-`min(instance_workers, panel_size, ceil(cpu_workers / batch_width))`.
+`min(instance_workers, evaluation_instance_count, ceil(cpu_workers / batch_width))`.
 The global pool bounds actual concurrent solver and verification processes;
 the ceiling allows spare cores to serve part of a batch when the number of
 available cores is not divisible by its candidate count.
@@ -151,3 +151,39 @@ isolated vertices, malformed headers, comments, duplicate/out-of-range IDs,
 wrong counts, missing references/checksums, non-dominating sets, partial
 timeouts, SIGTERM-like receipts, no output, held-out authority and ticket
 binding mismatches.
+
+## Official verifier cross-check and bounded verification
+
+The official task page links to `https://github.com/MarioGrobler/ds_verifier`.
+The server qualification captured its unmodified Java source at commit
+`bc2210399378649dc14371e0127561f1d36bc01e`. This is a correctness oracle,
+not a source of reference sizes or optimality proofs. The operator helper
+`scripts/pace_official_verifier.py JAR GRAPH SOLUTION` adapts its output to
+JSON and exits 0 for VALID, 1 for INVALID and 2 for ERROR. The upstream CLI
+can exit zero for a non-dominating answer; the helper requires its exact
+positive message, zero exit and empty stderr before accepting a result.
+Exceptions and unexpected output remain errors, never passes. The helper
+is an offline cross-check, not an alternative candidate execution boundary.
+
+MAESTRO's graph parser and solution verifier were independently implemented
+in Python. The original adjacency-based implementation remains the graph
+import/audit path and a differential test oracle. The bounded verification
+worker now uses `verify_graph_solution`: it validates graph syntax, endpoint
+ranges, edge count, self-loops and duplicate undirected edges while scanning
+edges, and marks domination with byte arrays. It avoids allocating an
+adjacency set for every vertex. Checksummed inputs, source-hash binding,
+scoring, solver failure/timeout handling and cgroup budgets remain in place.
+
+Official and MAESTRO input acceptance are not identical on malformed or
+extended syntax. For example, upstream deduplicates repeated solution IDs
+and graph edges and does not check the declared edge count. MAESTRO retains
+its stricter rejection rules. MAESTRO also retains its existing whitespace,
+`#` comment and multi-ID solution-line extensions; these can be rejected by
+the official importer. Agreement on ordinary PACE inputs and mathematical
+validity must not be confused with identical malformed-input acceptance.
+
+`scripts/check_pace_verifier_budget.py` runs the actual trusted worker through
+DockerRunner on a real 20-graph panel under the original verification limits.
+It uses explicitly supplied diagnostic solution files. Files that exceed the
+candidate output cap can test verifier correctness but do not qualify a solver
+under that cap, create formal evaluation records, or authorize Warm Start.

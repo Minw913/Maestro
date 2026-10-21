@@ -321,7 +321,7 @@ def test_session_proposals_flow_through_auction_ticket_and_settlement(tmp_path):
     with ExperimentEngine(tmp_path/'controller',config) as engine:
         # Enter only the adapter branch under test; the scorer stays explicitly
         # simulated. Production pace preflight never accepts this FakeCLI.
-        engine.config = replace(config,mode='pace',profile='codex_session_pilot')
+        engine.config = replace(config,execution_mode='real',profile='codex_session_pilot')
         engine.backend = driver
         states = {'a':state}
         engine.ledger.create_episode('episode','first_price',engine.config,states)

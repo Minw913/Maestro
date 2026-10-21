@@ -94,13 +94,15 @@ class _TlsResponse:
         self.connection.close()
 
 
-def _https_upstream(path, headers, body, timeout):
+def _https_upstream(path, headers, body, timeout, *, on_post=None):
     """No proxy environment, redirects, URL parameters, or alternate origin."""
     connection = http.client.HTTPSConnection(_UPSTREAM_HOST, 443, timeout=timeout)
     stage = "upstream_connect"
     try:
         connection.connect()
         stage = "upstream_post"
+        if on_post is not None:
+            on_post()
         connection.request("POST", _UPSTREAM_PATH + path, body=body, headers=headers)
         stage = "upstream_headers"
         return _TlsResponse(connection, connection.getresponse())
@@ -156,7 +158,7 @@ class CodexQuotaProxy:
     """
     def __init__(self, store, account, model, *, deadline, max_calls,
                  max_request_bytes, max_output_tokens, allowed_tool_names=(),
-                 upstream=None, max_response_bytes=32 * 1024 * 1024):
+                 upstream=None, max_response_bytes=32 * 1024 * 1024, event_sink=None):
         integers = (max_calls, max_request_bytes, max_output_tokens, max_response_bytes)
         if any(type(value) is not int or value <= 0 for value in integers):
             raise ValueError("Positive integer native request quotas are required")
@@ -176,7 +178,9 @@ class CodexQuotaProxy:
         self.max_request_bytes, self.max_output_tokens = max_request_bytes, max_output_tokens
         self.max_response_bytes = max_response_bytes
         self.allowed_tool_names = frozenset(allowed_tool_names)
-        self._upstream = upstream or _https_upstream
+        self._event_sink = event_sink
+        self._upstream = upstream or (lambda path, headers, body, timeout: _https_upstream(
+            path, headers, body, timeout, on_post=lambda: self._emit("provider_post", {})))
         self._capability = secrets.token_urlsafe(32)
         self._server = self._thread = None
         self._closed = False
@@ -221,6 +225,10 @@ class CodexQuotaProxy:
                     ("upstream_media_type", "TEXT NOT NULL DEFAULT ''")):
                 if name not in columns:
                     store.connection.execute(f"ALTER TABLE codex_gateway_transport ADD COLUMN {name} {definition}")
+
+    def _emit(self, event, fields):
+        if self._event_sink is not None:
+            self._event_sink(event, {"account": self.account, **fields})
 
     def start(self):
         with self._lock:
@@ -623,6 +631,8 @@ class CodexQuotaProxy:
             if terminal_failure:
                 raise QuotaProxyError("Native inference returned a known unsuccessful terminal response")
             stage = "client_delivery"
+            # Make transport evidence durable before clients can observe success.
+            record_diagnostic()
             handler.send_response(200)
             handler.send_header("Content-Type", "text/event-stream" if is_sse else "application/json")
             handler.send_header("Content-Length", str(len(raw)))
@@ -706,6 +716,9 @@ class CodexQuotaProxy:
             self.store.connection.execute("INSERT INTO codex_gateway_receipts VALUES(?,?,?,?)",
                                           (reservation, int(violation), int(exceeded), int(terminal_failure)))
         self.store.finish(reservation, actual_output_tokens=actual)
+        self._emit("provider_terminal", {"reservation_id": reservation,
+            "provider_request_id": request_identity, "usage": normalized,
+            "terminal_failure": bool(terminal_failure)})
 
     def usage(self):
         value = self.store.usage(self.account)

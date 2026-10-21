@@ -62,12 +62,12 @@ class ExperimentEngine:
         self._closed = False
         self._live_contract = None
         self._live_panel = None
-        if config.mode == 'mock':
+        if config.execution_mode == 'mock':
             if backend is not None:
                 raise ValueError('Mock mode cannot silently use a live backend')
             self.evaluator = evaluator or MockEvaluator(seed=config.seed)
-            self.panel_hash = stable_hash({'mode':'mock','instances':config.panel_size,'seed':config.seed})
-            self.contract_hash = stable_hash({'mode':'mock','reserved_cpu':config.reserved_cpu_seconds,'panel':self.panel_hash})
+            self.panel_hash = stable_hash({'execution_mode':'mock','benchmark':'pace','instances':config.evaluation_instance_count,'seed':config.seed})
+            self.contract_hash = stable_hash({'execution_mode':'mock','benchmark':'pace','reserved_cpu':config.reserved_cpu_seconds,'panel':self.panel_hash})
         else:
             try:
                 self._prepare_live()
@@ -84,7 +84,7 @@ class ExperimentEngine:
         from maestro.tasks.pace.runner import PaceEvaluator
         manifest = self.config.pace.get('panel_manifest')
         if not manifest:
-            raise MaestroError('pace mode requires pace.panel_manifest, seed_solver, pinned runner and Coral backend')
+            raise MaestroError('execution_mode=real with benchmark=pace requires pace.panel_manifest, seed_solver, pinned runner and Coral backend')
         self._live_panel = load_panel(manifest,expected_split='training')
         contract_settings = dict(self.config.pace.get('contract',{}))
         for name in ('cpu_workers','instance_workers'):
@@ -93,14 +93,14 @@ class ExperimentEngine:
                 raise IntegrityError(f'Top-level {name} and PACE contract disagree')
             contract_settings[name] = value
         self._live_contract = EvaluationContract.standard(**contract_settings)
-        if self.config.panel_size != self._live_contract.instances:
+        if self.config.evaluation_instance_count != self._live_contract.instances:
             raise IntegrityError('Config and PACE panel contract disagree')
         self.panel_hash = self._live_panel.panel_hash
         self.contract_hash = self._live_contract.contract_hash
         if self.backend is None:
             factory = self.config.coral.get('backend_factory')
             if not factory or ':' not in factory:
-                raise MaestroError('pace mode requires a trusted coral.backend_factory module:callable or injected CoralBackend')
+                raise MaestroError('execution_mode=real with benchmark=pace requires a trusted coral.backend_factory module:callable or injected CoralBackend')
             module,name = factory.split(':',1)
             self.backend = getattr(importlib.import_module(module),name)(self.config,self.root)
         self.backend.preflight(self.config)
@@ -111,7 +111,7 @@ class ExperimentEngine:
                 cpu_workers=self.config.cpu_workers,
                 instance_workers=self.config.instance_workers,cpu_pool=self.cpu_pool)
         if isinstance(self.evaluator,MockEvaluator):
-            raise MaestroError('MockEvaluator is forbidden in pace mode')
+            raise MaestroError('MockEvaluator is forbidden with execution_mode=real')
         if hasattr(self.evaluator,'preflight'):
             self.evaluator.preflight()
         if not self.config.pace.get('seed_solver'):
@@ -161,8 +161,8 @@ class ExperimentEngine:
         c = self.config
         warm_id = _new_id('warm')
         agent_ids = [f'agent-{i+1}' for i in range(c.n_agents)]
-        if c.mode == 'mock':
-            seed_hash = self.artifacts.put_json({'mode':'mock','solver':'common-seed-v1','seed':c.seed})
+        if c.execution_mode == 'mock':
+            seed_hash = self.artifacts.put_json({'execution_mode':'mock','benchmark':'pace','solver':'common-seed-v1','seed':c.seed})
             seed_candidate = {'candidate_hash':seed_hash,'kind':'mock','seed':True}
         else:
             seed_candidate = self.backend.prepare_seed(c.pace['seed_solver'])
@@ -205,7 +205,7 @@ class ExperimentEngine:
                 db.execute("UPDATE episodes SET status='BOOTSTRAP_INCOMPLETE' WHERE id=?",(warm_id,))
                 self.ledger.event('BOOTSTRAP_INCOMPLETE',{'opportunities':dict(opportunities)},warm_id)
             raise
-        payload = {'warm_id':warm_id,'schema_version':1,'config':c.to_dict(),
+        payload = {'warm_id':warm_id,'schema_version':2,'config':c.to_dict(),
             'config_hash':c.hash,'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
             'coral_revision':CORAL_REVISION,'states':self._state_payload(states),
             'board':self._board(states,len(schedule)-1),'direction_briefs':briefs,
@@ -250,6 +250,9 @@ class ExperimentEngine:
             raise ValueError('Unknown V1 policy')
         envelope = json.loads(Path(checkpoint).read_text(encoding='utf-8'))
         payload = envelope['payload']
+        if payload.get('schema_version') != 2:
+            raise IntegrityError('Incompatible warm checkpoint; old experiments are not supported')
+        RunConfig.from_dict(payload['config'])
         if stable_hash(payload) != envelope['artifact_hash']:
             raise IntegrityError('Warm checkpoint integrity failure')
         if payload['contract_hash'] != self.contract_hash or payload['panel_hash'] != self.panel_hash:
@@ -337,7 +340,7 @@ class ExperimentEngine:
         submissions,plans = [],{}
         plan_seed = derive_seed(c.seed,purpose,'planning')
         live_outcomes={}
-        if c.mode!='mock':
+        if c.execution_mode!='mock':
             from maestro.agents.planning_batch import parallel_plans
             refresh_states={a:s for a,s in states.items() if needs_refresh(s,r,c.refresh_interval)
                 and (warm_invite is None or a in warm_invite)}
@@ -383,7 +386,7 @@ class ExperimentEngine:
                 db.execute('INSERT OR IGNORE INTO context_manifests VALUES(?,?)',(context_id,canonical_json(context)))
             if refresh:
                 plan=None
-                if c.mode == 'mock':
+                if c.execution_mode == 'mock':
                     plan = mock_plan(state,r,plan_seed)
                     plan = replace(plan,plan_id=e+':'+plan.plan_id,version_id=e+':'+plan.version_id)
                 else:
@@ -407,9 +410,9 @@ class ExperimentEngine:
                 state.needs_refresh = False
                 state.pending_plan = plan
                 receipt=live_outcomes[a].receipt if a in live_outcomes else None
-                calls=1 if c.mode=='mock' else (_receipt_value(receipt,'actual_requests') or 0)
+                calls=1 if c.execution_mode=='mock' else (_receipt_value(receipt,'actual_requests') or 0)
                 tokens=(_receipt_value(receipt,'input_tokens') or 0)+(_receipt_value(receipt,'output_tokens') or 0) if receipt else 0
-                if c.mode=='mock':
+                if c.execution_mode=='mock':
                     self.ledger.usage(e,r,a,'planning',calls=calls,tokens=tokens,
                         payload={'simulated':True,'context_hash':context_id,'usage_complete':True})
             else:
@@ -556,13 +559,13 @@ class ExperimentEngine:
             calls,tokens,cpu,wall=0,0,0.0,0.0
             from maestro.execution.budgets import BudgetExceeded
             try:
-                if c.mode=='mock':
+                if c.execution_mode=='mock':
                     reservation=self.budgets.reserve(account,f'revision-{revision}',request_bytes=512,output_tokens=4096)
-                    body={'mode':'mock','agent_id':a,'round_index':r,'purpose':purpose,
+                    body={'execution_mode':'mock','benchmark':'pace','agent_id':a,'round_index':r,'purpose':purpose,
                         'parent_hash':plan.parent_hash,'target':plan.target,'mod_type':plan.mod_type,
                         'change':plan.change,'revision':revision,'seed':c.seed}
                     if purpose=='MAIN' and r in c.failures.get('duplicate_candidate_rounds',[]):
-                        body={'mode':'mock','forced_duplicate_round':r,'seed':c.seed}
+                        body={'execution_mode':'mock','benchmark':'pace','forced_duplicate_round':r,'seed':c.seed}
                     digest=self.artifacts.put_json(body)
                     candidate={'candidate_hash':digest,'source':body,'kind':'mock'}
                     failure_cases=c.failures if purpose=='MAIN' else c.failures.get('warm',{})
@@ -584,7 +587,7 @@ class ExperimentEngine:
                 self.ledger.event('GENERATION_ATTEMPT_FAILED',{'agent_id':a,'revision':revision,'reason':last_reason},e,r)
             finally:
                 self.grants.revoke(grant)
-                if c.mode!='mock':
+                if c.execution_mode!='mock':
                     measured=getattr(self.backend,'last_generation_usage',{})
                     calls=int(measured.get('calls') or 0)
                     tokens=int(measured.get('known_input_tokens',measured.get('input_tokens')) or 0)+int(measured.get('known_output_tokens',measured.get('output_tokens')) or 0)
@@ -592,11 +595,11 @@ class ExperimentEngine:
                     measured_wall=measured.get('wall_seconds')
                     wall=float(measured_wall if measured_wall is not None else time.monotonic()-start)
                 self.ledger.usage(e,r,a,'generation',cpu,wall,calls=calls,tokens=tokens,
-                    payload={'revision':revision,'simulated':c.mode=='mock','grant_id':grant.grant_id,
+                    payload={'revision':revision,'simulated':c.execution_mode=='mock','grant_id':grant.grant_id,
                              'usage':getattr(self.backend,'last_generation_usage',None) if self.backend else None,
-                             'session_turns':measured.get('session_turns',0) if c.mode!='mock' else 0,
-                             'request_count_unknown':bool(measured.get('request_count_unknown',measured.get('calls') is None)) if c.mode!='mock' else False,
-                             'usage_complete':c.mode=='mock' or bool(measured.get('usage_complete',False))})
+                             'session_turns':measured.get('session_turns',0) if c.execution_mode!='mock' else 0,
+                             'request_count_unknown':bool(measured.get('request_count_unknown',measured.get('calls') is None)) if c.execution_mode!='mock' else False,
+                             'usage_complete':c.execution_mode=='mock' or bool(measured.get('usage_complete',False))})
             if candidate is None:
                 continue
             if time.monotonic()>=deadline:
@@ -612,7 +615,7 @@ class ExperimentEngine:
                     old=self.ledger.connection.execute('SELECT 1 FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
                     if not old:
                         self.ledger.record_candidate(candidate['candidate_hash'],candidate)
-                    elif c.mode!='mock':
+                    elif c.execution_mode!='mock':
                         canonical=self.ledger.connection.execute('SELECT payload FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
                         candidate={**candidate,'candidate_path':json.loads(canonical[0])['candidate_path']}
                 return candidate
@@ -688,7 +691,7 @@ class ExperimentEngine:
                             self.backend.register_parent(result.candidate_hash,json.loads(candidate[0])['candidate_path'])
                     state.pending_plan=None
                     state.needs_refresh=True
-                    self.ledger.usage(e,r,a,'formal',result.cpu_seconds,result.wall_seconds,payload={'purpose':purpose,'status':result.status,'simulated':c.mode=='mock'})
+                    self.ledger.usage(e,r,a,'formal',result.cpu_seconds,result.wall_seconds,payload={'purpose':purpose,'status':result.status,'simulated':c.execution_mode=='mock'})
                     artifact_hash=self.artifacts.put_json(result)
                     public_results.append({'experiment_id':result.job_id,'candidate_hash':result.candidate_hash,
                         'agent_id':a,'score':result.score,'valid':result.valid,'status':result.status,'verified':True})

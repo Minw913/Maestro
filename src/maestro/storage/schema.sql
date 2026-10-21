@@ -1,6 +1,6 @@
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS episodes(id TEXT PRIMARY KEY,policy TEXT NOT NULL,mode TEXT NOT NULL,config_json TEXT NOT NULL,config_hash TEXT NOT NULL,bootstrap_id TEXT,status TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS episodes(id TEXT PRIMARY KEY,policy TEXT NOT NULL,execution_mode TEXT NOT NULL,benchmark TEXT NOT NULL,config_json TEXT NOT NULL,config_hash TEXT NOT NULL,bootstrap_id TEXT,status TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS agents(episode_id TEXT NOT NULL REFERENCES episodes(id),agent_id TEXT NOT NULL,state_json TEXT NOT NULL,PRIMARY KEY(episode_id,agent_id));
 CREATE TABLE IF NOT EXISTS rounds(episode_id TEXT NOT NULL REFERENCES episodes(id),round_index INTEGER NOT NULL,status TEXT NOT NULL,snapshot_json TEXT NOT NULL,snapshot_hash TEXT NOT NULL,PRIMARY KEY(episode_id,round_index));
 CREATE TABLE IF NOT EXISTS plan_versions(id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,parent_hash TEXT NOT NULL,payload TEXT NOT NULL,content_hash TEXT NOT NULL);

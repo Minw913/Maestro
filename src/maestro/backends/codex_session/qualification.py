@@ -197,7 +197,7 @@ def run_qualification(output_root, *, model, executable=None, historical_path=No
         (seed/"probe.py").write_text("# File-only connection seed; never execute.\n", encoding="utf-8")
         def no_execution(*_args, **_kwargs):
             raise QualificationError("Qualification cannot run a precheck or candidate")
-        config = RunConfig(mode="pace", rounds=1, generation_calls=3, planning_calls=1)
+        config = RunConfig(execution_mode="real", rounds=1, generation_calls=3, planning_calls=1)
         backend = StrictCodexBackend(client, store, WorkspaceStore(root/"workspaces", root/"cas"),
             precheck=no_execution, seed_solver=seed, candidate_runner=FailClosedRunner(), image="",
             config=config, authenticator=client, proxy_factory=make_proxy, broker_factory=broker_factory)

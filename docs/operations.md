@@ -100,3 +100,24 @@ For unresolved execution states, retain the incomplete episode and follow a pred
 The authority directory and global CAS are never agent mounts. Only explicit private/public projections are visible. Native Coral pending files are requests, not tickets. Optional disclosure is a separate full-spec API; mandatory evidence and experiment accounting remain intact.
 
 Existing `old_docs/` is research reference material and is not imported into runtime prompts, containers or report projections.
+
+## Execution configuration
+
+`execution_mode: mock | real` selects simulated evaluation or real execution.
+`benchmark: pace` selects the task; PACE is the only implemented benchmark.
+Both execution modes support this benchmark. Explicit `--execution-mode` and
+`--benchmark` arguments override the corresponding configuration values. Resume
+requires the complete frozen configuration hash to match before backend startup.
+
+`evaluation_instance_count` counts distinct benchmark inputs evaluated for each
+candidate (for example graphs, circuit netlists, or simulation inputs). Repeated
+measurements, training runs, and test-set samples do not automatically count as
+independent instances. `cpu_seconds_per_instance` limits execution CPU time for
+one instance. The reservation remains
+`evaluation_instance_count * cpu_seconds_per_instance + verification_cpu_seconds`.
+
+Configuration loading rejects unknown and duplicate keys. There are no aliases
+or migrations for superseded configuration fields. Ledger schema 2 and warm
+checkpoint schema 2 reject previous experimental records; preserve historical
+artifacts separately. Initialization always uses the common verified seed and
+predeclared directions; it has no configurable mode.

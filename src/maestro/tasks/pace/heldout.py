@@ -42,7 +42,7 @@ def evaluate_final(engine, source_episode_id: str, manifest_path: str | Path) ->
     source = db.execute("SELECT * FROM episodes WHERE id=?", (source_episode_id,)).fetchone()
     if source is None or source["status"] != "COMPLETED" or source["policy"] in {"warm", "heldout"}:
         raise MaestroError("held-out evaluation requires a completed main episode")
-    if source["mode"] != "pace" or engine.config.mode != "pace":
+    if source["execution_mode"] != "real" or engine.config.execution_mode != "real":
         raise MaestroError("real held-out data cannot be evaluated from a simulated episode")
     source_config = json.loads(source["config_json"])
     if stable_hash(source_config) != source["config_hash"]:
@@ -125,7 +125,7 @@ def evaluate_final(engine, source_episode_id: str, manifest_path: str | Path) ->
         raise IntegrityError("frozen final champion source changed before held-out execution")
     heldout_config = replace(engine.config, n_agents=1, slots=1, rounds=1,
         warm_opportunities_per_agent=1, initial_wealth=Decimal(0), bid_cap=Decimal(0),
-        panel_size=len(panel.instances), pace={**engine.config.pace,
+        evaluation_instance_count=len(panel.instances), pace={**engine.config.pace,
             "panel_manifest": str(Path(manifest_path).resolve()), "contract": asdict(contract)})
     with ledger.transaction():
         present = db.execute("SELECT id FROM episodes WHERE id=?", (heldout_id,)).fetchone()

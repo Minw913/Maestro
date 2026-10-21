@@ -9,15 +9,16 @@ warm_opportunities_per_agent: 5
 warm_concurrency: 4
 cpu_workers: 20
 instance_workers: 5
-mode: pace
+execution_mode: real
+benchmark: pace
 profile: v1_cooperative
 seed: 0
 planning_calls: 1
 generation_calls: 3
 planning_window_seconds: 120
 generation_window_seconds: 300
-panel_size: 20
-instance_cpu_seconds: 30
+evaluation_instance_count: 20
+cpu_seconds_per_instance: 30
 verification_cpu_seconds: 20
 coral:
   backend_factory: maestro.backends.codex_session:strict_v1_factory

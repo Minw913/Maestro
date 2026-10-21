@@ -276,6 +276,7 @@ class AutonomousCodexClient:
             f"model_providers.{PROVIDER_NAME}.supports_websockets": False,
             f"model_providers.{PROVIDER_NAME}.request_max_retries": 0,
             f"model_providers.{PROVIDER_NAME}.stream_max_retries": 0,
+            f"model_providers.{PROVIDER_NAME}.stream_idle_timeout_ms": math.ceil(self.timeout * 1000),
             "forced_login_method": "chatgpt", "approval_policy": "never",
             "sandbox_mode": "read-only", "web_search": "disabled",
             "project_doc_max_bytes": 0, "mcp_servers": {}, "plugins": {},

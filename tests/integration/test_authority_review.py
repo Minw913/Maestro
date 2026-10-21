@@ -100,7 +100,7 @@ def test_unknown_or_running_result_is_not_a_terminal_score(tmp_path):
 
 
 @pytest.mark.parametrize("name,value", [("generation_window_seconds", float("nan")),
-    ("instance_cpu_seconds", float("inf")), ("initial_wealth", "Infinity"),
+    ("cpu_seconds_per_instance", float("inf")), ("initial_wealth", "Infinity"),
     ("reward_scale", "Infinity"), ("memory_bytes", True)])
 def test_configuration_rejects_nonfinite_or_noninteger_resource_limits(name, value):
     with pytest.raises(ValueError):

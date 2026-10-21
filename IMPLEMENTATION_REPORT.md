@@ -46,7 +46,7 @@
 ## 此前 instance-worker 更新记录（当时未运行测试）
 
 - 新增 `cpu_workers`（默认4）、`instance_workers`（默认1）、独立的 `warm_concurrency`（默认4）；按用户最新设置，每agent warm机会为5次。CPU容量至少4时，共5个warm waves；main仍每轮2个正式slots。
-- round snapshot、ticket和执行合同冻结worker参数；admission和replay核验。每candidate实例并发上限为 `min(instance_workers, panel_size, ceil(cpu_workers / evaluation_batch_width))`，同一controller的solver、verifier及heldout共享CPU池，总并发不超过 `cpu_workers`。
+- round snapshot、ticket和执行合同冻结worker参数；admission和replay核验。每candidate实例并发上限为 `min(instance_workers, evaluation_instance_count, ceil(cpu_workers / evaluation_batch_width))`，同一controller的solver、verifier及heldout共享CPU池，总并发不超过 `cpu_workers`。
 - 子线程继承dispatcher授权，取得CPU名额后重新核对ticket/phase/fence；失败停止后续instance启动并等待已启动任务结束。结果按固定panel顺序验证，CPU累计、付款、reward和settlement barrier保持原定义。
 - Docker终止无法确认时标记执行不确定并封锁新CPU启动；独立controller需划分CPU容量，进程内pool不提供跨controller机器级调度。
 - 当时已编写并发、授权、资源绑定和回收异常回归用例，遵循“先不要开起跑测试”未执行。本轮用户已授权重跑相关测试；最新结果见严格Codex验收记录，下面276项与320条settlement仍为此前历史证据。新默认完整simulation的预期settlement数为260，相关集成回归包含在本轮测试中。
@@ -142,7 +142,7 @@ V1 的代码包括：共同方向分配与 warm start、三种资源分配 polic
 
 ### 7. 初始化与恢复支持范围
 
-本版实际支持用户要求的 `common_seed_directed_warm`。其他初始化标签被明确拒绝；中断在 preparation/generation 的 episode 也不会未经 containment reconciliation 就自动重做。
+本版固定从共同 verified seed 和各 agent 的预声明方向开始，不提供初始化模式配置；中断在 preparation/generation 的 episode 也不会未经 containment reconciliation 就自动重做。
 
 **Next action：** 如研究对照需要 predefined solver paradigms，增加真实多 seed 初始化分支及等成本 setup。对中断 generation 先回收旧 scope、保留原记录，再按预注册 rerun/recovery 规则处理，避免重置预算获得免费计算。
 
@@ -157,3 +157,18 @@ Set-Location 'D:\Becky_files\Documents\Personal_Repos\MAESTRO'
 ```
 
 前三个命令运行显式 simulation，最后一个仅检查已有 Codex 登录；追加 `--strict` 可检查原生协议，不发起推理。已登录Codex的严格自主入口为 `configs/warm_start.yaml`；旧proposal模式为 `configs/codex_session_pilot.yaml`，旧API-backed Coral配置为 `configs/pace_pilot.yaml`。严格真实连接现已通过；历史 UNKNOWN 保留隔离，当前尚未启动 Warm Start，后续实验仍要求实际数据与 Linux executor 资格通过。操作步骤见 `docs/operations.md`。
+
+## Configuration interface (2026-10-21)
+
+Execution selection is now split into `execution_mode: mock | real` and
+`benchmark: pace`. CLI overrides use `--execution-mode` and `--benchmark`.
+`evaluation_instance_count` counts benchmark inputs per candidate, and
+`cpu_seconds_per_instance` retains the per-input CPU limit and reservation
+semantics. Initialization uses the fixed common-seed procedure.
+
+Unknown and duplicate configuration keys are rejected. Ledger and warm checkpoint
+schemas are version 2; previous records are explicitly unsupported and are not
+migrated. Resume configuration conflicts are checked before backend startup.
+Maintained documents and presets use the executable names. No real inference or
+PACE experiment was run for this change. `implementation_1020.tex` was absent
+from this checkout; the interface follows the explicit task specification.

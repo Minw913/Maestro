@@ -121,7 +121,7 @@ class StrictCodexBackend(CoralBackend):
         if not self.seed_solver.is_dir() or self._precheck is None:
             raise BackendUnavailable("Verified seed and bounded toy precheck required")
         if self.simulation:
-            if config.mode != "mock":
+            if config.execution_mode != "mock":
                 raise BackendUnavailable("Simulated Codex transport cannot run a physical PACE experiment")
             auth = {"simulation": True}
         else:
@@ -386,7 +386,7 @@ def strict_factory(config, root=None):
     from maestro.tasks.pace.manifest import assert_smoke_disjoint, load_panel
     from maestro.tasks.pace.runner import smoke_test
 
-    if getattr(config,"profile",None) != "v1_cooperative" or getattr(config,"mode",None) != "pace":
+    if getattr(config,"profile",None) != "v1_cooperative" or getattr(config,"execution_mode",None) != "real":
         raise BackendUnavailable("Strict Codex factory requires pace/v1_cooperative")
     settings = config.coral
     if not isinstance(settings.get("model"), str) or not settings["model"].strip():
@@ -405,7 +405,8 @@ def strict_factory(config, root=None):
     runner.preflight(image=image)
     client = AutonomousCodexClient(model=settings["model"], work_root=authority/"native",
                                   executable=settings.get("codex_executable"),
-                                  reasoning_effort=settings.get("codex_reasoning_effort", "low"))
+                                  reasoning_effort=settings.get("codex_reasoning_effort", "low"),
+                                  timeout=max(config.planning_window_seconds, config.generation_window_seconds))
     toy = Path(settings.get("smoke_graph", Path(__file__).resolve().parents[4]/"fixtures/toy_graphs/star5.gr"))
     assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
     store = BudgetStore(authority/"requests.sqlite")

@@ -7,7 +7,8 @@ warm_concurrency: 4
 # qualified platform capacity; 8 cores permit two instance workers per warm agent.
 cpu_workers: 4
 instance_workers: 1
-mode: pace
+execution_mode: real
+benchmark: pace
 seed: 0
 coral:
   backend_factory: maestro.backends.coral.backend:default_factory

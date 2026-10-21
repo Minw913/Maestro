@@ -270,7 +270,7 @@ def test_live_generation_unknown_receipt_is_recorded_without_inventing_zero_requ
         backend=UnknownInference()
         backend.calls=0
         engine.backend=backend
-        engine.config=replace(engine.config,mode='pace')
+        engine.config=replace(engine.config,execution_mode='real')
         state=AgentState('a','parent',.5)
         plan=mock_plan(state,0,1)
         with pytest.raises(InferenceRequestUnknown):

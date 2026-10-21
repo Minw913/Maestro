@@ -48,7 +48,7 @@ def engine(tmp_path):
     candidate_path.mkdir()
     (candidate_path / "solver.py").write_text("print('1\\n1')\n")
     candidate_hash = candidate_tree_hash(candidate_path)
-    config = RunConfig(mode="pace", rounds=1, panel_size=1)
+    config = RunConfig(execution_mode="real", rounds=1, evaluation_instance_count=1)
     artifacts = ArtifactStore(tmp_path / "authority/cas")
     ledger = Ledger(tmp_path / "authority/ledger.sqlite")
     state = AgentState("agent-1", candidate_hash, 0.5)
@@ -109,7 +109,7 @@ def test_final_heldout_rejects_training_overlap(engine):
 
 def test_final_heldout_rejects_simulated_source(engine):
     manifest = write_panel(engine.root, "heldout", "p ds 4 3\n1 2\n1 3\n1 4\n", "heldout")
-    engine.ledger.connection.execute("UPDATE episodes SET mode='mock' WHERE id='source'")
+    engine.ledger.connection.execute("UPDATE episodes SET execution_mode='mock' WHERE id='source'")
     with pytest.raises(MaestroError, match="simulated"):
         evaluate_final(engine, "source", manifest)
 

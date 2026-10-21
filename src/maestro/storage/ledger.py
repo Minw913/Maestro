@@ -12,7 +12,7 @@ import threading
 from maestro.types import (AuthorizationError, IntegrityError, MaestroError,
     canonical_json, stable_hash, to_jsonable, result_from_dict)
 
-SCHEMA_VERSION = '1'
+SCHEMA_VERSION = '2'
 
 
 def validate_round_resources(config, snapshot, ticket=None):
@@ -33,7 +33,7 @@ def validate_round_resources(config, snapshot, ticket=None):
 
     cpu_workers = positive_int(config.get('cpu_workers'), 'cpu_workers')
     instance_workers = positive_int(config.get('instance_workers'), 'instance_workers')
-    panel_size = positive_int(config.get('panel_size'), 'panel_size')
+    evaluation_instance_count = positive_int(config.get('evaluation_instance_count'), 'evaluation_instance_count')
     purpose = snapshot.get('purpose')
     if purpose == 'MAIN':
         capacity = positive_int(config.get('slots'), 'slots')
@@ -61,7 +61,7 @@ def validate_round_resources(config, snapshot, ticket=None):
     fair_ceiling = (cpu_workers + batch_width - 1) // batch_width
     expected = {'admission_capacity':capacity,'cpu_workers':cpu_workers,
         'instance_workers':instance_workers,'evaluation_batch_width':batch_width,
-        'effective_instance_workers':min(instance_workers,panel_size,fair_ceiling)}
+        'effective_instance_workers':min(instance_workers,evaluation_instance_count,fair_ceiling)}
     for name,value in expected.items():
         if type(snapshot.get(name)) is not int or snapshot[name] != value:
             raise AuthorizationError(f'Round {name} differs from the frozen resource budget')
@@ -78,6 +78,13 @@ class Ledger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(str(path), timeout=30, isolation_level=None, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
+        tables = {r[0] for r in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        if tables:
+            row = (self.connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+                   if 'metadata' in tables else None)
+            if row is None or row[0] != SCHEMA_VERSION:
+                self.connection.close()
+                raise IntegrityError('Incompatible ledger schema; old experiments are not supported')
         self.connection.execute('PRAGMA foreign_keys=ON')
         self.connection.execute('PRAGMA journal_mode=WAL')
         self.connection.execute('PRAGMA busy_timeout=30000')
@@ -125,8 +132,8 @@ class Ledger:
         with self.transaction() as db:
             if db.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
                 raise IntegrityError(f'Episode already exists: {episode_id}')
-            db.execute('INSERT INTO episodes VALUES(?,?,?,?,?,?,?,?)',
-                (episode_id,policy,config.mode,canonical_json(config),config.hash,bootstrap_id,'RUNNING',datetime.now(timezone.utc).isoformat()))
+            db.execute('INSERT INTO episodes VALUES(?,?,?,?,?,?,?,?,?)',
+                (episode_id,policy,config.execution_mode,config.benchmark,canonical_json(config),config.hash,bootstrap_id,'RUNNING',datetime.now(timezone.utc).isoformat()))
             for state in states.values():
                 db.execute('INSERT INTO agents VALUES(?,?,?)', (episode_id,state.agent_id,canonical_json(state)))
                 db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',
@@ -280,7 +287,7 @@ class Ledger:
             if registered_path is not None:
                 if Path(registered_path).resolve() != Path(ticket_path).resolve():
                     raise AuthorizationError('Ticket candidate path differs from its immutable registration')
-            elif json.loads(episode[0]).get('mode') == 'pace':
+            elif json.loads(episode[0]).get('execution_mode') == 'real':
                 raise AuthorizationError('Formal PACE candidate has no registered immutable path')
             held = db.execute("SELECT amount FROM holds WHERE episode_id=? AND round_index=? AND agent_id=? AND status='HELD'",(e,r,a)).fetchone()
             if not held or Decimal(held[0]) != Decimal(str(payment)):

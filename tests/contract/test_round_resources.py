@@ -105,7 +105,7 @@ def test_setup_and_heldout_have_one_admission_and_can_use_instance_workers(purpo
 
 
 def test_panel_length_caps_effective_instance_workers():
-    config = RunConfig(cpu_workers=8, instance_workers=10, panel_size=2)
+    config = RunConfig(cpu_workers=8, instance_workers=10, evaluation_instance_count=2)
     binding = _binding(2, 8, 10, 2, 2)
     assert validate_round_resources(config.to_dict(), _snapshot(config, "MAIN", binding),
                                     _ticket("MAIN", binding)) == binding
@@ -208,7 +208,7 @@ def test_legacy_snapshots_keep_original_auction_slot_limit(purpose):
     assert validate_round_resources(config, snapshot, ticket) == {"admission_capacity": 2}
 
 
-@pytest.mark.parametrize("field", ["cpu_workers", "instance_workers", "panel_size", "slots"])
+@pytest.mark.parametrize("field", ["cpu_workers", "instance_workers", "evaluation_instance_count", "slots"])
 def test_new_snapshot_rejects_invalid_frozen_config_instead_of_coercing_booleans(field):
     config = RunConfig(instance_workers=2).to_dict()
     config[field] = True

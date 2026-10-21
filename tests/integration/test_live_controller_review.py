@@ -13,7 +13,7 @@ def controller(tmp_path, backend_factory):
     # Construct mock authority explicitly, then inject only the unit-under-test's
     # live callback branch. No production pace run or benchmark is represented.
     engine = ExperimentEngine(tmp_path, RunConfig(rounds=1, warm_opportunities_per_agent=1))
-    engine.config = replace(engine.config, mode="pace")
+    engine.config = replace(engine.config, execution_mode="real")
     engine.backend = backend_factory(engine)
     state = AgentState("a", "p", .6)
     return engine, state, mock_plan(state, 0, 1)

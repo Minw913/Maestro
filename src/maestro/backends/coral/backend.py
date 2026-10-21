@@ -50,7 +50,7 @@ class CoralBackend:
     def preflight(self, config=None) -> dict:
         if self.supervisor.simulation:
             # FakeRuntime contract tests explicitly opt in; a real CLI must reject.
-            mode = getattr(config, "mode", "mock") if config is not None else "mock"
+            mode = getattr(config, "execution_mode", "mock") if config is not None else "mock"
             if mode != "mock":
                 raise BackendUnavailable("A simulated supervisor cannot run a real backend profile")
         report = self.supervisor.preflight()

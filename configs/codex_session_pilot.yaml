@@ -7,7 +7,8 @@ warm_opportunities_per_agent: 5
 warm_concurrency: 4
 cpu_workers: 4
 instance_workers: 1
-mode: pace
+execution_mode: real
+benchmark: pace
 profile: codex_session_pilot
 seed: 0
 coral:

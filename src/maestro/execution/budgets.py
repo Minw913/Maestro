@@ -253,10 +253,13 @@ class BudgetStore:
                     "unresolved_requests": snapshot["active"]}
 
     def snapshot(self, account: str) -> dict:
-        row = self.connection.execute("SELECT * FROM inference_budgets WHERE account=?", (account,)).fetchone()
-        if row is None:
-            raise BudgetExceeded("Unknown account")
-        return dict(row)
+        # SQLite cursor metadata must not race a different statement on this
+        # shared connection, including the read preceding account creation.
+        with self._lock:
+            row = self.connection.execute("SELECT * FROM inference_budgets WHERE account=?", (account,)).fetchone()
+            if row is None:
+                raise BudgetExceeded("Unknown account")
+            return dict(row)
 
     def close(self):
         self.connection.close()

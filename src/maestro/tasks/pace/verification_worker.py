@@ -18,16 +18,14 @@ if __name__ == "__main__":
     # root is explicitly added; no candidate tree is mounted in this container.
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from maestro.tasks.pace.parser import parse_graph
 from maestro.tasks.pace.scoring import instance_score
-from maestro.tasks.pace.verifier import verify_solution
+from maestro.tasks.pace.verifier import verify_graph_solution
 
 
 def assess_instance(graph_text: str, item: dict) -> dict:
-    graph = parse_graph(graph_text)
-    if graph.n != item["n"]:
+    n, verified = verify_graph_solution(graph_text, item["stdout"])
+    if n != item["n"]:
         raise ValueError("graph vertex count differs from the frozen manifest")
-    verified = verify_solution(graph, item["stdout"])
     score = 0.0
     if item["timed_out"] and not verified.valid:
         status, valid, reason = "TIMEOUT", None, "timeout without a valid result"
@@ -37,7 +35,7 @@ def assess_instance(graph_text: str, item: dict) -> dict:
         status, valid, reason = "INVALID", False, verified.reason
     else:
         status, valid, reason = "COMPLETED", True, ""
-        score = instance_score(verified.size, graph.n, item["reference_size"])
+        score = instance_score(verified.size, n, item["reference_size"])
     return {
         "instance_id": item["instance_id"], "result_size": verified.size if valid else None,
         "score": score, "valid": valid, "status": status, "reason": reason,

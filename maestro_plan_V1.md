@@ -56,7 +56,7 @@ V1 默认采用组合式 `ControlledCoralSupervisor`：新增适配层直接调�
 
 ### 2.2 用户选择的 bootstrap 参数
 
-`initialization_mode=common_seed_directed_warm`：从同一个 verified seed 出发，由 SearchDirector 给出不同探索方向，在 warm 阶段发展出不同 lineage。这个模式实现本次要求，必须在报告中标注；规格中的 `predefined_paradigms` 则作为另一个可选 initialization mode，不能混报成同一种初始化。
+从同一个 verified seed 出发，由 SearchDirector 给出不同探索方向，在 warm 阶段发展出不同 lineage；这是固定初始化流程，不提供初始化模式配置。
 
 建议 `warm_opportunities_per_agent=10`，不是“总共 10 个全局 round”。N=4、K=2 时，均衡调度需 20 个 warm waves，合计 40 个 opportunities。机会、成功通过 precheck、正式 admission 和有效结果分别计数；每 agent 至少一个正式 evaluation record 是进入 main 的必要条件。
 
@@ -698,7 +698,7 @@ llm_inflight_max, permitted_network_routes, gpu_devices=[]
 
 ### 11.2 正式 PACE evaluator
 
-`manifest.py` 冻结 ordered panel、图 source hash、reference k*、seeds、toolchain/hardware、solver argv/stdin/stdout 合同。缺数据、reference 或真实 containment 时 `--mode pace` 报错退出，mock 只能显式选择。
+`manifest.py` 冻结 ordered panel、图 source hash、reference k*、seeds、toolchain/hardware、solver argv/stdin/stdout 合同。缺数据、reference 或真实 containment 时 `--execution-mode real --benchmark pace` 报错退出，mock 只能显式选择。
 
 `parser.py/verifier.py`：
 
@@ -796,7 +796,7 @@ maestro run --bootstrap <warm-checkpoint> --policy first_price --seed 0
 maestro replay --episode <id> --verify-ledger
 maestro report --experiment <id>
 
-maestro bootstrap --config configs/pace_pilot.yaml --mode pace --seed 0
+maestro bootstrap --config configs/pace_pilot.yaml --execution-mode real --benchmark pace --seed 0
 ```
 
 bootstrap 包含 config/preflight、Director/initialization、balanced warm 与 checkpoint。run 校验 snapshot 和 profile 兼容性，主阶段跑满 T=20 或以明确 incomplete 状态结束；不把 warm 轮数算入 T。report 由 ledger/CAS 生成，原始执行日志保持私有。
