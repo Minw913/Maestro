@@ -1,0 +1,11 @@
+kind: experiment
+schema_version: 1
+runtime: ../runtimes/coral_codex_56_medium.yaml
+deployment: ../deployments/remote.yaml
+benchmark: ../benchmarks/pace/benchmark.yaml
+stages:
+  warm_start: ../benchmarks/pace/warm_start_56_medium.yaml
+  market: ../benchmarks/pace/market_56_medium.yaml
+execution_mode: real
+n_agents: 4
+seed: 0

@@ -6,12 +6,53 @@ itself owns authentication and token refresh. Exported OpenAI API key/token
 environment variables are removed from this adapter's child environment so they
 cannot silently replace the selected ChatGPT login.
 
-## Strict native runtime
+## Coral native runtime (current experiment configuration)
+
+`configs/experiments/pace_remote.yaml` selects
+`maestro.backends.coral.native_backend:native_factory` with the pinned upstream
+Coral `CodexRuntime.start()` and Codex CLI 0.160.0. Warm and Market use this same
+backend; their opportunity allocation differs, not their coding-agent runtime.
+
+Every invited agent autonomously reads solver/, own private/ memory, read-only
+public/ information and its own read-only history/ projection. Controller code
+publishes paths and identities, not source snippets chosen by traversal order.
+Preparation uses its own `preparation_calls=4` and common 300-second deadline.
+A separate tool-free `planning_calls=1` request uses the accepted evidence
+summary. Only then does allocation authorize generation. The current native
+backend refreshes all participating agents' plans each round; it does not skip
+preparation/planning through automatic pending-plan reuse.
+
+Coral owns the native `codex exec` loop. A command prefix removes its upstream
+full-access flag, ignores inherited user/project execution rules, disables native
+execution/extensions, and uses an empty temporary workdir outside the repository.
+Only the controller's MCP namespace is routed directly; all other tool declarations
+are removed by the request gate. MCP calls return to StageToolBroker, which denies
+preparation writes and shell, checks generation EditGrants per operation, and
+executes debug tools in the existing bounded networkless DockerRunner. The
+controller-owned MCP service is preapproved in Codex; that prevents interactive
+CLI prompts and grants no additional broker capabilities. Public and history
+roots remain read-only in generation too.
+
+The native phase is ephemeral, so it does not resume a model thread across phases.
+The agent-written preparation summary feeds the final plan; generation receives
+that admitted plan and can reread its persistent memory and history. Workspace/CAS
+snapshots, actual request accounts, and existing generation/precheck CPU contracts
+remain in use. No external API credential or second agent image is required.
+
+Installed-binary wire tests exercise this path using fabricated login and local
+responses only. They establish namespace routing, file operations and quota
+refusal, not real model availability or physical server qualification. The
+retained five-request `codex-qualify` diagnostic below exercises the legacy
+app-server path; its historical PASSED results do not qualify this new runtime.
+A separately bounded live qualification and physical acceptance are required
+before a real run. This change does not authorize or start those calls.
+
+## Legacy app-server diagnostic runtime
 
 `maestro.backends.codex_session:strict_v1_factory` now constructs the native
 `StrictCodexBackend`; it is no longer an unconditional rejection stub.
-`configs/warm_start.yaml` selects this path with four agents, 20 formal CPU
-workers, five instance workers per candidate and five warm opportunities each.
+This retained diagnostic path does not implement the new autonomous preparation
+stage and is not selected by the current experiment preset.
 This revision does not start Warm Start.
 The runnable configuration pins `coral.codex_cli_version` to the qualified
 installed binary. A changed CLI version requires repeating the native wire
@@ -128,8 +169,8 @@ perform multiple inference requests; its turn count is never request accounting.
 The older proposal transport below remains an explicitly different pilot and
 cannot be substituted for the strict factory.
 
-`codex_session_pilot` is an explicit alternative in
-`configs/codex_session_pilot.yaml`. It reserves one planning proposal turn and at
+`codex_session_pilot` is retained as a legacy implementation without a shipped
+configuration preset. It reserves one planning proposal turn and at
 most three generation proposal turns in a durable SQLite turn store. Receipts
 carry `budget_unit=session_turn`, `session_turns=1`, `actual_requests=null` and
 `request_count_unknown=true`. A failed/ambiguous request remains consumed across
@@ -197,3 +238,18 @@ briefs; optional live SearchDirector inference is not enabled in this pilot.
 workspace/SQLite operations. It proves interface and authorization behavior,
 not live model availability or physical Linux containment. The CLI authentication
 probe and a separately authorized real proposal are the live-login evidence.
+
+## Native namespace references and offline validation
+
+The namespace override follows the upstream
+[configuration schema](https://github.com/openai/codex/blob/main/codex-rs/core/config.schema.json)
+and the exact namespace/name routing in the upstream
+[tool router](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/router.rs).
+The gate admits only `mcp__maestro` / `maestro_tool`; flattened names or peer/native
+namespaces are rejected rather than rewritten into broader capabilities.
+
+Validation of this change: complete offline suite 674 passed, 6 skipped; the five
+installed-binary wire cases were enabled separately and all passed. The skipped
+full-suite cases are those five opt-in wire cases plus one Windows-only case.
+Wire tests use isolated fabricated ChatGPT auth and a local responder; they
+never establish real-model connectivity or physical Docker qualification.

@@ -1,6 +1,0 @@
-# Operator configuration for the fixed backend. Authentication lives in env.
-checkout: vendor/coral
-revision: '0123dfb939b35228cf2c1fde224cd0561e727408'
-runtime: claude_code
-model: sonnet
-backend_factory: maestro.backends.coral.backend:default_factory

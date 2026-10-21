@@ -5,7 +5,7 @@ trusted, claimed tickets. Mock and real execution are explicitly different modes
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
@@ -36,6 +36,7 @@ from maestro.execution.grants import GrantAuthority, GrantError
 from maestro.execution.budgets import BudgetStore
 from maestro.execution.cpu_pool import GlobalCpuPool
 from maestro.backends.mock import MockEvaluator
+from maestro.execution.pause import PauseController
 
 
 def _new_id(prefix):
@@ -62,6 +63,8 @@ class ExperimentEngine:
         self._closed = False
         self._live_contract = None
         self._live_panel = None
+        self.pause = PauseController(self.root)
+        self._pause_recorded = False
         if config.execution_mode == 'mock':
             if backend is not None:
                 raise ValueError('Mock mode cannot silently use a live backend')
@@ -76,7 +79,11 @@ class ExperimentEngine:
                 self.ledger.close()
                 raise
         self.dispatcher = Dispatcher(self.ledger, self.evaluator)
+        if getattr(self.backend,'pause',None) is not None:
+            self.pause = self.backend.pause
         (self.root / 'authority' / 'config.resolved.json').write_text(canonical_json(config),encoding='utf-8')
+        if config.experiment_stage:
+            (self.root / 'authority' / f'config.{config.experiment_stage}.resolved.json').write_text(canonical_json(config),encoding='utf-8')
 
     def _prepare_live(self):
         """Every production prerequisite is explicit; there is no mock fallback."""
@@ -120,6 +127,7 @@ class ExperimentEngine:
     def close(self, *, timeout=30.0):
         if self._closed:
             return
+        self._record_pause()
         # A native phase can stop before its outer generation callback records
         # usage/revokes the grant. Keep both authority connections open until
         # those callbacks finish; cancelling a Future cannot stop a running one.
@@ -138,6 +146,20 @@ class ExperimentEngine:
 
     def __exit__(self,*args):
         self.close()
+
+    def _record_pause(self):
+        if self.pause.requested:
+            self.pause.request()
+            if not self._pause_recorded:
+                self.ledger.event('PAUSE_REQUESTED',{'new_dispatch':False,
+                    'drain_seconds':self.pause.grace_seconds,'automatic_restart':False})
+                with self.ledger.transaction() as db:
+                    db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE status='RUNNING'")
+                self._pause_recorded = True
+
+    def _check_pause(self):
+        self._record_pause()
+        self.pause.check()
 
     def _board(self, states, round_index, results=()):
         champion = max(states.values(),key=lambda s:(s.parent_score,s.parent_hash))
@@ -158,7 +180,10 @@ class ExperimentEngine:
         return {a:to_jsonable(s) for a,s in states.items()}
 
     def bootstrap(self):
+        self._check_pause()
         c = self.config
+        if c.stage_configs and (c.experiment_stage!='warm_start' or c.hash!=c.for_stage('warm_start').hash):
+            raise IntegrityError('Bootstrap requires the frozen warm_start stage')
         warm_id = _new_id('warm')
         agent_ids = [f'agent-{i+1}' for i in range(c.n_agents)]
         if c.execution_mode == 'mock':
@@ -206,7 +231,7 @@ class ExperimentEngine:
                 self.ledger.event('BOOTSTRAP_INCOMPLETE',{'opportunities':dict(opportunities)},warm_id)
             raise
         payload = {'warm_id':warm_id,'schema_version':2,'config':c.to_dict(),
-            'config_hash':c.hash,'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
+            'config_hash':c.hash,'shared_config_hash':c.shared_config_hash,'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
             'coral_revision':CORAL_REVISION,'states':self._state_payload(states),
             'board':self._board(states,len(schedule)-1),'direction_briefs':briefs,
             'opportunities':dict(opportunities),'warm_waves':len(schedule)}
@@ -225,6 +250,7 @@ class ExperimentEngine:
             'warm_waves':len(schedule),'opportunities':dict(opportunities)}
 
     def _evaluate_seed(self, episode_id, states, candidate):
+        self._check_pause()
         """Setup is a real authorized evaluation, separate from gain history."""
         a = next(iter(states))
         evaluation_settings = self._evaluation_settings(1)
@@ -246,24 +272,23 @@ class ExperimentEngine:
         return result.score
 
     def run(self, checkpoint, policy='first_price', *, episode_id=None):
+        self._check_pause()
         if policy not in ('first_price','uniform','ucb'):
             raise ValueError('Unknown V1 policy')
         envelope = json.loads(Path(checkpoint).read_text(encoding='utf-8'))
         payload = envelope['payload']
         if payload.get('schema_version') != 2:
             raise IntegrityError('Incompatible warm checkpoint; old experiments are not supported')
-        RunConfig.from_dict(payload['config'])
+        warm_config = RunConfig.from_dict(payload['config'])
         if stable_hash(payload) != envelope['artifact_hash']:
             raise IntegrityError('Warm checkpoint integrity failure')
         if payload['contract_hash'] != self.contract_hash or payload['panel_hash'] != self.panel_hash:
             raise IntegrityError('Warm contract/panel mismatch')
-        warm_config = dict(payload['config'])
-        compare_config = self.config.to_dict()
-        # Fault injection changes only mock main scenarios, never common warm state.
-        warm_config.pop('failures',None)
-        compare_config.pop('failures',None)
-        if warm_config != compare_config:
-            raise IntegrityError('Warm/main configuration mismatch')
+        if payload['config_hash'] != warm_config.hash:
+            raise IntegrityError('Warm configuration hash mismatch')
+        if warm_config.stage_configs and payload.get('shared_config_hash') != warm_config.shared_config_hash:
+            raise IntegrityError('Warm shared configuration hash mismatch')
+        self.config.validate_warm_source(warm_config)
         states = {a:state_from_dict(s) for a,s in payload['states'].items()}
         for state in states.values():
             state.wealth = self.config.initial_wealth
@@ -319,10 +344,110 @@ class ExperimentEngine:
             'semantic_plan_key':stable_hash([plan.target,plan.mod_type,plan.change]) if plan else 'seed',
             'reserved_cpu_seconds':self.config.reserved_cpu_seconds,**settings}
 
+    def _assert_provider_available(self, e, r):
+        """Known provider rejections stop the episode, rather than spend waves.
+
+        Read only trusted gateway evidence after the current parallel callbacks
+        have drained. UNKNOWN handling takes precedence in the caller.
+        """
+        from contextlib import nullcontext
+        store = getattr(self.backend, 'budget_store', None)
+        db = getattr(store, 'connection', None)
+        if db is None:
+            return
+        with getattr(store, '_lock', nullcontext()):
+            failures = []
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='codex_gateway_transport'").fetchone():
+                failures = [dict(account=row[0],http_status=row[1],error_type=row[2],error_code=row[3])
+                for row in db.execute("""SELECT r.account,t.http_status,t.error_type,t.error_code
+                    FROM codex_gateway_transport t JOIN inference_reservations r USING(reservation_id)
+                    WHERE t.known_rejected=1""") if row[0].startswith(e+':')]
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='deepseek_request_events'").fetchone():
+                failures += [dict(account=row[0],http_status=json.loads(row[1])['http_status'],
+                                  error_type='known_provider_rejection',error_code='')
+                    for row in db.execute('''SELECT r.account,t.data_json FROM deepseek_request_events t
+                        JOIN inference_reservations r USING(reservation_id) WHERE t.kind='REJECTED' ''')
+                    if row[0].startswith(e+':')]
+        if failures:
+            self.ledger.set_round_phase(e,r,'INFRASTRUCTURE_FAILURE')
+            with self.ledger.transaction() as ledger_db:
+                ledger_db.execute("UPDATE episodes SET status='STOPPED_INFRASTRUCTURE' WHERE id=?",(e,))
+            self.ledger.event('PROVIDER_REJECTION_STOP',{'failures':failures,'retry':False},e,r)
+            raise MaestroError('Provider rejected a request; stop subsequent waves/rounds without retry')
+
+    def _prepare_agents(self, e, r, states, board):
+        """All invited agents prepare in parallel before the planning window."""
+        from maestro.agents.planning_batch import PlanOutcome
+        deadline = time.monotonic()+self.config.preparation_window_seconds
+        self.ledger.set_round_phase(e,r,'PREPARATION')
+        self.ledger.event('PREPARATION_WINDOW_OPENED',
+            {'deadline':time.time()+self.config.preparation_window_seconds,
+             'max_requests_per_agent':self.config.preparation_calls},e,r)
+        pool = ThreadPoolExecutor(max_workers=max(1,len(states)),thread_name_prefix='maestro-preparation')
+        def execute(agent, state):
+            began = time.monotonic()
+            try:
+                evidence, usage = self.backend.prepare_with_receipt(deepcopy(state),r,
+                    {'board':deepcopy(board)},deadline=deadline)
+                return evidence, usage, None, began, time.monotonic()
+            except Exception as error:
+                scope=f'{e}:{r}:{agent}:PREPARATION'
+                usage=self.backend._usage(scope)
+                return None, usage, error, began, time.monotonic()
+        futures={pool.submit(execute,a,s):a for a,s in states.items()}
+        self._generation_futures.update(futures)
+        done,pending=wait(futures,timeout=max(0,deadline-time.monotonic()))
+        # A Future cancellation does not prove a running native CLI stopped.
+        # Preserve the phase and stop progression if any callback is unresolved.
+        prepared, failures, unknown = {}, {}, bool(pending)
+        try:
+            for future in done:
+                agent=futures[future]
+                evidence,usage,error,began,returned=future.result()
+                uncertain=bool(getattr(error,'inflight_unknown',False) or usage.get('unresolved_requests',0))
+                unknown |= uncertain
+                accepted=(evidence is not None and error is None
+                          and evidence.get('accepted_monotonic',float('inf'))<deadline and returned<deadline)
+                payload={'scope':f'{e}:{r}:{agent}:PREPARATION','usage':usage,
+                    'status':'PREPARED' if accepted else 'UNKNOWN' if uncertain else 'ABSTAIN',
+                    'request_count_unknown':uncertain,'usage_complete':usage.get('usage_complete',False),
+                    'cpu_measurement_scope':'sandbox-only; no sandbox allowed in preparation',
+                    'controller_native_cpu_seconds':None,
+                    'error_type':type(error).__name__ if error else None,
+                    'started_monotonic':began,'returned_monotonic':returned}
+                if evidence is not None:
+                    payload['evidence_hash']=self.artifacts.put_json(evidence)
+                self.ledger.usage(e,r,agent,'preparation',wall=time.monotonic()-began,
+                    calls=usage.get('calls',0),
+                    tokens=usage.get('known_input_tokens',0)+usage.get('known_output_tokens',0),payload=payload)
+                self.ledger.event('PREPARATION_OUTCOME',{'agent_id':agent,**payload},e,r)
+                if accepted:
+                    prepared[agent]=states[agent]
+                else:
+                    failures[agent]=PlanOutcome(agent,error='Preparation was not accepted',
+                        status='INFLIGHT_UNKNOWN' if uncertain else 'ABSTAIN',inflight_unknown=uncertain)
+            for future in pending:
+                agent=futures[future]
+                self.ledger.event('PREPARATION_OUTCOME',{'agent_id':agent,
+                    'scope':f'{e}:{r}:{agent}:PREPARATION','status':'UNKNOWN',
+                    'request_count_unknown':True,'reason':'CALLBACK_NOT_RECLAIMED_AT_DEADLINE'},e,r)
+            if unknown:
+                self.ledger.set_round_phase(e,r,'PREPARATION_UNKNOWN')
+                with self.ledger.transaction() as db:
+                    db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE id=?",(e,))
+                raise MaestroError('Preparation request/process unresolved; preserve evidence and reconcile')
+            self._assert_provider_available(e,r)
+            self.ledger.set_round_phase(e,r,'PLANNING')
+            return prepared,failures
+        finally:
+            pool.shutdown(wait=False,cancel_futures=True)
+
     def _round(self,e,r,states,policy,purpose='MAIN',warm_invite=None):
+        self._check_pause()
         c = self.config
         admission_capacity = len(warm_invite) if warm_invite is not None else c.slots
         evaluation_settings = self._evaluation_settings(admission_capacity)
+        autonomous_preparation = bool(self.backend and callable(getattr(self.backend,'prepare_with_receipt',None)))
         planning_deadline = time.monotonic()+c.planning_window_seconds
         planning_expires = time.time()+c.planning_window_seconds
         frozen = self._state_payload(states)
@@ -332,7 +457,8 @@ class ExperimentEngine:
         champion = board['champion_score']
         snapshot = {'purpose':purpose,'states':frozen,'board':board,'seed':c.seed,
             'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
-            'planning_deadline':planning_expires,
+            'planning_deadline':None if autonomous_preparation else planning_expires,
+            'preparation_window_seconds':c.preparation_window_seconds if autonomous_preparation else None,
             'generation_window_seconds':c.generation_window_seconds,
             'warm_invite':list(warm_invite) if warm_invite is not None else None,
             **evaluation_settings}
@@ -342,12 +468,21 @@ class ExperimentEngine:
         live_outcomes={}
         if c.execution_mode!='mock':
             from maestro.agents.planning_batch import parallel_plans
-            refresh_states={a:s for a,s in states.items() if needs_refresh(s,r,c.refresh_interval)
+            refresh_states={a:s for a,s in states.items() if (getattr(self.backend,'requires_fresh_plans',False) or needs_refresh(s,r,c.refresh_interval))
                 and (warm_invite is None or a in warm_invite)}
-            live_contexts={a:{**build_context(s,board),'episode_id':e,'purpose':purpose} for a,s in refresh_states.items()}
+            preparation_failures={}
+            if autonomous_preparation:
+                refresh_states,preparation_failures=self._prepare_agents(e,r,refresh_states,board)
+                self._check_pause()
+                planning_deadline=time.monotonic()+c.planning_window_seconds
+                self.ledger.event('PLANNING_WINDOW_OPENED',
+                    {'deadline':time.time()+c.planning_window_seconds},e,r)
+            live_contexts={a:({'board':board,'episode_id':e,'purpose':purpose} if autonomous_preparation
+                else {**build_context(s,board),'episode_id':e,'purpose':purpose}) for a,s in refresh_states.items()}
             live_outcomes=parallel_plans(refresh_states,live_contexts,self.backend,r,
                 deadline=planning_deadline,
                 budget_unit='session_turn' if c.profile=='codex_session_pilot' else 'provider_request')
+            live_outcomes={**preparation_failures,**live_outcomes}
             for a,outcome in live_outcomes.items():
                 receipt=outcome.receipt
                 scope=f'{e}:{r}:{a}:PLAN_RO'
@@ -376,11 +511,13 @@ class ExperimentEngine:
                 with self.ledger.transaction() as db:
                     db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE id=?",(e,))
                 raise MaestroError('Unresolved planning inference at common deadline; phase remains isolated pending reconciliation')
+            self._assert_provider_available(e,r)
         for a,state in states.items():
             if warm_invite is not None and a not in warm_invite:
                 continue
-            refresh = needs_refresh(state,r,c.refresh_interval)
-            context = build_context(state,board)
+            refresh = bool(getattr(self.backend,'requires_fresh_plans',False) or needs_refresh(state,r,c.refresh_interval))
+            context = ({'agent_id':a,'parent_hash':state.parent_hash,'board':board}
+                       if autonomous_preparation else build_context(state,board))
             context_id = self.artifacts.put_json(context)
             with self.ledger.transaction() as db:
                 db.execute('INSERT OR IGNORE INTO context_manifests VALUES(?,?)',(context_id,canonical_json(context)))
@@ -445,74 +582,15 @@ class ExperimentEngine:
         deadline = time.monotonic()+c.generation_window_seconds
         self.ledger.event('GENERATION_WINDOW_OPENED',{'deadline':time.time()+c.generation_window_seconds},e,r)
         injected_deadline = purpose=='MAIN' and r in c.failures.get('deadline_rounds',[])
-        remaining = iter(order)
-        while len(successful)<admission_capacity and time.monotonic()<deadline and not injected_deadline:
-            # Invite only the available slots. All initial winners share the
-            # same window; one slow agent cannot prevent another from starting.
-            wave=[]
-            for _ in range(admission_capacity-len(successful)):
-                a=next(remaining,None)
-                if a is None:
-                    break
-                amount=bids[a] if policy=='first_price' and purpose=='MAIN' else Decimal(0)
-                self.ledger.invite(e,r,a,amount,{'plan_version_id':plans[a].version_id})
-                wave.append((a,amount))
-            if not wave:
-                break
-            pool=ThreadPoolExecutor(max_workers=len(wave),thread_name_prefix='maestro-generation')
-            futures={a:pool.submit(self._generate,e,r,a,deepcopy(states[a]),plans[a],purpose,deadline)
-                     for a,_ in wave}
-            self._generation_futures = {f for f in self._generation_futures if not f.done()}
-            self._generation_futures.update(futures.values())
-            try:
-                _,pending=wait(futures.values(),timeout=max(0,deadline-time.monotonic()))
-                if pending:
-                    # Threads cannot establish containment by cancellation.
-                    # Never advance to eval or the next round while a callback
-                    # could still change source/memory or consume its budget.
-                    for future in pending:
-                        future.cancel()
-                    self.ledger.set_round_phase(e,r,'GENERATION_UNKNOWN')
-                    with self.ledger.transaction() as db:
-                        db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE id=?",(e,))
-                    raise MaestroError('Generation callback unresolved at common deadline; containment reconciliation required')
-                # Process in frozen policy order, not completion order. This
-                # also deterministically keeps the higher-priority duplicate.
-                for future in futures.values():
-                    error=future.exception()
-                    if getattr(error,'inflight_unknown',False):
-                        raise error
-                outcomes=[(a,amount,futures[a].result()) for a,amount in wave]
-            except Exception as error:
-                if getattr(error,'inflight_unknown',False):
-                    self.ledger.set_round_phase(e,r,'GENERATION_UNKNOWN')
-                    with self.ledger.transaction() as db:
-                        db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE id=?",(e,))
-                    self.ledger.event('GENERATION_INFERENCE_UNKNOWN',{'reason':str(error)},e,r)
-                raise
-            finally:
-                pool.shutdown(wait=False,cancel_futures=True)
-            for a,amount,candidate in outcomes:
-                if candidate is None:
-                    states[a].needs_refresh = True
-                    self.ledger.release_hold(e,r,a,'GENERATION_PRECHECK_FAILED')
-                    continue
-                digest = candidate['candidate_hash']
-                if any(item[1]['candidate_hash']==digest for item in successful):
-                    states[a].needs_refresh = True
-                    self.ledger.release_hold(e,r,a,'EXACT_DUPLICATE')
-                    continue
-                bootstrap=self.ledger.connection.execute('SELECT bootstrap_id FROM episodes WHERE id=?',(e,)).fetchone()[0]
-                past=self.ledger.connection.execute('SELECT 1 FROM verified_results v JOIN eval_tickets t ON t.job_id=v.job_id WHERE v.candidate_hash=? AND (t.episode_id=? OR t.episode_id=?) LIMIT 1',(digest,e,bootstrap)).fetchone()
-                if past:
-                    states[a].pending_plan=None
-                    states[a].needs_refresh=True
-                    self.ledger.release_hold(e,r,a,'PREVIOUSLY_EVALUATED_CONTENT')
-                    continue
-                successful.append((a,candidate,amount))
+        if not injected_deadline:
+            successful = self._generate_invited(e,r,states,plans,order,bids,purpose,
+                admission_capacity,deadline)
+        self._assert_provider_available(e,r)
         self.ledger.set_round_phase(e,r,'ADMISSION')
         tickets=[]
+        self._check_pause()
         for a,candidate,amount in successful:
+            self._check_pause()
             ticket=self._ticket(e,r,a,candidate,plans[a],frozen[a]['parent_score'],champion,purpose,evaluation_settings)
             fault=c.failures.get(f'{a}:{r}',{}) if purpose=='MAIN' else {}
             if isinstance(fault,dict) and fault.get('formal'):
@@ -521,13 +599,129 @@ class ExperimentEngine:
             tickets.append(ticket)
         self.ledger.set_round_phase(e,r,'EVALUATING')
         # All admitted evaluations finish before publishing state/memory/board.
+        def dispatch(ticket):
+            self._check_pause()
+            return self.dispatcher.dispatch(ticket['ticket_id'],ticket['job_id'])
         with ThreadPoolExecutor(max_workers=evaluation_settings['evaluation_batch_width']) as pool:
-            futures=[pool.submit(self.dispatcher.dispatch,t['ticket_id'],t['job_id']) for t in tickets]
+            futures=[pool.submit(dispatch,t) for t in tickets]
             results=[f.result() for f in futures]
         self._settle(e,r,states,frozen,champion,plans,results,purpose)
 
+    def _generate_invited(self,e,r,states,plans,order,bids,purpose,capacity,deadline):
+        """Backfill reclaimed failures immediately, preserving frozen priority.
+
+        A finished generation callback has closed its request/tool scopes and
+        revoked its EditGrant. UNKNOWN callbacks never release a slot. Valid
+        lower-priority candidates wait for earlier invitations before duplicate
+        selection, so completion speed cannot change the priority winner.
+        """
+        successful, active, outcomes = [], {}, {}
+        amounts = {}
+        next_invitation = frontier = 0
+        pool = ThreadPoolExecutor(max_workers=capacity,thread_name_prefix='maestro-generation')
+
+        def mark_unknown(reason):
+            self.ledger.set_round_phase(e,r,'GENERATION_UNKNOWN')
+            with self.ledger.transaction() as db:
+                db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE id=?",(e,))
+            self.ledger.event('GENERATION_INFERENCE_UNKNOWN',{'reason':reason},e,r)
+
+        def invite_available():
+            self._check_pause()
+            nonlocal next_invitation
+            # Completed candidates awaiting priority resolution still occupy
+            # their invitations. Do not speculate beyond the allocated slots.
+            occupied=len(successful)+len(active)+sum(c is not None for c in outcomes.values())
+            while occupied<capacity and next_invitation<len(order) and time.monotonic()<deadline:
+                a=order[next_invitation]
+                next_invitation+=1
+                amount=bids[a] if purpose=='MAIN' else Decimal(0)
+                amounts[a]=amount
+                self.ledger.invite(e,r,a,amount,{'plan_version_id':plans[a].version_id,
+                    'generation_deadline_monotonic':deadline,
+                    'generation_dispatch_monotonic':time.monotonic()})
+                future=pool.submit(self._generate,e,r,a,deepcopy(states[a]),plans[a],purpose,deadline)
+                active[future]=a
+                self._generation_futures.add(future)
+                occupied+=1
+
+        def resolve_priority():
+            nonlocal frontier
+            while frontier<next_invitation and order[frontier] in outcomes:
+                a=order[frontier]
+                candidate=outcomes.pop(a)
+                frontier+=1
+                if candidate is None:  # Failure hold was released immediately.
+                    continue
+                digest=candidate['candidate_hash']
+                if any(item[1]['candidate_hash']==digest for item in successful):
+                    states[a].needs_refresh=True
+                    self.ledger.release_hold(e,r,a,'EXACT_DUPLICATE')
+                    continue
+                with self.ledger._lock:
+                    bootstrap=self.ledger.connection.execute(
+                        'SELECT bootstrap_id FROM episodes WHERE id=?',(e,)).fetchone()[0]
+                    past=self.ledger.connection.execute(
+                        'SELECT 1 FROM verified_results v JOIN eval_tickets t ON t.job_id=v.job_id '
+                        'WHERE v.candidate_hash=? AND (t.episode_id=? OR t.episode_id=?) LIMIT 1',
+                        (digest,e,bootstrap)).fetchone()
+                if past:
+                    states[a].pending_plan=None
+                    states[a].needs_refresh=True
+                    self.ledger.release_hold(e,r,a,'PREVIOUSLY_EVALUATED_CONTENT')
+                    continue
+                successful.append((a,candidate,amounts[a]))
+
+        try:
+            # Uniform/UCB invitations hold zero, just as before this change.
+            if purpose=='MAIN':
+                policy=self.ledger.connection.execute('SELECT policy FROM episodes WHERE id=?',(e,)).fetchone()[0]
+                if policy!='first_price':
+                    bids={a:Decimal(0) for a in bids}
+            self._generation_futures={f for f in self._generation_futures if not f.done()}
+            invite_available()
+            while active:
+                done,_=wait(active,timeout=max(0,deadline-time.monotonic()),return_when=FIRST_COMPLETED)
+                if not done:
+                    for future in active:
+                        future.cancel()
+                    mark_unknown('Generation callbacks unreturned at common deadline')
+                    raise MaestroError('Generation callback unresolved at common deadline; containment reconciliation required')
+                # Detect every uncertain callback in this completion batch
+                # before releasing holds or starting any replacement.
+                for future in done:
+                    error=future.exception()
+                    if (getattr(error,'inflight_unknown',False)
+                            or getattr(error,'execution_unknown',False)
+                            or getattr(error,'local_quiescent',None) is False):
+                        mark_unknown(str(error))
+                        raise error
+                # Stable processing when several completions are observed at
+                # once. Failure processing itself need not await a slow peer.
+                for future in sorted(done,key=lambda f:order.index(active[f])):
+                    a=active.pop(future)
+                    candidate=future.result()
+                    outcomes[a]=candidate
+                    self.ledger.event('GENERATION_CALLBACK_COMPLETED',{'agent_id':a,
+                        'status':'PRECHECK_PASSED' if candidate is not None else 'FAILED',
+                        'monotonic':time.monotonic(),
+                        'deadline_remaining_seconds':max(0,deadline-time.monotonic())},e,r)
+                    if candidate is None:
+                        states[a].needs_refresh=True
+                        self.ledger.release_hold(e,r,a,'GENERATION_PRECHECK_FAILED')
+                resolve_priority()
+                invite_available()
+            resolve_priority()
+            return successful
+        finally:
+            # Retain futures for close()/reconciliation; cancelling a Future
+            # cannot establish that its running CLI or sandbox stopped.
+            pool.shutdown(wait=False,cancel_futures=True)
+
     def _generate(self,e,r,a,state,plan,purpose,deadline):
         c=self.config
+        if c.execution_mode == 'real' and getattr(self.backend,'supports_runtime_only_repair',False):
+            return self._generate_once_runtime_only(e,r,a,state,plan,purpose,deadline)
         account=f'{e}:{r}:{a}:generation'
         expires=time.time()+max(0.01,deadline-time.monotonic())
         self.budgets.create(account,max_calls=c.generation_calls,max_request_bytes=1024*1024,
@@ -581,7 +775,9 @@ class ExperimentEngine:
             except (AuthorizationError,IntegrityError):
                 raise
             except (TimeoutError,OSError,RuntimeError,BudgetExceeded) as error:
-                if getattr(error,'inflight_unknown',False):
+                if (getattr(error,'inflight_unknown',False)
+                        or getattr(error,'execution_unknown',False)
+                        or getattr(error,'local_quiescent',None) is False):
                     raise
                 last_reason=f'{type(error).__name__}: {error}'
                 self.ledger.event('GENERATION_ATTEMPT_FAILED',{'agent_id':a,'revision':revision,'reason':last_reason},e,r)
@@ -620,6 +816,84 @@ class ExperimentEngine:
                         candidate={**candidate,'candidate_path':json.loads(canonical[0])['candidate_path']}
                 return candidate
         self.ledger.event('GENERATION_FAILED',{'agent_id':a,'reason':last_reason},e,r)
+        return None
+
+    def _generate_once_runtime_only(self,e,r,a,state,plan,purpose,deadline):
+        """One initial response; only controller-classified runtime errors repair.
+
+        This is pre-admission checking. Formal outcomes never reenter this loop
+        and no EvalTicket/evaluation budget is refunded or silently rerun.
+        """
+        from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
+        from maestro.execution.budgets import BudgetExceeded
+        candidate=None
+        failure=None
+        last_reason='DEADLINE'
+        for attempt in range(1+self.config.runtime_repair_calls):
+            self._check_pause()
+            if time.monotonic()>=deadline:break
+            if attempt and (not isinstance(failure,RuntimePrecheckFailure)
+                            or not hasattr(self.backend,'repair_runtime')):break
+            grant=self.grants.issue(episode_id=e,round_index=r,agent_id=a,
+                plan_version_id=plan.version_id,parent_hash=plan.parent_hash,epoch=attempt,
+                expires_at=time.time()+max(.001,deadline-time.monotonic()))
+            with self.ledger.transaction() as db:
+                db.execute('INSERT INTO edit_grants VALUES(?,?)',(grant.grant_id,canonical_json(grant)))
+            started=time.monotonic()
+            self.backend.last_generation_usage={}
+            outcome=None
+            try:
+                if attempt==0:
+                    candidate=self.backend.generate(state,plan,r,revision=0,deadline=deadline,
+                        grant=grant,grant_authority=self.grants)
+                else:
+                    self.ledger.event('RUNTIME_REPAIR_STARTED',{'agent_id':a,'repair_index':attempt-1,
+                        'failed_candidate_hash':candidate['candidate_hash'],
+                        'exception_type':failure.evidence.exception_type},e,r)
+                    candidate=self.backend.repair_runtime(state,plan,candidate,failure.evidence,r,attempt-1,
+                        deadline,grant=grant,grant_authority=self.grants)
+                self._check_pause()
+                outcome=self.backend.precheck(candidate)
+                passed,last_reason=outcome
+            except (AuthorizationError,IntegrityError):
+                raise
+            except Exception as error:
+                if (getattr(error,'inflight_unknown',False)
+                        or getattr(error,'execution_unknown',False)
+                        or getattr(error,'local_quiescent',None) is False):raise
+                last_reason=type(error).__name__
+                self.ledger.event('GENERATION_ATTEMPT_FAILED',{'agent_id':a,'revision':attempt,
+                    'reason':last_reason,'runtime_repair_eligible':False},e,r)
+                break
+            finally:
+                self.grants.revoke(grant)
+                usage=getattr(self.backend,'last_generation_usage',{})
+                self.ledger.usage(e,r,a,'generation' if attempt==0 else 'runtime_repair',
+                    float(usage.get('cpu_seconds') or 0),
+                    float(usage.get('wall_seconds',time.monotonic()-started)),
+                    calls=int(usage.get('calls') or 0),
+                    tokens=int(usage.get('known_input_tokens') or 0)+int(usage.get('known_output_tokens') or 0),
+                    payload={'revision':attempt,'repair_index':attempt-1 if attempt else None,
+                        'usage':usage,'grant_id':grant.grant_id,'simulated':False,
+                        'usage_complete':bool(usage.get('usage_complete',False)),
+                        'request_count_unknown':bool(usage.get('unresolved_requests',0))})
+            if time.monotonic()>=deadline:passed,last_reason=False,'DEADLINE';outcome=None
+            with self.ledger.transaction() as db:
+                db.execute('INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)',
+                    (f'{e}:{r}:{a}:{attempt}',e,r,a,candidate['candidate_hash'],int(passed),
+                     canonical_json({'reason':last_reason,'revision':attempt,'toy_only':True,
+                         'runtime_repair_eligible':isinstance(outcome,RuntimePrecheckFailure)})))
+            if passed:
+                with self.ledger._lock:
+                    old=self.ledger.connection.execute('SELECT payload FROM candidates WHERE hash=?',
+                                                       (candidate['candidate_hash'],)).fetchone()
+                    if old:
+                        candidate={**candidate,'candidate_path':json.loads(old[0])['candidate_path']}
+                    else:self.ledger.record_candidate(candidate['candidate_hash'],candidate)
+                return candidate
+            failure=outcome
+        self.ledger.event('GENERATION_FAILED',{'agent_id':a,'reason':last_reason,
+            'runtime_only_repairs':True},e,r)
         return None
 
     def _settle(self,e,r,states,frozen,champion,plans,results,purpose):

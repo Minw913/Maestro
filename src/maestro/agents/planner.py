@@ -12,10 +12,8 @@ from typing import Any
 
 from maestro.types import Plan
 
-TARGETS = ("reduction", "initialization", "local_search", "tie_break", "restart",
-           "postprocess", "data_structure", "time_management", "other")
-MOD_TYPES = ("parameter_change", "rule_replacement", "new_component", "removal",
-             "reimplementation", "other")
+from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES
+
 PLAN_FIELDS = {"plan_id", "version_id", "agent_id", "parent_hash", "target",
                "mod_type", "diagnosis", "change", "expected_effect",
                "evidence_run_ids", "category_detail"}

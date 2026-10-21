@@ -1,0 +1,12 @@
+# Opt-in DeepSeek entry; default pace_remote.yaml remains Codex.
+kind: experiment
+schema_version: 1
+runtime: ../runtimes/coral_deepseek.yaml
+deployment: ../deployments/remote.yaml
+benchmark: ../benchmarks/pace/benchmark.yaml
+stages:
+  warm_start: ../benchmarks/pace/warm_start.yaml
+  market: ../benchmarks/pace/market.yaml
+execution_mode: real
+n_agents: 4
+seed: 0

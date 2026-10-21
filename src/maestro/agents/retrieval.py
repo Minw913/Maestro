@@ -5,9 +5,8 @@ from dataclasses import asdict, is_dataclass
 from decimal import Decimal
 import hashlib
 import json
-from maestro.agents.planner import TARGETS, MOD_TYPES
+from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES, TAXONOMY_VERSION
 
-TAXONOMY_VERSION = "maestro-v1-target-modtype-1"
 
 
 def _jsonable(value):

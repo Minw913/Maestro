@@ -70,28 +70,34 @@ For an existing ChatGPT Codex login, check the connection without an external AP
 ```
 
 `--strict` checks the native autonomous app-server protocol and existing login
-without inference. `configs/warm_start.yaml` selects the strict tokenless native
-backend: real tool calls and Coral memory, one actual planning request and three
-generation requests across all continuations and repairs. Every upstream request
+without inference. `configs/experiments/pace_remote.yaml` selects the strict tokenless native
+Coral backend: upstream CodexRuntime owns the native coding-agent loop. Each
+round has read-only preparation (four actual requests), one structured planning
+request, and up to three generation requests across continuations and repairs. Every upstream request
 is gated before dispatch. Read the current qualification and UNKNOWN status in
 [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) before launching.
 
 `--probe` is the older tool-free JSON proposal probe. Its historical success with
-Codex CLI 0.156.1 does not qualify the strict native connection. The optional
-`configs/codex_session_pilot.yaml` still counts turns rather than actual requests
-and remains excluded from strict V1 comparisons. See [docs/codex_session.md](docs/codex_session.md).
+Codex CLI 0.156.1 does not qualify the strict native connection. The older proposal backend counts turns rather than actual requests; its
+runnable preset has been removed and it remains excluded from strict V1 comparisons. See [docs/codex_session.md](docs/codex_session.md).
 
-The older API-backed Coral/Claude configuration remains in `configs/pace_pilot.yaml`.
+The obsolete API-backed PACE preset has been removed; `configs/experiments/pace_remote.yaml`
+composes reusable runtime, deployment and PACE benchmark files with separate Warm Start
+and Market stage configurations. See [the configuration layout](configs/README.md).
 The strict native Codex configuration requires no external API token. Real PACE
 execution still needs actual training/reference manifests, a seed solver, a pinned
 candidate image and qualified Linux rootless Docker/cgroup limits. Windows can
 check native login/protocol and run simulated contracts; that is not physical
 candidate qualification. Missing prerequisites fail without a mock fallback.
 
-The strict Codex factory is `maestro.backends.codex_session:strict_v1_factory`.
-The retained API-backed factory is `maestro.backends.coral.backend:default_factory`.
-Native Coral manager/daemon are not started; the composition adapter owns process
-lifecycle and formal dispatch. Runtime/library contract tests use injected fakes
+The factory is `maestro.backends.coral.native_backend:native_factory`.
+Coral `CodexRuntime.start`, `AgentSandboxSpec`, and `AgentHandle` run the native
+CLI lifecycle; MAESTRO supplies request gates, MCP capabilities, deadlines, grants,
+and formal dispatch. Stock Coral manager/daemon and automatic evaluation queues
+are not started. The legacy app-server and API-backed implementations remain
+for isolated diagnostics, not as alternate shipped experiment presets.
+The Coral/MCP path requires its own live and physical qualification; historical
+app-server connection results do not qualify it. Runtime/library contract tests use injected fakes
 and are distinct from an authenticated live-model run.
 
 Read [docs/operations.md](docs/operations.md), [docs/PACE_ADAPTER.md](docs/PACE_ADAPTER.md), [docs/coral_contract.md](docs/coral_contract.md) and [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) for setup, validation evidence, issues and next actions. Richer strategic/disclosure algorithms are separate extension APIs and do not silently modify V1.
@@ -124,3 +130,9 @@ Older validation records remain in `artifacts/review-validation/`,
 Configuration uses `execution_mode: mock | real` and `benchmark: pace`.
 See [execution configuration](docs/operations.md#execution-configuration) for
 instance counts, CPU limits, CLI overrides, and incompatible historical records.
+
+
+An optional [Coral DeepSeek runtime](docs/deepseek_runtime.md) is available through
+`configs/experiments/pace_remote_deepseek.yaml`. The original Codex adapter and
+default entry remain in place. The DeepSeek path requires its own installed CLI,
+API credential and live/physical qualification before real use.

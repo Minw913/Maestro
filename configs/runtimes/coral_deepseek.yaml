@@ -1,0 +1,17 @@
+# Opt-in runtime. No credentials are stored here. Not yet live-qualified.
+kind: runtime
+schema_version: 1
+profile: v1_cooperative
+coral:
+  backend_factory: maestro.backends.coral.deepseek_backend:native_factory
+  runtime: dsh
+  revision: '0123dfb939b35228cf2c1fde224cd0561e727408'
+  model: deepseek-flash
+  director_mode: predeclared
+  deepseek_api_base: https://api.deepseek.com/anthropic
+  deepseek_api_key_env: DEEPSEEK_API_KEY
+  deepseek_reasoning_effort: low
+  deepseek_max_output_tokens: 32000
+  # Install and audit dsh, then freeze its full --version output and binary SHA256.
+  deepseek_cli_version: UNQUALIFIED
+  deepseek_cli_sha256: ''

@@ -28,13 +28,14 @@ from maestro.types import stable_hash
 from .client import CodexSessionClient, _PLAN_SCHEMA
 from .quota_proxy import CodexQuotaProxy
 from .tools import StageToolBroker, ToolScopeExpired
+from .runtime_repair import OneShotRuntimeRepairMixin
 
 
 class CodexPhaseUnknown(BackendUnavailable):
     inflight_unknown = True
 
 
-class StrictCodexBackend(CoralBackend):
+class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
     planning_capabilities = {"single_request": True, "hard_request_timeout": True,
                              "mutates_input_state": False}
 
@@ -137,7 +138,9 @@ class StrictCodexBackend(CoralBackend):
                     raise BackendUnavailable("Freeze and qualify coral.codex_cli_version before native execution")
         return {**auth, **self.provenance, "external_api_key_required": False,
                 "strict_v1_request_quota": True, "actual_inference_request_quota": True,
-                "budget_unit": "provider_request", "generation_mode": "native_codex_dynamic_tools",
+                "budget_unit": "provider_request",
+                "generation_mode": "one_implementation" if self.supports_runtime_only_repair else "native_codex_dynamic_tools",
+                "runtime_repair_mode": "fresh_context_local_runtime_patch" if self.supports_runtime_only_repair else "legacy_shared_generation",
                 "formal_ticket_required": True, "simulation": self.simulation}
 
     def begin_episode(self, episode_id, states=None):
@@ -218,11 +221,14 @@ class StrictCodexBackend(CoralBackend):
         return False
 
     def precheck(self, candidate):
+        self.remember_runtime_failure(candidate, None)
         try:
-            return self._precheck(candidate)
+            outcome = self._precheck(candidate)
+            self.remember_runtime_failure(candidate, outcome)
+            return outcome
         except Exception as error:
             if getattr(error,"execution_unknown",False) or getattr(error,"inflight_unknown",False):
-                account=self.last_generation_usage.get("account")
+                account=self.last_generation_usage.get("request_account", self.last_generation_usage.get("account"))
                 if account:
                     with self.budget_store._transaction():
                         self.budget_store.connection.execute(
@@ -240,6 +246,11 @@ class StrictCodexBackend(CoralBackend):
             return self.candidate_runner.run(request, bounded)
 
     def generate(self, state, plan, round_index, revision=0, deadline=None, *, grant=None, grant_authority=None):
+        if self.supports_runtime_only_repair:
+            if revision != 0:
+                raise GrantError("Initial generation is one-shot; only runtime repair may edit again")
+            return self.generate_once(state, plan, round_index, deadline,
+                                      grant=grant, grant_authority=grant_authority)
         if not isinstance(grant_authority, GrantAuthority) or grant is None:
             raise GrantError("Strict Codex generation requires an EditGrant")
         if deadline is None or time.monotonic() >= deadline:
@@ -284,7 +295,8 @@ class StrictCodexBackend(CoralBackend):
                 broker = self.broker_factory(workspace, phase="GENERATION", deadline=deadline,
                     runner=self.candidate_runner, image=self.image, cpu_budget=self.config.generation_cpu_seconds,
                     grant_checker=verify_grant, cpu_pool=self.tool_cpu_pool,
-                    memory_mb=max(1,self.config.memory_bytes//(1024*1024)),pids=self.config.pids_max)
+                    memory_mb=max(1,self.config.memory_bytes//(1024*1024)),pids=self.config.pids_max,
+                    output_bytes=self.config.output_bytes)
                 self._brokers[account] = broker
             else:
                 broker.bind_grant(verify_grant)
@@ -324,7 +336,8 @@ class StrictCodexBackend(CoralBackend):
                 try:
                     response = self.client.run_phase(prompt, base_url=base_url, deadline=deadline,
                         tools=tool_call,
-                        session_id=self._session_ids.get(key))
+                        session_id=self._session_ids.get(key) if getattr(self.client, "supports_resume", True) else None,
+                        **({"agent_id":state.agent_id} if getattr(self.client,"supports_phase_identity",False) else {}))
                     self._session_ids[key] = response.thread_id
                 except Exception as error:
                     usage = self._usage(account)
@@ -379,7 +392,7 @@ class StrictCodexBackend(CoralBackend):
             self.budget_store.close()
 
 
-def strict_factory(config, root=None):
+def strict_factory(config, root=None, *, client_factory=None, backend_class=None):
     from .autonomous_client import AutonomousCodexClient
     from maestro.backends.coral.runtime import verify_checkout
     from maestro.execution.sandbox import DockerRunner
@@ -403,10 +416,10 @@ def strict_factory(config, root=None):
     image = config.pace.get("contract", {}).get("image", "")
     runner = DockerRunner(image)
     runner.preflight(image=image)
-    client = AutonomousCodexClient(model=settings["model"], work_root=authority/"native",
+    client = (client_factory or AutonomousCodexClient)(model=settings["model"], work_root=authority/"native",
                                   executable=settings.get("codex_executable"),
                                   reasoning_effort=settings.get("codex_reasoning_effort", "low"),
-                                  timeout=max(config.planning_window_seconds, config.generation_window_seconds))
+                                  timeout=max(config.preparation_window_seconds, config.planning_window_seconds, config.generation_window_seconds))
     toy = Path(settings.get("smoke_graph", Path(__file__).resolve().parents[4]/"fixtures/toy_graphs/star5.gr"))
     assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
     store = BudgetStore(authority/"requests.sqlite")
@@ -434,7 +447,7 @@ def strict_factory(config, root=None):
             usage["cpu_seconds"]=usage.get("cpu_seconds",0.0)+cpu
             usage["wall_seconds"]=usage.get("wall_seconds",0.0)+usage["precheck_wall_seconds"]
             backend.last_generation_usage=usage
-    backend = StrictCodexBackend(client, store, WorkspaceStore(root/"coral-workspaces", root/"coral-cas"),
+    backend = (backend_class or StrictCodexBackend)(client, store, WorkspaceStore(root/"coral-workspaces", root/"coral-cas"),
         precheck=precheck,
         seed_solver=config.pace.get("seed_solver", ""), candidate_runner=runner, image=image,
         config=config, authenticator=authenticator, provenance=provenance)

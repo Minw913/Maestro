@@ -557,3 +557,17 @@ def test_batch_schema_limits_nested_operations_to_trusted_file_fields():
     assert not {"batch", "shell"} & set(batch["items"]["properties"]["action"]["enum"])
     assert not {"args", "operations", "cwd", "env", "token", "mounts", "host_path"} & set(
         batch["items"]["properties"])
+
+
+def test_shell_output_limit_is_distinct_from_file_read_write_limit(tmp_path):
+    ws,tools=broker(tmp_path,output_bytes=1048576)
+    tools.call('shell',{'command':'python3 run'})
+    assert tools.runner.calls[0][1].output_bytes==1048576
+    assert tools.max_file_bytes==128*1024
+    with pytest.raises(ValueError):
+        tools.call('write',{'path':'solver/large.py','content':'x'*(128*1024+1)})
+
+
+@pytest.mark.parametrize('limit',[0,-1,True,1.5])
+def test_invalid_shell_output_limit_rejected(tmp_path,limit):
+    with pytest.raises(ValueError):broker(tmp_path,output_bytes=limit)

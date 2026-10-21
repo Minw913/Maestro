@@ -21,8 +21,8 @@ class CoralBackend:
         self._precheck, self.seed_solver = precheck, Path(seed_solver)
         self.planning_seconds, self.planning_parser = planning_seconds, planning_parser
         self.planner_client = planner_client
-        if type(generation_calls) is not int or not 1 <= generation_calls <= 3:
-            raise ValueError("Generation request cap must be in [1,3]")
+        if type(generation_calls) is not int or generation_calls < 1:
+            raise ValueError("Generation request cap must be a positive integer")
         self.generation_calls = generation_calls
         self.episode_id = "unstarted"
         self._workspace_base = workspaces.root

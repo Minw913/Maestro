@@ -1,0 +1,16 @@
+kind: warm_start
+schema_version: 1
+warm_opportunities_per_agent: 5
+warm_concurrency: 4
+preparation_calls: 4
+preparation_window_seconds: 300
+planning_calls: 1
+planning_window_seconds: 120
+generation_calls: 1
+runtime_repair_calls: 3
+generation_window_seconds: 360  # Shared deadline; backfill gets only the remaining time
+generation_cpu_seconds: 30
+memory_bytes: 1073741824
+pids_max: 32
+output_bytes: 1048576
+max_candidate_revisions: 3

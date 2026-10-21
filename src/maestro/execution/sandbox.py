@@ -104,6 +104,10 @@ except Exception as exc:
 resource.setrlimit(resource.RLIMIT_FSIZE,(limits['output_bytes'],limits['output_bytes']))
 resource.setrlimit(resource.RLIMIT_NOFILE,(64,64))
 start=time.monotonic(); timed=False; reason='COMPLETED'
+sampled_pids=0
+def optional_int(name):
+    try:return int((cg/name).read_text().strip())
+    except (OSError,ValueError):return None
 with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
     try:
         def drop_privileges():
@@ -111,6 +115,8 @@ with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             libc=ctypes.CDLL(None);libc.prctl(38,1,0,0,0);libc.prctl(4,0,0,0,0)
         child=subprocess.Popen(argv,stdin=sys.stdin.buffer,stdout=out,stderr=err,start_new_session=True,preexec_fn=drop_privileges)
         while child.poll() is None:
+            current_pids=optional_int('pids.current')
+            if current_pids is not None:sampled_pids=max(sampled_pids,current_pids)
             elapsed=time.monotonic()-start; consumed=cpu()-initial
             if consumed>=limits['cpu_seconds'] or elapsed>=limits['wall_seconds']:
                 timed=True;reason='CPU_LIMIT' if consumed>=limits['cpu_seconds'] else 'WALL_LIMIT'
@@ -125,7 +131,7 @@ with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         out.seek(0);err.seek(0)
         stdout=out.read(limits['output_bytes']).decode('utf-8','replace')
         stderr=err.read(max(0,limits['output_bytes']-len(stdout.encode()))).decode('utf-8','replace')
-        print(json.dumps({'returncode':child.returncode,'stdout':stdout,'stderr':stderr,'cpu_seconds':consumed,'wall_seconds':elapsed,'timed_out':timed,'diagnostics':{'reason':reason,'aggregate_cgroup_cpu':True}}))
+        print(json.dumps({'returncode':child.returncode,'stdout':stdout,'stderr':stderr,'cpu_seconds':consumed,'wall_seconds':elapsed,'timed_out':timed,'diagnostics':{'reason':reason,'aggregate_cgroup_cpu':True,'memory_peak_bytes':optional_int('memory.peak'),'pids_peak':optional_int('pids.peak'),'sampled_pids_peak':sampled_pids or None,'stdout_file_bytes':os.fstat(out.fileno()).st_size,'stderr_file_bytes':os.fstat(err.fileno()).st_size}}))
     except Exception as exc:
         print(json.dumps({'returncode':126,'stdout':'','stderr':str(exc),'cpu_seconds':max(0,cpu()-initial),'wall_seconds':time.monotonic()-start,'timed_out':False,'diagnostics':{'reason':'LAUNCH_FAILED'}}))
 '''

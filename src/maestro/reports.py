@@ -36,6 +36,8 @@ def report(root,episode_id=None):
             cfg=json.loads(ep['config_json'])
             row={'episode_id':e,'policy':ep['policy'],'execution_mode':ep['execution_mode'],'benchmark':ep['benchmark'],'status':ep['status'],
                 'profile':cfg.get('profile','v1_cooperative'),
+                'experiment_stage':cfg.get('experiment_stage'),
+                'config_hash':ep['config_hash'],'config_sources':cfg.get('config_sources',{}),
                 'inference_budget_unit':'session_turn' if cfg.get('profile')=='codex_session_pilot' else 'provider_request',
                 'warm_id':ep['bootstrap_id'],'final_training_score':checkpoint.get('board',{}).get('champion_score'),
                 'admitted_slots':stats['admitted'] or 0,'invitations':invites,

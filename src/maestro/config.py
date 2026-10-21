@@ -1,18 +1,30 @@
 """Frozen, validated configuration. Real prerequisites are checked explicitly."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from decimal import Decimal
 from pathlib import Path
 import json
 import math
+import hashlib
 
 from maestro.types import to_jsonable, stable_hash, MaestroError
 
 
 CORAL_REVISION = '0123dfb939b35228cf2c1fde224cd0561e727408'
-TARGETS = ('reduction','initialization','local_search','tie_break','restart','postprocess','data_structure','time_management','other')
-MOD_TYPES = ('parameter_change','rule_replacement','new_component','removal','reimplementation','other')
+from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES, taxonomy_identity
+
+
+
+PHASE_BUDGET_FIELDS = frozenset({
+    'preparation_calls','preparation_window_seconds','planning_calls','planning_window_seconds',
+    'generation_calls','generation_window_seconds','generation_cpu_seconds','memory_bytes',
+    'pids_max','output_bytes','max_candidate_revisions','runtime_repair_calls'})
+WARM_FIELDS = frozenset({'warm_opportunities_per_agent','warm_concurrency'})
+MARKET_FIELDS = frozenset({'slots','rounds','refresh_interval','reward_scale',
+                           'catchup_fraction','bid_cap','initial_wealth'})
+STAGE_FIELDS = PHASE_BUDGET_FIELDS | WARM_FIELDS | MARKET_FIELDS
+EXPERIMENT_STAGES = frozenset({'warm_start','market'})
 
 
 @dataclass(frozen=True)
@@ -33,11 +45,13 @@ class RunConfig:
     execution_mode: str = 'mock'
     benchmark: str = 'pace'
     profile: str = 'v1_cooperative'
-    generation_calls: int = 3
+    # Independent read-only preparation budget for the Coral native backend.
+    preparation_calls: int = 4
+    preparation_window_seconds: float = 300
+    generation_calls: int = 1
     planning_calls: int = 1
     planning_window_seconds: float = 120
     generation_window_seconds: float = 300
-    preparation_cpu_seconds: float = 5
     generation_cpu_seconds: float = 30
     memory_bytes: int = 1073741824
     pids_max: int = 32
@@ -45,18 +59,26 @@ class RunConfig:
     evaluation_instance_count: int = 20
     cpu_seconds_per_instance: float = 30
     verification_cpu_seconds: float = 20
+    # Historical tool-loop path only; not the runtime-repair attempt count.
     max_candidate_revisions: int = 3
+    runtime_repair_calls: int = 3
     failures: dict = field(default_factory=dict)
     coral: dict = field(default_factory=dict)
     pace: dict = field(default_factory=dict)
+    plan_taxonomy: dict = field(default_factory=taxonomy_identity)
+    experiment_stage: str | None = None
+    stage_configs: dict = field(default_factory=dict)
+    config_sources: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        if self.plan_taxonomy != taxonomy_identity():
+            raise ValueError("Plan taxonomy differs from the supported frozen PACE vocabulary")
         for name in ('reward_scale','catchup_fraction','bid_cap','initial_wealth'):
             value=Decimal(str(getattr(self,name)))
             if not value.is_finite():
                 raise ValueError(f'{name} must be finite')
             object.__setattr__(self, name,value)
-        for name in ('n_agents','slots','rounds','warm_opportunities_per_agent','warm_concurrency','cpu_workers','instance_workers','refresh_interval','generation_calls','planning_calls','max_candidate_revisions'):
+        for name in ('n_agents','slots','rounds','warm_opportunities_per_agent','warm_concurrency','cpu_workers','instance_workers','refresh_interval','preparation_calls','generation_calls','planning_calls','max_candidate_revisions','runtime_repair_calls'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f'{name} must be a positive integer')
         if self.slots > self.n_agents:
@@ -74,19 +96,79 @@ class RunConfig:
             raise ValueError('full profiles require explicit separate configuration; V1 is the executable profile')
         if self.profile == 'codex_session_pilot' and self.execution_mode != 'real':
             raise ValueError('codex_session_pilot requires execution_mode=real and benchmark=pace; smoke stays explicitly simulated')
-        if self.generation_calls > 3 or self.planning_calls > 1:
+        if self.runtime_repair_calls > 3:
+            raise ValueError("Runtime repair cap must not exceed three")
+        if self.planning_calls > 1:
             raise ValueError('V1 inference call caps exceeded')
         if self.reward_scale <= 0 or not 0 <= self.catchup_fraction <= 1 or self.bid_cap < 0:
             raise ValueError('invalid reward/bid units')
         if self.initial_wealth < self.rounds * self.bid_cap:
             raise ValueError('V1 requires ample wealth >= rounds * bid_cap')
-        for name in ('planning_window_seconds','generation_window_seconds','preparation_cpu_seconds','generation_cpu_seconds','memory_bytes','pids_max','output_bytes','evaluation_instance_count','cpu_seconds_per_instance','verification_cpu_seconds'):
+        for name in ('preparation_window_seconds','planning_window_seconds','generation_window_seconds','generation_cpu_seconds','memory_bytes','pids_max','output_bytes','evaluation_instance_count','cpu_seconds_per_instance','verification_cpu_seconds'):
             value=getattr(self,name)
             if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<=0:
                 raise ValueError(f'{name} must be positive')
         for name in ('memory_bytes','pids_max','output_bytes','evaluation_instance_count'):
             if type(getattr(self,name)) is not int:
                 raise ValueError(f'{name} must be an integer')
+
+
+        if self.experiment_stage is not None and self.experiment_stage not in EXPERIMENT_STAGES:
+            raise ValueError('experiment_stage must be warm_start or market')
+        if not isinstance(self.stage_configs,dict) or not isinstance(self.config_sources,dict):
+            raise ValueError('stage_configs and config_sources must be mappings')
+        if self.stage_configs:
+            if set(self.stage_configs) != EXPERIMENT_STAGES or self.experiment_stage is None:
+                raise ValueError('Layered experiments require both frozen stages and an active stage')
+            shared={f.name:getattr(self,f.name) for f in fields(self)
+                    if f.name not in STAGE_FIELDS | {'stage_configs','config_sources','experiment_stage'}}
+            for name,values in self.stage_configs.items():
+                if not isinstance(values,dict) or set(values) != STAGE_FIELDS:
+                    raise ValueError(f'Incomplete frozen stage configuration: {name}')
+                # Check both stages before any execution, not just the selected one.
+                type(self)(**shared,**values)
+        elif self.experiment_stage is not None or self.config_sources:
+            raise ValueError('Experiment metadata requires frozen stage configurations')
+        for role,source in self.config_sources.items():
+            if (not isinstance(source,dict) or set(source) != {'path','sha256'}
+                    or not isinstance(source['path'],str) or not source['path']
+                    or not isinstance(source['sha256'],str) or len(source['sha256']) != 64
+                    or any(c not in '0123456789abcdef' for c in source['sha256'])):
+                raise ValueError(f'Invalid configuration source identity: {role}')
+
+    def for_stage(self, stage):
+        if stage not in EXPERIMENT_STAGES:
+            raise ValueError('stage must be warm_start or market')
+        if not self.stage_configs:
+            return self
+        return replace(self, experiment_stage=stage, **self.stage_configs[stage])
+
+    @property
+    def shared_config_hash(self):
+        value=self.to_dict()
+        for key in STAGE_FIELDS | {'experiment_stage','failures'}:
+            value.pop(key,None)
+        return stable_hash(value)
+
+    def validate_warm_source(self, warm):
+        """Permit only predeclared stage differences; freeze the whole experiment."""
+        from maestro.types import IntegrityError
+        if bool(self.stage_configs) != bool(warm.stage_configs):
+            raise IntegrityError('Warm/main configuration layout mismatch')
+        if self.stage_configs:
+            if warm.experiment_stage != 'warm_start' or self.experiment_stage != 'market':
+                raise IntegrityError('Warm/main experiment stage mismatch')
+            if warm.shared_config_hash != self.shared_config_hash:
+                raise IntegrityError('Warm/main shared configuration or frozen stage mismatch')
+            if (warm.hash != warm.for_stage('warm_start').hash
+                    or self.hash != self.for_stage('market').hash):
+                raise IntegrityError('Active settings differ from the frozen stage configuration')
+            return
+        source,target=warm.to_dict(),self.to_dict()
+        # Preserve existing explicitly simulated main fault-injection scenarios.
+        source.pop('failures',None);target.pop('failures',None)
+        if source != target:
+            raise IntegrityError('Warm/main configuration mismatch')
 
     @property
     def reserved_cpu_seconds(self):
@@ -144,10 +226,12 @@ def _unique_mapping(pairs):
     return result
 
 
-def load_config(path: str | Path) -> RunConfig:
+def read_config_document(path: str | Path):
     path = Path(path)
+    raw = path.read_bytes()
+    content = raw.decode('utf-8')
     if path.suffix.lower() == '.json':
-        value = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=_unique_mapping)
+        value = json.loads(content, object_pairs_hook=_unique_mapping)
     else:
         try:
             import yaml
@@ -159,5 +243,19 @@ def load_config(path: str | Path) -> RunConfig:
             loader.flatten_mapping(node)
             return _unique_mapping(loader.construct_pairs(node))
         UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-        value = yaml.load(path.read_text(encoding='utf-8'), Loader=UniqueLoader)
-    return RunConfig.from_dict(value or {})
+        value = yaml.load(content, Loader=UniqueLoader)
+    if value is None:
+        value = {}
+    if not isinstance(value,dict):
+        raise ValueError('Configuration must be a mapping')
+    return value, hashlib.sha256(raw).hexdigest()
+
+
+def load_config(path: str | Path, *, stage: str | None = None) -> RunConfig:
+    value, digest = read_config_document(path)
+    if value.get('kind') == 'experiment':
+        from maestro.config_layers import load_experiment
+        return load_experiment(Path(path), value, digest, stage=stage or 'warm_start')
+    if stage is not None and stage not in EXPERIMENT_STAGES:
+        raise ValueError('stage must be warm_start or market')
+    return RunConfig.from_dict(value)

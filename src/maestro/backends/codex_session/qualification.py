@@ -123,7 +123,8 @@ def run_qualification(output_root, *, model, executable=None, historical_path=No
         "historical_evidence": historical}
     _json(root/"manifest.json", manifest, exclusive=True)
     started = time.monotonic()
-    result = {"status": "FAILED", "model": model, "reasoning_effort": reasoning_effort, "max_total_requests": 5,
+    result = {"status": "FAILED", "qualification_scope": "legacy_transport_tools_only",
+        "runtime_repair_policy_qualified": False, "model": model, "reasoning_effort": reasoning_effort, "max_total_requests": 5,
         "warm_start_started": False, "formal_evaluation_started": False, "candidate_executed": False,
         "external_api_key_required": False, "historical_evidence": historical, "checks": {}}
     trace, proxies, clients = [], {}, []
@@ -201,6 +202,9 @@ def run_qualification(output_root, *, model, executable=None, historical_path=No
         backend = StrictCodexBackend(client, store, WorkspaceStore(root/"workspaces", root/"cas"),
             precheck=no_execution, seed_solver=seed, candidate_runner=FailClosedRunner(), image="",
             config=config, authenticator=client, proxy_factory=make_proxy, broker_factory=broker_factory)
+        # This five-call command qualifies the legacy transport/tool boundary,
+        # not the new one-implementation/runtime-only repair state machine.
+        backend.supports_runtime_only_repair = False
         backend.begin_episode(episode)
         backend.set_directions([{"agent_id": "probe", "qualification_contract": _CONTRACT}])
         parent = backend.prepare_seed()

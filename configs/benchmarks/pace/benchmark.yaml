@@ -1,0 +1,14 @@
+kind: benchmark
+schema_version: 1
+benchmark: pace
+evaluation_instance_count: 20
+cpu_seconds_per_instance: 30
+verification_cpu_seconds: 20
+pace:
+  contract:
+    cpu_seconds_per_instance: 30
+    wall_seconds_per_instance: 45
+    verification_cpu_seconds: 20
+    verification_wall_seconds: 30
+    # Canonical complete dominating-set outputs for this panel fit within 4 MiB.
+    output_bytes: 4194304

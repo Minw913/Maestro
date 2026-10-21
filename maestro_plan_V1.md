@@ -46,7 +46,7 @@ V1 默认采用组合式 `ControlledCoralSupervisor`：新增适配层直接调�
 - 每 agent 每轮最多一个 active plan、一次 generation invitation、一个 final formal admission。
 - 比较 `uniform`、`ucb`、`first_price`；前两者支付为零，first-price 支付自己的 bid。
 - uniform 为 seeded balanced round-robin。UCB 使用 verified credit/正式 slot。三组采用相同 agent learning、资源合同与 warm prefix。
-- planning 每 agent 每轮最多 1 次实际 LLM inference request；eligible pending plan 可零调用。每个被邀请的 agent，generation/repair 总共最多 3 次实际请求。
+- planning 每 agent 每轮最多 1 次实际 LLM inference request；Coral native 路径每轮先执行独立 preparation，再提交单次 plan；旧诊断路径的 pending-plan 复用不用于该路径。每个被邀请的 agent，generation/repair 总共最多 3 次实际请求。
 - `m_refresh=3`；每轮重新估值、重新出价；失败生成/precheck、实验后、parent 改变触发 refresh。
 - 正式 slot：1 CPU core，20 个冻结 training instances，每个最多 30 CPU seconds，另有 20 seconds verification reserve；保留量 `620/3600 ≈ 0.172222 core-hour`。LLM、生成和 precheck 成本单列。
 - 配置独立 wall、memory、pids、输出和文件大小限制。所有阶段的 CPU 和 wall 用量分别记录。
@@ -85,16 +85,19 @@ Project 2_ MAESTRO1/
     |-- .gitignore                          # artifacts、data、credentials
     |-- configs/
     |   |-- mock_smoke.yaml                 # 自包含 mock，完整 V1 默认参数
-    |   |-- pace_pilot.yaml                 # PACE 路径与冻结合同
-    |   |-- coral.yaml                      # runtime/model/sandbox/provider
-    |   |-- warm_start.yaml                 # director、机会数、warm schedule
-    |   `-- taxonomy.yaml                   # 冻结 target/mod_type 词表
+    |   |-- runtimes/coral_codex.yaml        # Coral runtime/model
+    |   |-- deployments/remote.yaml         # 路径、资源与平台身份
+    |   |-- benchmarks/pace/benchmark.yaml   # PACE 评估合同
+    |   |-- benchmarks/pace/warm_start.yaml  # warm 调度与阶段预算
+    |   |-- benchmarks/pace/market.yaml      # market 调度与阶段预算
+    |   |-- experiments/pace_remote.yaml    # 组合入口
     |-- prompts/
     |   |-- search_director.md              # startup 方向分配
     |   |-- planning.md                     # retain/revise/withdraw + lessons
     |   |-- generation.md                   # 实施冻结 plan，受 EditGrant 约束
     |   `-- agent_contract.md               # phase、memory、禁止访问边界
     |-- src/maestro/
+    |   |-- tasks/pace/taxonomy.py          # 冻结 PACE target/mod_type 词表
     |   |-- __init__.py                     # 各子包同样有 __init__.py
     |   |-- cli.py                         # bootstrap/run/report/replay
     |   |-- config.py                      # profile、schema、hash/preflight
@@ -343,7 +346,7 @@ agent 只持有自己的短期身份和受限 API；不读取 SQLite、其他 ag
 
 ### 5.3 自主工具循环与严格调用上限
 
-Coral/coding CLI 的工具与文件格式保留。V1 的一次 planning call 由 `planner.py + llm.py` 明确实现为单次结构化请求：harness 先装配 parent 摘要、own retrieval、H_t 和 lessons，再让模型返回 retain/revise/withdraw 与 plan。这样不会把一个包含多次模型推理的 CLI session 冒充一次 call。
+Coral/coding CLI 的工具与文件格式保留。V1 的一次 planning call 由 `planner.py + llm.py` 明确实现为单次结构化请求：Coral agent 先在独立只读 preparation 阶段自行读取 parent、memory、own history 和公开信息；单次 planning 请求接收其证据摘要，返回 retain/revise/withdraw 与 plan。这样不会把一个包含多次模型推理的 CLI session 冒充一次 call。
 
 PLAN_RO 使用这个无任意 shell 的 PlannerClient；文件检索和固定 toy 诊断由 harness 预先执行，模型只返回结构化 plan/lesson 文本，不启动自主 coding CLI 工具循环。单独把 source 设为 RO 仍允许复制到 scratch 后偷偷写候选，因此 scratch 写入也由受限接口管理。Coral 的自主工具循环在获得 EditGrant 的 generation 阶段保留；memory/skills 的格式与 own/public 检索视图贯穿两个阶段。
 
@@ -687,12 +690,12 @@ llm_inflight_max, permitted_network_routes, gpu_devices=[]
 ```
 
 - CPU/wall：整个 containment 的所有 shell、编译和小测试子进程合计；fork/重启不会得到新的免费池。CPU rate 限制防止短时间占满机器，累计 CPU seconds 限制总消耗。
-- preparation：只读冻结 parent，用固定 toy；probe/output 在 scratch，不改 solver。generation：仅受邀者可编辑；compile/toy 消耗 generation/precheck budget。
+- preparation：agent 自主读取冻结 parent、自己的 memory/history 和公开信息；禁止 shell、toy 执行和所有写入。generation：仅受邀者可编辑；compile/toy 消耗 generation/precheck budget。
 - LLM：gateway 在转发前原子预留 call、input/output tokens 和在途额度；输出上限传给 provider，超预算拒绝。重试、自动 compaction、subagent 和并发 provider 请求都计数；store/quota gate 不可用时 fail closed。由可信 usage 回填实际量，未知用量保守占用 reservation，不能在未知时恢复免费额度。
 - network：仅允许受控 provider proxy 和必要本地 control endpoint，移除 alternate provider credentials/config 与 CLI auth fallback，阻断直接 provider/API、外部计算服务；子进程不得访问其他 GPU/容器运行时 socket。
 - deadline：到期先拒绝新请求，再终止整个 containment，确认结束后释放物理 capacity。取消远程请求不等于 provider 不再收费，已发送请求单列其真实/unknown 成本。
 
-可先 pilot 预注册 preparation CPU 5s、toy CPU 2s、generation/precheck CPU 30s、planning wall 120s、generation window 300s、内存 1 GiB、pids 32 等候选值；这些是工程起测值，**不是两份规格已经确定的参数**。最终值在 paired arms 前冻结，保持相同；不得按某个 arm 的表现临时放宽。实际可行性以受控 runtime spike 为准。
+可先 pilot 预注册 preparation 最多 4 次请求和共同 300s wall、planning 最多 1 次请求和 120s wall、generation 最多 3 次请求和共同 300s wall、工具 CPU 30s（固定 precheck 另计）、内存 1 GiB、pids 32 等候选值；这些是工程起测值，**不是两份规格已经确定的参数**。最终值在 paired arms 前冻结，保持相同；不得按某个 arm 的表现临时放宽。实际可行性以受控 runtime spike 为准。
 
 严格同步的代价是慢 agent 可能 abstain/无法完成，不是所有 agent 都必须成功后才继续。利用 pending reuse、缓存合法 context 和固定小诊断降低等待；不能把未完成 work 搬到等待期无限继续执行。
 
@@ -796,7 +799,7 @@ maestro run --bootstrap <warm-checkpoint> --policy first_price --seed 0
 maestro replay --episode <id> --verify-ledger
 maestro report --experiment <id>
 
-maestro bootstrap --config configs/pace_pilot.yaml --execution-mode real --benchmark pace --seed 0
+maestro bootstrap --config configs/experiments/pace_remote.yaml --execution-mode real --benchmark pace --seed 0
 ```
 
 bootstrap 包含 config/preflight、Director/initialization、balanced warm 与 checkpoint。run 校验 snapshot 和 profile 兼容性，主阶段跑满 T=20 或以明确 incomplete 状态结束；不把 warm 轮数算入 T。report 由 ledger/CAS 生成，原始执行日志保持私有。

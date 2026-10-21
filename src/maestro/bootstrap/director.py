@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from maestro.agents.planner import TARGETS
+from maestro.tasks.pace.taxonomy import TARGETS
 
 _DIRECTIONS = (
     ("structural_reduction", ("reduction", "initialization"),

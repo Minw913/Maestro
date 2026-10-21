@@ -158,7 +158,11 @@ class CodexQuotaProxy:
     """
     def __init__(self, store, account, model, *, deadline, max_calls,
                  max_request_bytes, max_output_tokens, allowed_tool_names=(),
-                 upstream=None, max_response_bytes=32 * 1024 * 1024, event_sink=None):
+                 upstream=None, max_response_bytes=32 * 1024 * 1024, event_sink=None, tool_namespace=None, request_guard=None,
+                 diagnostic_sink=None):
+        if diagnostic_sink is not None and not callable(diagnostic_sink):
+            raise ValueError("Diagnostic sink must be callable")
+        self._diagnostic_sink = diagnostic_sink
         integers = (max_calls, max_request_bytes, max_output_tokens, max_response_bytes)
         if any(type(value) is not int or value <= 0 for value in integers):
             raise ValueError("Positive integer native request quotas are required")
@@ -177,6 +181,12 @@ class CodexQuotaProxy:
         self.deadline, self.max_calls = deadline, max_calls
         self.max_request_bytes, self.max_output_tokens = max_request_bytes, max_output_tokens
         self.max_response_bytes = max_response_bytes
+        if tool_namespace not in (None, "mcp__maestro"):
+            raise ValueError("Only the controller MCP namespace is supported")
+        if request_guard is not None and not callable(request_guard):
+            raise ValueError("Request guard must be callable")
+        self.request_guard = request_guard
+        self.tool_namespace = tool_namespace
         self.allowed_tool_names = frozenset(allowed_tool_names)
         self._event_sink = event_sink
         self._upstream = upstream or (lambda path, headers, body, timeout: _https_upstream(
@@ -205,6 +215,14 @@ class CodexQuotaProxy:
                 raise BudgetExceeded("Unresolved native inference blocks phase reuse")
             self.deadline = min(deadline, time.monotonic() + old["deadline"] - time.time())
         with store._transaction():
+            store.connection.execute("""CREATE TABLE IF NOT EXISTS codex_gateway_progress(
+              reservation_id TEXT PRIMARY KEY REFERENCES inference_reservations(reservation_id),
+              response_id TEXT NOT NULL,request_id TEXT NOT NULL,last_event TEXT NOT NULL,
+              observed_utc REAL NOT NULL,observed_monotonic REAL NOT NULL,
+              terminal_seen INTEGER NOT NULL,transport_closed INTEGER NOT NULL DEFAULT 0)""")
+            progress_columns = {row[1] for row in store.connection.execute("PRAGMA table_info(codex_gateway_progress)")}
+            if "stream_stats_json" not in progress_columns:
+                store.connection.execute("ALTER TABLE codex_gateway_progress ADD COLUMN stream_stats_json TEXT NOT NULL DEFAULT '{}'")
             store.connection.execute("""CREATE TABLE IF NOT EXISTS codex_gateway_receipts(
               reservation_id TEXT PRIMARY KEY REFERENCES inference_reservations(reservation_id),
               protocol_violation INTEGER NOT NULL,token_estimate_exceeded INTEGER NOT NULL,
@@ -222,6 +240,7 @@ class CodexQuotaProxy:
                     ("response_request_id", "TEXT NOT NULL DEFAULT ''"),
                     ("sse_event_types_json", "TEXT NOT NULL DEFAULT '[]'"),
                     ("never_dispatched", "INTEGER NOT NULL DEFAULT 0"),
+                    ("retry_after_seconds", "INTEGER"),
                     ("upstream_media_type", "TEXT NOT NULL DEFAULT ''")):
                 if name not in columns:
                     store.connection.execute(f"ALTER TABLE codex_gateway_transport ADD COLUMN {name} {definition}")
@@ -296,6 +315,8 @@ class CodexQuotaProxy:
         handler.close_connection = True
 
     def _request(self, handler):
+        if self.request_guard is not None:
+            self.request_guard()
         if self._closed or time.monotonic() >= self.deadline:
             raise BudgetExceeded("Native inference phase is closed or expired")
         paths = {f"/{self._capability}{path}": path for path in ("/responses", "/responses/compact")}
@@ -325,7 +346,9 @@ class CodexQuotaProxy:
         admitted_tools = self._normalize_tools(value, declare=paths[handler.path] == "/responses")
         choice = value.get("tool_choice", "auto")
         if isinstance(choice, dict):
-            if choice.get("type") not in {"function", "custom"} or choice.get("name") not in self.allowed_tool_names:
+            if (choice.get("type") not in {"function", "custom"}
+                    or choice.get("name") not in self.allowed_tool_names
+                    or choice.get("namespace") != self.tool_namespace):
                 raise PermissionError("Native tool choice is not broker-authorized")
         elif choice not in {"auto", "none", "required"} or (choice == "required" and not admitted_tools):
             raise PermissionError("Native tool choice is not broker-authorized")
@@ -349,10 +372,13 @@ class CodexQuotaProxy:
         every executable declaration comes from our trusted schema instead.
         """
         from .tools import MAESTRO_TOOL_SPEC
-        admitted = ([{"type": "function", "name": "maestro_tool",
+        admitted = ([{"type": "function", "name": tool_name,
                       "description": MAESTRO_TOOL_SPEC["description"],
-                      "parameters": MAESTRO_TOOL_SPEC["inputSchema"], "strict": False}]
-                    if self.allowed_tool_names and declare else [])
+                      "parameters": MAESTRO_TOOL_SPEC["inputSchema"], "strict": False}
+                    for tool_name in sorted(self.allowed_tool_names)] if declare else [])
+        if admitted and self.tool_namespace:
+            admitted = [{"type":"namespace", "name":self.tool_namespace,
+                         "description":"Controller-authorized workspace operations", "tools":admitted}]
         inputs = value.get("input")
         native_envelope = isinstance(inputs, list) and any(
             isinstance(item, dict) and item.get("type") == "additional_tools" for item in inputs)
@@ -371,12 +397,12 @@ class CodexQuotaProxy:
                                           "id": "at_"+str(uuid.uuid4()), "tools": admitted})
             else:
                 value["tools"] = admitted
-            instruction = ("Only the direct maestro_tool function is available. It is an external controller "
+            instruction = ("Only the controller-admitted workspace function is available. It is an external controller "
                 "RPC, with virtual workspace paths separate from the read-only Codex host filesystem. "
                 "In GENERATION an admitted EditGrant authorizes its solver/ and private/ writes; the "
                 "native host remains read-only and public/ is always read-only. Do not infer denial of "
                 "these service writes from the native host sandbox; respect actual broker denials. "
-                "Call maestro_tool with its "
+                "Call "+", ".join(sorted(self.allowed_tool_names))+" with its "
                 "declared action/path/content/command/operations fields. For related file operations use "
                 "action=batch with at most eight operations in one call; nested batches and shell in a batch "
                 "are forbidden. Each operation is authorized separately. Native namespaces, functions.exec, shell, "
@@ -399,7 +425,8 @@ class CodexQuotaProxy:
         kind = item.get("type")
         if kind in _SAFE_OUTPUT:
             return
-        if kind in _FUNCTION_OUTPUT and item.get("name") in self.allowed_tool_names:
+        if (kind in _FUNCTION_OUTPUT and item.get("name") in self.allowed_tool_names
+                and item.get("namespace") == self.tool_namespace):
             return
         raise QuotaProxyError("Native response requested a forbidden host tool")
 
@@ -407,6 +434,9 @@ class CodexQuotaProxy:
         """Return buffered bytes, terminal response and a protocol violation."""
         observations = observations if observations is not None else {}
         observations.setdefault("sse_event_types", [])
+        stats = observations.setdefault("stream_stats", {"chunks":0, "bytes":0,
+            "events":0, "text_delta_events":0, "text_delta_bytes":0,
+            "text_delta_nonwhitespace_bytes":0, "maximum_chunk_gap_seconds":0.0})
         content_type = next((str(v).lower() for k, v in response.headers.items()
                              if k.lower() == "content-type"), "")
         raw, pending, terminal, violation = bytearray(), bytearray(), None, False
@@ -419,6 +449,13 @@ class CodexQuotaProxy:
                 raise TimeoutError("Native inference deadline elapsed")
             if not isinstance(chunk, bytes):
                 raise QuotaProxyError("Invalid native transport bytes")
+            now = time.monotonic()
+            if "last_chunk_monotonic" in stats:
+                stats["maximum_chunk_gap_seconds"] = max(stats["maximum_chunk_gap_seconds"], now-stats["last_chunk_monotonic"])
+            stats.setdefault("first_chunk_monotonic", now)
+            stats["last_chunk_monotonic"] = now
+            stats["chunks"] += 1
+            stats["bytes"] += len(chunk)
             raw.extend(chunk)
             if len(raw) > self.max_response_bytes:
                 raise QuotaProxyError("Native response exceeded its byte allowance")
@@ -453,6 +490,44 @@ class CodexQuotaProxy:
                 if not isinstance(value, dict):
                     raise QuotaProxyError("Native SSE event is malformed")
                 kind = value.get("type")
+                if kind in _SSE_EVENT_TYPES:
+                    stats["events"] += 1
+                    event_time = time.monotonic()
+                    if kind == "response.output_text.delta" and isinstance(value.get("delta"), str):
+                        stats.setdefault("first_text_delta_monotonic", event_time)
+                        stats["last_text_delta_monotonic"] = event_time
+                        delta = value["delta"]
+                        stats["text_delta_events"] += 1
+                        stats["text_delta_bytes"] += len(delta.encode("utf-8"))
+                        stats["text_delta_nonwhitespace_bytes"] += len(''.join(c for c in delta if not c.isspace()).encode("utf-8"))
+                    if kind.startswith("response.reasoning"):
+                        stats["reasoning_events"] = stats.get("reasoning_events", 0)+1
+                        stats.setdefault("first_reasoning_event_monotonic", event_time)
+                        stats["last_reasoning_event_monotonic"] = event_time
+                    if self._diagnostic_sink is not None:
+                        diagnostic = {"type":kind,"monotonic":event_time}
+                        if kind == "response.output_text.delta" and isinstance(value.get("delta"),str):
+                            diagnostic["text_delta"] = value["delta"]
+                        item = value.get("item")
+                        if isinstance(item,dict) and item.get("type") in _SAFE_OUTPUT:
+                            diagnostic["item_type"] = item["type"]
+                        nested = value.get("response")
+                        if isinstance(nested,dict):
+                            diagnostic["response_id"] = self._safe_request_id(nested.get("id"))
+                            if kind in {"response.completed","response.failed","response.incomplete"}:
+                                diagnostic["usage"] = _safe_usage(nested.get("usage"))
+                        self._diagnostic_sink(diagnostic)
+                    nested_response = value.get("response")
+                    identity = self._safe_request_id(nested_response.get("id")) if isinstance(nested_response, dict) else ""
+                    previous = observations.get("response_id", "")
+                    if identity and previous and identity != previous:
+                        raise QuotaProxyError("Provider response identity changed within a stream")
+                    if identity:
+                        observations["response_id"] = identity
+                    observations["last_event"] = kind
+                    observations["terminal_seen"] = kind in {"response.completed", "response.failed", "response.incomplete"}
+                    if observations.get("persist_progress"):
+                        observations["persist_progress"]()
                 if kind in _SSE_EVENT_TYPES and kind not in observations["sse_event_types"]:
                     observations["sse_event_types"].append(kind)
                 if kind == "error":
@@ -541,7 +616,24 @@ class CodexQuotaProxy:
         status, error_type, error_code, exception_class = None, "", "", ""
         stage, response_format, known_rejected = "request_validation", "", False
         response_request_id, never_dispatched, upstream_media_type = "", False, ""
+        retry_after_seconds = None
         observations = {"sse_event_types": []}
+        def persist_progress(*, closed=False):
+            if reservation is not None:
+                with self.store._transaction():
+                    self.store.connection.execute("""INSERT INTO codex_gateway_progress
+                        (reservation_id,response_id,request_id,last_event,observed_utc,observed_monotonic,terminal_seen,transport_closed,stream_stats_json)
+                        VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(reservation_id) DO UPDATE SET
+                        response_id=excluded.response_id,request_id=excluded.request_id,last_event=excluded.last_event,
+                        observed_utc=CASE WHEN excluded.transport_closed=1 THEN observed_utc ELSE excluded.observed_utc END,
+                        observed_monotonic=CASE WHEN excluded.transport_closed=1 THEN observed_monotonic ELSE excluded.observed_monotonic END,
+                        terminal_seen=excluded.terminal_seen,transport_closed=excluded.transport_closed,
+                        stream_stats_json=excluded.stream_stats_json""",
+                        (reservation, observations.get("response_id", ""), response_request_id,
+                         observations.get("last_event", ""), time.time(), time.monotonic(),
+                         int(observations.get("terminal_seen", False)), int(closed),
+                         json.dumps(observations.get("stream_stats", {}),separators=(",", ":"))))
+        observations["persist_progress"] = persist_progress
         diagnostic_recorded = False
         handler._maestro_body_consumed = False
 
@@ -552,12 +644,12 @@ class CodexQuotaProxy:
                     self.store.connection.execute("""INSERT INTO codex_gateway_transport(
                         reservation_id,http_status,error_type,error_code,exception_class,stage,
                         response_format,known_rejected,response_request_id,sse_event_types_json,
-                        never_dispatched,upstream_media_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        never_dispatched,upstream_media_type,retry_after_seconds) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (reservation, status, error_type or observations.get("error_type", ""),
                          error_code or observations.get("error_code", ""), exception_class,
                          stage, observations.get("detected_format", response_format), int(known_rejected), response_request_id,
                          json.dumps(observations["sse_event_types"], separators=(",", ":")),
-                         int(never_dispatched), upstream_media_type))
+                         int(never_dispatched), upstream_media_type, retry_after_seconds))
                 diagnostic_recorded = True
 
         def reject(code, message):
@@ -592,9 +684,16 @@ class CodexQuotaProxy:
             with self._lock:
                 self._responses[id(response)] = response
             status = response.status if type(response.status) is int and 100 <= response.status <= 599 else None
+            retry_headers = [v for k,v in response.headers.items() if k.lower() == 'retry-after']
+            if len(retry_headers) == 1:
+                retry_value = retry_headers[0]
+                if (isinstance(retry_value,str) and retry_value.isascii() and retry_value.isdigit()
+                        and len(retry_value)<=8 and int(retry_value)<=604800):
+                    retry_after_seconds = int(retry_value)
             request_ids = [value for key, value in response.headers.items() if key.lower() == "x-request-id"]
             if len(request_ids) == 1:
                 response_request_id = self._safe_request_id(request_ids[0])
+            persist_progress()
             content_type = next((str(value).lower() for key, value in response.headers.items()
                                  if key.lower() == "content-type"), "")
             upstream_media_type = self._safe_media_type(content_type)
@@ -671,6 +770,8 @@ class CodexQuotaProxy:
                     self._responses.pop(id(response), None)
                 with suppress(Exception):
                     response.close()
+                # Closing a local transport is NOT a provider cancellation.
+                persist_progress(closed=True)
             handler.close_connection = True
 
     @staticmethod

@@ -657,3 +657,86 @@ def test_old_transport_schema_is_migrated_without_losing_rows(gateway):
     assert old["never_dispatched"] == 0
     assert old["upstream_media_type"] == ""
     assert store.snapshot("old:1:a:GENERATION")["active"] == 1
+
+
+def test_response_identity_is_durable_before_stream_disconnect(gateway):
+    store,make=gateway
+    observed=threading.Event();release=threading.Event()
+    class Interrupted(FakeResponse):
+        def iter_bytes(self,deadline):
+            yield event({'type':'response.created','response':{'id':'resp_early'}})
+            # The generator resumes only after the prior frame was persisted.
+            observed.set()
+            assert release.wait(5)
+            raise TimeoutError('injected read timeout')
+    response=Interrupted();proxy,base=make(lambda *_:response)
+    worker=threading.Thread(target=lambda:request(base));worker.start()
+    try:
+        assert observed.wait(5)
+        with store._lock:
+            row=store.connection.execute('SELECT * FROM codex_gateway_progress').fetchone()
+        assert row['response_id']=='resp_early' and row['last_event']=='response.created'
+        assert row['terminal_seen']==0 and row['transport_closed']==0
+    finally:
+        release.set();worker.join(5)
+    proxy.close()
+    row=store.connection.execute('SELECT * FROM codex_gateway_progress').fetchone()
+    assert row['response_id']=='resp_early' and row['transport_closed']==1
+    assert proxy.usage()['unresolved_requests']==1
+    assert store.connection.execute('SELECT count(*) FROM provider_receipts').fetchone()[0]==0
+
+
+def test_response_identity_and_terminal_survive_success(gateway):
+    store,make=gateway
+    proxy,base=make(lambda *_:FakeResponse([event({'type':'response.created','response':{'id':'resp_mock'}}),terminal()]))
+    assert request(base)[0]==200
+    proxy.close()
+    row=store.connection.execute('SELECT * FROM codex_gateway_progress').fetchone()
+    assert row['response_id']=='resp_mock' and row['terminal_seen']==1 and row['transport_closed']==1
+    assert proxy.usage()['unresolved_requests']==0
+
+
+def test_stream_statistics_survive_partial_text_without_recording_content(gateway):
+    store,make=gateway
+    text=' PRIVATE_TEST_TEXT \n\t'
+    response=FakeResponse([event({'type':'response.created','response':{'id':'resp_partial'}}),
+        event({'type':'response.output_text.delta','delta':text}),TimeoutError('injected')])
+    proxy,base=make(lambda *_:response)
+    assert request(base)[0]==502
+    proxy.close()
+    row=store.connection.execute('SELECT * FROM codex_gateway_progress').fetchone()
+    stats=json.loads(row['stream_stats_json'])
+    assert stats['text_delta_events']==1 and stats['events']==2
+    assert stats['text_delta_bytes']==len(text.encode())
+    assert stats['text_delta_nonwhitespace_bytes']==len('PRIVATE_TEST_TEXT')
+    assert stats['last_chunk_monotonic']>=stats['first_chunk_monotonic']
+    assert 'PRIVATE_TEST_TEXT' not in row['stream_stats_json']
+    assert row['response_id']=='resp_partial' and row['terminal_seen']==0 and row['transport_closed']==1
+    assert proxy.usage()['unresolved_requests']==1
+
+
+def test_opt_in_diagnostic_records_output_but_never_hidden_reasoning(gateway):
+    store,make=gateway;seen=[]
+    proxy,base=make(lambda *_:FakeResponse([
+        event({'type':'response.created','response':{'id':'resp_mock'}}),
+        event({'type':'response.reasoning_text.delta','delta':'HIDDEN_REASONING_TEST'}),
+        event({'type':'response.output_text.delta','delta':'{"ok":true}'}),terminal()]),diagnostic_sink=seen.append)
+    assert request(base)[0]==200
+    proxy.close()
+    assert any(x.get('text_delta')=='{"ok":true}' for x in seen)
+    assert 'HIDDEN_REASONING_TEST' not in json.dumps(seen)
+    stats=json.loads(store.connection.execute('SELECT stream_stats_json FROM codex_gateway_progress').fetchone()[0])
+    assert stats['reasoning_events']==1
+    assert stats['first_text_delta_monotonic']>=stats['first_reasoning_event_monotonic']
+
+
+def test_known_rate_limit_persists_safe_retry_after_without_free_calls(gateway):
+    store,make=gateway
+    response=FakeResponse(chunks=[],status=429);response.headers['Retry-After']='60'
+    proxy,base=make(lambda *_:response,max_calls=1)
+    assert request(base)[0]==502
+    assert request(base)[0]==429
+    proxy.close()
+    row=store.connection.execute('SELECT http_status,known_rejected,retry_after_seconds FROM codex_gateway_transport').fetchone()
+    assert tuple(row)==(429,1,60)
+    assert proxy.usage()['calls']==1 and proxy.usage()['unresolved_requests']==0

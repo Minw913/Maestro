@@ -87,11 +87,11 @@ class StageToolBroker:
                  runner: ContainmentRunner | None = None, image: str | None = None,
                  cpu_budget: float = 30, grant_checker=None, cpu_pool=None,
                  memory_mb: int = 512, pids: int = 32,
-                 max_file_bytes: int = 128 * 1024,
+                 max_file_bytes: int = 128 * 1024, output_bytes: int | None = None,
                  max_snapshot_bytes: int = 8 * 1024 * 1024,
                  max_snapshot_files: int = 512, max_calls: int = 128):
-        if phase not in {"PLAN_RO", "GENERATION"}:
-            raise ValueError("Only PLAN_RO and GENERATION tool scopes are supported")
+        if phase not in {"PREPARATION", "PLAN_RO", "GENERATION"}:
+            raise ValueError("Only PREPARATION, PLAN_RO and GENERATION tool scopes are supported")
         for name, value in (("deadline", deadline), ("cpu_budget", cpu_budget)):
             if type(value) not in {int, float} or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive and finite")
@@ -105,10 +105,16 @@ class StageToolBroker:
         self.runner, self.image = runner or FailClosedRunner(), image
         self.cpu_budget, self.grant_checker, self.cpu_pool = float(cpu_budget), grant_checker, cpu_pool
         self.memory_mb, self.pids = memory_mb, pids
+        if output_bytes is not None and (type(output_bytes) is not int or output_bytes < 1):
+            raise ValueError("Shell output_bytes must be a positive integer")
+        self.output_bytes = max_file_bytes if output_bytes is None else output_bytes
         self.max_file_bytes, self.max_snapshot_bytes = max_file_bytes, max_snapshot_bytes
         self.max_snapshot_files, self.max_calls = max_snapshot_files, max_calls
         self._roots = {name: Path(getattr(workspace, name)).absolute()
                        for name in ("solver", "private", "public")}
+        history = Path(workspace.root)/"history"
+        if history.is_dir():
+            self._roots["history"] = history.absolute()
         for root in self._roots.values():
             if not root.is_dir() or _linked(root):
                 raise PermissionError("Tool workspace roots must be existing private directories")
@@ -247,8 +253,8 @@ class StageToolBroker:
             raise PermissionError("Unsafe virtual path")
         scope = relative.parts[0]
         if scope not in self._roots:
-            raise PermissionError("Only solver/, private/ and public/ are exposed")
-        if write and (self.phase != "GENERATION" or scope == "public"):
+            raise PermissionError("Only controller-projected virtual roots are exposed")
+        if write and (self.phase != "GENERATION" or scope not in {"solver", "private"}):
             raise PermissionError("The current phase cannot modify this virtual root")
         root = self._roots[scope]
         target = root.joinpath(*relative.parts[1:])
@@ -417,6 +423,8 @@ class StageToolBroker:
             output.chmod(0o555)
 
     def _shell(self, args):
+        if self.phase == "PREPARATION":
+            raise PermissionError("Preparation is file-only; shell execution is forbidden")
         command = args.get("command")
         if not isinstance(command, str) or not command.strip() or len(command.encode()) > 16 * 1024:
             raise ValueError("shell needs a bounded command string")
@@ -436,7 +444,7 @@ class StageToolBroker:
                 if remaining_wall <= 0:
                     raise ToolScopeExpired("Tool stage elapsed while waiting for CPU")
                 limits = ResourceLimits(cpu_seconds=remaining_cpu, wall_seconds=remaining_wall,
-                    memory_mb=self.memory_mb, pids=self.pids, output_bytes=self.max_file_bytes, cpus=1)
+                    memory_mb=self.memory_mb, pids=self.pids, output_bytes=self.output_bytes, cpus=1)
                 request = RunRequest(
                     argv=("sh", "-c", "mkdir -p /scratch/work && cp -R /candidate/. /scratch/work/ "
                           "&& chmod -R u+w /scratch/work && cd /scratch/work && " + command),

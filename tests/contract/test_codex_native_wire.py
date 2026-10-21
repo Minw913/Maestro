@@ -212,3 +212,117 @@ def test_installed_codex_oauth_provider_dynamic_tools_use_metered_loopback(tmp_p
     finally:
         proxy.close()
         store.close()
+
+
+@pytest.mark.parametrize('request_cap',[1,3])
+def test_installed_coral_codex_runtime_mcp_uses_metered_provider(tmp_path,request_cap):
+    from maestro.backends.coral.native_client import CoralCodexClient, MCP_TOOL, MCP_NAMESPACE
+    from coral.agent.builtin.codex import CodexRuntime
+    executable=resolve_codex(os.environ.get('MAESTRO_CODEX_EXECUTABLE'))
+    fake_home=tmp_path/'coral-code-home';_fake_chatgpt_home(fake_home)
+    forwarded=[];tool_calls=[]
+    def upstream(path,headers,body,timeout):
+        value=json.loads(body)
+        # Never save auth headers. This responder has no outbound transport.
+        forwarded.append(value)
+        declarations=list(value.get('tools',[]))
+        for entry in value.get('input',[]):
+            if entry.get('type')=='additional_tools':declarations+=entry['tools']
+        assert [tool.get('name') for tool in declarations]==[MCP_NAMESPACE]
+        assert declarations[0]['tools'][0]['name']==MCP_TOOL
+        assert value.get('reasoning',{}).get('effort')=='low'
+        if len(forwarded)==1:
+            item={'id':'fc_coral_1','type':'function_call','status':'completed',
+                  'call_id':'call_coral_1','name':MCP_TOOL,'namespace':MCP_NAMESPACE,
+                  'arguments':json.dumps({'action':'list','path':'solver/'})}
+        else:
+            item={'id':'msg_coral_2','type':'message','status':'completed','role':'assistant',
+                  'content':[{'type':'output_text','text':'Coral native MCP completed.','annotations':[]}]}
+        return _Response(len(forwarded),item)
+    deadline=time.monotonic()+30
+    store=BudgetStore(tmp_path/'coral-requests.sqlite')
+    proxy=CodexQuotaProxy(store,'coral-wire:0:a:PREPARATION','gpt-6-astra',deadline=deadline,
+        max_calls=request_cap,max_request_bytes=2*1024*1024,max_output_tokens=1000,
+        allowed_tool_names=(MCP_TOOL,),tool_namespace=MCP_NAMESPACE,upstream=upstream)
+    declared_names=[]
+    original_normalize=proxy._normalize_tools
+    def observe_tools(value,*,declare=True):
+        def names(items):
+            for item in items:
+                if item.get('type')=='namespace':
+                    yield {'namespace':item.get('name'),'tools':list(names(item.get('tools',[])))}
+                else:yield item.get('name',item.get('type'))
+        items=list(value.get('tools',[]))
+        for entry in value.get('input',[]):
+            if entry.get('type')=='additional_tools':items+=entry.get('tools',[])
+        declared_names.append(list(names(items)))
+        return original_normalize(value,declare=declare)
+    proxy._normalize_tools=observe_tools
+    client=None
+    try:
+        base_url=proxy.start();origin=urlsplit(base_url)
+        environment=dict(os.environ,CODEX_HOME=str(fake_home),
+            HTTPS_PROXY=f'http://{origin.hostname}:{origin.port}',
+            HTTP_PROXY=f'http://{origin.hostname}:{origin.port}',
+            ALL_PROXY=f'http://{origin.hostname}:{origin.port}',NO_PROXY='127.0.0.1,localhost,::1')
+        client=CoralCodexClient(model='gpt-6-astra',work_root=tmp_path/'coral-native',
+            executable=executable,environment=environment,timeout=30,runtime=CodexRuntime())
+        def tool(name,args):
+            tool_calls.append((name,args))
+            return {'entries':[{'name':'run','directory':False}]}
+        if request_cap==1:
+            with pytest.raises(Exception):
+                client.run_phase('List solver/ using the maestro MCP tool, then summarize.',
+                                 base_url=base_url,deadline=deadline,tools=tool)
+            assert proxy.quota_denied
+            assert len(forwarded)==1
+        else:
+            response=client.run_phase('List solver/ using the maestro MCP tool, then summarize.',
+                                     base_url=base_url,deadline=deadline,tools=tool)
+            assert response.text.strip()=='Coral native MCP completed.'
+            assert len(forwarded)==2
+            assert any(item.get('type')=='function_call_output' for item in forwarded[1]['input'])
+        assert tool_calls==[('maestro_tool',{'action':'list','path':'solver/'})], declared_names
+        proxy.assert_resolved()
+        assert proxy.usage()['actual_requests']==len(forwarded)
+    finally:
+        if client:client.close()
+        proxy.close();store.close()
+
+
+def test_installed_coral_native_single_request_structured_output(tmp_path):
+    from maestro.backends.coral.native_client import CoralCodexClient
+    from coral.agent.builtin.codex import CodexRuntime
+    executable=resolve_codex(os.environ.get('MAESTRO_CODEX_EXECUTABLE'))
+    fake_home=tmp_path/'plan-home';_fake_chatgpt_home(fake_home)
+    calls=[]
+    def upstream(path,headers,body,timeout):
+        value=json.loads(body);calls.append(value)
+        assert not value.get('tools')
+        assert not any(entry.get('type')=='additional_tools' for entry in value.get('input',[]))
+        item={'id':'msg_plan','type':'message','status':'completed','role':'assistant',
+              'content':[{'type':'output_text','text':'{"action":"withdraw"}','annotations':[]}]}
+        return _Response(1,item)
+    deadline=time.monotonic()+30
+    store=BudgetStore(tmp_path/'plan.sqlite')
+    proxy=CodexQuotaProxy(store,'coral-wire:0:a:PLAN_RO','gpt-6-astra',deadline=deadline,
+        max_calls=1,max_request_bytes=2*1024*1024,max_output_tokens=1000,upstream=upstream)
+    client=None
+    try:
+        url=proxy.start();origin=urlsplit(url)
+        env=dict(os.environ,CODEX_HOME=str(fake_home),
+            HTTPS_PROXY=f'http://{origin.hostname}:{origin.port}',
+            HTTP_PROXY=f'http://{origin.hostname}:{origin.port}',
+            ALL_PROXY=f'http://{origin.hostname}:{origin.port}',NO_PROXY='127.0.0.1,localhost,::1')
+        client=CoralCodexClient(model='gpt-6-astra',work_root=tmp_path/'native',
+                               executable=executable,environment=env,timeout=30,runtime=CodexRuntime())
+        schema={'type':'object','properties':{'action':{'type':'string'}},
+                'required':['action'],'additionalProperties':False}
+        response=client.run_phase('Return the requested JSON decision.',base_url=url,
+                                 deadline=deadline,output_schema=schema,agent_id='agent-1')
+        assert json.loads(response.text)=={'action':'withdraw'}
+        assert len(calls)==1 and proxy.usage()['actual_requests']==1
+        assert proxy.usage()['provider_receipts']==1
+    finally:
+        if client:client.close()
+        proxy.close();store.close()

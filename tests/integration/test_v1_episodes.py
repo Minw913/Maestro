@@ -67,7 +67,8 @@ def test_precheck_replacement_payment_and_no_fake_observation(tmp_path):
 
 
 def test_repair_stays_in_one_invitation(tmp_path):
-    config=RunConfig(rounds=1,warm_opportunities_per_agent=1)
+    # Historical mock repair loop has an explicit three-call envelope.
+    config=RunConfig(rounds=1,warm_opportunities_per_agent=1,generation_calls=3)
     with ExperimentEngine(tmp_path,config) as engine:
         warm=engine.bootstrap()
     repair=replace(config,failures={a:['precheck',None] for a in ('agent-1','agent-2','agent-3','agent-4')})

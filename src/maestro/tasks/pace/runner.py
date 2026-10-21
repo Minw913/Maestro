@@ -38,6 +38,7 @@ class InstanceResult:
     better_than_reference: bool = False
     stdout_artifact: str | None = None
     stderr_artifact: str | None = None
+    resource_observations: dict | None = None
 
 
 class PaceEvaluator:
@@ -258,7 +259,10 @@ class PaceEvaluator:
                 timeout=receipt.timed_out, status=assessed["status"], cpu_seconds=receipt.cpu_seconds,
                 wall_seconds=receipt.wall_seconds, reason=assessed["reason"],
                 better_than_reference=assessed["better_than_reference"],
-                stdout_artifact=output_refs[index][0], stderr_artifact=output_refs[index][1]))
+                stdout_artifact=output_refs[index][0], stderr_artifact=output_refs[index][1],
+                resource_observations={key:receipt.diagnostics.get(key) for key in (
+                    'reason','memory_peak_bytes','pids_peak','sampled_pids_peak',
+                    'stdout_file_bytes','stderr_file_bytes')}))
         candidate_valid = verification.status == "COMPLETED" and all(x.valid is not False for x in instance_results)
         if verification.status != "COMPLETED":
             status = "INFRA_FAILURE"
@@ -310,6 +314,11 @@ def smoke_test(candidate_path: str | Path, graph_path: str | Path, runner, *, im
         ResourceLimits(cpu_seconds=1.0, wall_seconds=3.0, memory_mb=128,
                        pids=8, output_bytes=65536, cpus=1))
     if receipt.timed_out or receipt.returncode != 0:
+        from .runtime_failure import classify_runtime_failure, RuntimePrecheckFailure
+        from maestro.backends.coral.workspace import candidate_tree_hash
+        evidence = classify_runtime_failure(candidate_tree_hash(candidate), receipt)
+        if evidence is not None:
+            return RuntimePrecheckFailure("runtime exception in fixed precheck", evidence)
         return False, "smoke execution failed or timed out"
     verified = verify_solution(graph, receipt.stdout)
     return verified.valid, "pass" if verified.valid else verified.reason

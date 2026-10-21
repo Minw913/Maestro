@@ -35,7 +35,7 @@
 
 最后审查补齐了两处退出/资源边界：controller关闭前等待迟到generation回调完成用量记录和grant清理，未完成则保留数据库连接；固定toy precheck与debug shell共用CPU池，等待和启动均受generation截止时间限制。Windows的CAS发布只对已确认的临时sharing/access错误有限重试，仍核验并发winner的内容hash。
 
-安装版0.156.1把工具定义嵌在 `input.additional_tools` 中，已在网关移除原生工具并注入可信 `maestro_tool`；返回的工具调用也在交给Codex执行前检查。继承的MCP、插件、hooks、额外凭据和主机原生工具被禁用；Coral私有/共享memory仍通过broker提供。`configs/warm_start.yaml` 固定4 agents／20 CPU workers／5 instance workers／5 waves，CLI版本一并冻结。
+安装版0.156.1把工具定义嵌在 `input.additional_tools` 中，已在网关移除原生工具并注入可信 `maestro_tool`；返回的工具调用也在交给Codex执行前检查。继承的MCP、插件、hooks、额外凭据和主机原生工具被禁用；Coral私有/共享memory仍通过broker提供。`configs/experiments/pace_remote.yaml` 固定4 agents／20 CPU workers／5 instance workers／5 waves，CLI版本一并冻结。
 
 **此前实机连接记录（已由上文新验收取代）：** 本机 `codex-check --strict` 确认ChatGPT登录与原生协议可用、无需external API token。另一次只读官方models元数据GET返回200，未发起模型推理。最多3次调用的真实连接探针实际只转发了1次请求，未获得可信完成回执，没有工具执行，已保留为UNKNOWN（active=1），没有重试、退款或新建scope重跑它。旧版网关当时缺少安全HTTP状态诊断，因此不能从本地进程退出推导上游完成；本次已补状态/错误类别诊断。证据为 `artifacts/strict-codex-validation/live-20261020T153650/result.json` 和同目录 `requests.sqlite`。当时未通过真实连接资格；该旧请求至今仍缺少可信完成/取消证据，不能原样恢复或重试。真实模型调用成功与Docker物理资格均不能由模拟测试推出。
 
@@ -156,7 +156,7 @@ Set-Location 'D:\Becky_files\Documents\Personal_Repos\MAESTRO'
 .\.venv\Scripts\python.exe -m maestro --root artifacts/session-check codex-check
 ```
 
-前三个命令运行显式 simulation，最后一个仅检查已有 Codex 登录；追加 `--strict` 可检查原生协议，不发起推理。已登录Codex的严格自主入口为 `configs/warm_start.yaml`；旧proposal模式为 `configs/codex_session_pilot.yaml`，旧API-backed Coral配置为 `configs/pace_pilot.yaml`。严格真实连接现已通过；历史 UNKNOWN 保留隔离，当前尚未启动 Warm Start，后续实验仍要求实际数据与 Linux executor 资格通过。操作步骤见 `docs/operations.md`。
+前三个命令运行显式 simulation，最后一个仅检查已有 Codex 登录；追加 `--strict` 可检查原生协议，不发起推理。已登录Codex的严格自主入口为 `configs/experiments/pace_remote.yaml`；旧proposal模式的配置预设已移除，backend/profile 实现暂时保留，旧 API-backed PACE 预设也已移除，当前实验统一选择 Coral native factory。严格真实连接现已通过；历史 UNKNOWN 保留隔离，当前尚未启动 Warm Start，后续实验仍要求实际数据与 Linux executor 资格通过。操作步骤见 `docs/operations.md`。
 
 ## Configuration interface (2026-10-21)
 
@@ -172,3 +172,143 @@ migrated. Resume configuration conflicts are checked before backend startup.
 Maintained documents and presets use the executable names. No real inference or
 PACE experiment was run for this change. `implementation_1020.tex` was absent
 from this checkout; the interface follows the explicit task specification.
+
+## Coral native lifecycle adapter (2026-10-21)
+
+Current Warm/Market configuration selects the pinned upstream Coral CodexRuntime
+through `maestro.backends.coral.native_backend:native_factory`, with installed CLI
+0.160.0, gpt-6-astra and low effort. MAESTRO supplies phase-scoped MCP workspace
+tools and the existing actual-request quota proxy; Coral owns `codex exec`,
+AgentSandboxSpec and AgentHandle. The stock manager/grader queues remain disabled.
+
+Read-only preparation, single-request plan submission, and grant-bound generation
+use independent accounts and common stage deadlines. All participating agents
+prepare/plan each round. Source/memory selection is agent-directed; own history
+is a per-agent read-only file projection, not a peer-visible shared file.
+Generation retains the three-request aggregate across repairs, sandbox CPU limits,
+fixed-precheck accounting, ticket admission, auction/backfill and settlement.
+
+The native MCP transport requires namespace/name round-tripping and direct-only
+exposure of the exact controller namespace. Codex's full-access launcher flag is
+removed. Only that MCP service is preapproved; EditGrant/path/resource enforcement
+remains in the broker. Unknown requests or unconfirmed process reclamation stop
+the next phase. No real inference, benchmark experiment or Warm Start was run
+for this adapter change. Historical app-server live qualification is not
+qualification of this new path; real connection and physical acceptance remain
+required before launch.
+
+Adapter validation: full offline suite **674 passed, 6 skipped** (70.23 seconds).
+Separately enabled installed-Codex wire suite **5 passed** (5.95 seconds), covering
+the legacy protocol plus real upstream Coral startup, MCP namespace routing,
+request-cap denial and single-request structured output. These are local fake-
+provider protocol tests, with fabricated credentials in an isolated CODEX_HOME;
+there were zero real model calls. Python compilation and diff whitespace checks
+passed. The real connection, physical runtime qualification and timing pilot
+remain outstanding; no formal experiment was started.
+
+
+## Layered configuration implementation (2026-10-21)
+
+The PACE entry is now `configs/experiments/pace_remote.yaml`. Runtime, deployment,
+benchmark evaluation contract and benchmark-specific Warm/Market settings live
+in separate files; the former monolithic Warm preset was moved into those layers.
+The obsolete Claude Code configuration example has been removed; its backend
+implementation is retained. Field ownership
+is strict: unknown or misplaced fields, duplicate definitions, duplicate sources,
+recursive includes and inconsistent resource values are rejected. Host paths are
+relative to their declaring fragment; container argv paths are unchanged.
+
+Bootstrap selects Warm; run selects Market. Both complete stage configurations
+and all six source-file SHA256 identities are frozen together. Only predeclared
+stage differences are allowed when reusing a checkpoint. Explicit CLI overrides
+remain supported but cannot bypass checkpoint/resume validation. Config-less run
+loads the frozen Market stage; config-less resume restores the recorded episode.
+Per-stage resolved JSON and report source identities preserve configuration evidence.
+See `configs/README.md` for ownership and command examples.
+
+Validation: full offline suite **690 passed, 6 skipped** (70.57 seconds), followed
+by expanded configuration tests **55 passed**. Tests cover stage composition,
+relative paths, inactive-stage validation, duplicate/conflicting fields, CLI
+overrides, changed-source rejection before backend construction, resume identity,
+and simulated Warm-to-Market plus ledger replay. No real inference or PACE
+experiment was run. Real image/platform placeholders remain intentionally unset;
+formal Warm Start remains paused and requires the outstanding acceptance work.
+
+## PACE taxonomy placement (2026-10-21)
+
+Moved the plan vocabulary from `configs/taxonomy.yaml` to
+`src/maestro/tasks/pace/taxonomy.py`. Planner validation, retrieval, direction
+assignment and native preparation/planning prompts share its constants and version.
+The resolved `plan_taxonomy` identity includes the version and all categories in
+configuration/checkpoint hashes; incompatible identities are rejected. The
+vocabulary remains frozen within episodes and paired comparisons. Updated the
+configuration guide, implementation plan and Overleaf implementation document.
+This change does not enable agent writes to trusted controller source or alter
+historical valuation. No live inference or PACE experiment was run.
+
+Taxonomy migration validation: full offline suite **699 passed, 6 skipped**
+(70.55 seconds); repository and Overleaf whitespace checks passed.
+
+
+## MCP installed-wire status correction (2026-10-21, 07:02 UTC)
+
+Rechecked the current worktree without excluding either MCP request-cap case.
+With `MAESTRO_RUN_NATIVE_WIRE=1`, the complete suite passed **726 tests**, with
+one Windows-only skip and no deselections (82.66 seconds). Both cap=1 and cap=3
+MCP cases passed, including tool callback, returned tool output and quota denial.
+The namespace/name fixes already existed in the worktree; this recheck made no
+protocol source change. Earlier statements that these two cases were still
+failing were stale and are superseded by this evidence.
+
+The declaration and function call both use namespace `mcp__maestro` and name
+`maestro_tool`; foreign namespaces and flattened spoofed names remain rejected.
+These tests use the installed CLI with isolated fake authentication and local
+provider fixtures: **zero real model calls**. This does not qualify live inference
+for the new single-implementation/runtime-only repair policy or authorize Warm
+Start. Current presets use a tunable `generation_calls` (default 1) plus at most
+three independently gated runtime repairs, superseding the historical shared
+three-request generation loop described above.
+
+Evidence: `artifacts/mcp-recheck-20261021T070214Z/report.txt`,
+`result.json`, `regression.xml` and `source-identity.json`. Historical failures
+and UNKNOWN ledgers were preserved.
+
+
+## Additive Coral DeepSeek runtime (2026-10-21)
+
+Added `maestro.backends.coral.deepseek_backend:native_factory` and separate
+DeepSeek client, enforcing prefix and Messages request gate. The existing Coral
+Codex factory/client/prefix and its default runtime entry are retained. The new
+`configs/experiments/pace_remote_deepseek.yaml` selects
+`configs/runtimes/coral_deepseek.yaml`; both entries reference the same current
+deployment, benchmark and stage files. Existing ongoing generation/runtime-repair
+policy and shared deployment changes are preserved, not rolled back to earlier
+configuration values. Switching runtime changes frozen experiment identity and
+cannot reuse or resume the other runtime's checkpoint.
+
+The new adapter starts Coral's actual DeepSeekHarnessRuntime, confines the model
+tool surface to the existing phase-bound MCP broker, keeps provider credentials
+inside the controller and reserves actual API requests before dispatch. It checks
+terminal Messages responses and usage before releasing buffered responses, with
+no automatic retries, quota resets or UNKNOWN refunds. Missing usage, truncated
+streams and ambiguous transport failures remain UNKNOWN. Native tool definitions
+and historical tool-registry updates are removed, and forbidden tool responses
+are never delivered to the CLI. Stage/grant/valuation/evaluation/settlement logic
+is shared with the current Coral adapter; only the provider boundary is replaced.
+
+Official DeepSeek Harness source was inspected at commit
+`687f282e8625c6b8d11ff58211a90524be2e4317`; no vendor Coral files were changed.
+This source review does not attest an installed dsh version. No actual DeepSeek
+model request, real PACE evaluation or Warm Start was launched. The new runtime
+entry intentionally requires installation plus frozen CLI version/SHA256 and
+separate live/physical qualification. It does not treat Codex qualification as
+DeepSeek qualification. See `docs/deepseek_runtime.md` for provisioning and switching.
+
+DeepSeek adapter validation: full offline suite **790 passed, 6 skipped**
+(84.67 seconds), followed by the final DeepSeek-specific suite **30 passed**
+(3.72 seconds) after tightening the missing-MCP-registration guard. The tests
+exercise synthetic JSON/SSE provider receipts through actual loopback HTTP,
+request and token caps, disallowed tools, persistent UNKNOWN, config switching,
+Coral's actual dsh lifecycle with injected process output, and actual cancellation
+of an inert local process. They do not use a real model or assert physical
+candidate qualification. Compilation and diff whitespace checks passed.

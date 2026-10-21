@@ -83,10 +83,11 @@ def setup(tmp_path):
         return Response()
     def proxy(*args,**kwargs):
         return CodexQuotaProxy(*args,upstream=upstream,**kwargs)
-    config = RunConfig(rounds=1,warm_opportunities_per_agent=1)
+    config = RunConfig(rounds=1,warm_opportunities_per_agent=1,generation_calls=3)
     backend = StrictCodexBackend(native,store,WorkspaceStore(tmp_path/'workspaces',tmp_path/'cas'),
         precheck=lambda candidate:(True,'injected'),seed_solver=seed,candidate_runner=object(),image='',
         config=config,proxy_factory=proxy,simulation=True)
+    backend.supports_runtime_only_repair = False  # Retained legacy protocol fixture.
     backend.begin_episode('unit')
     candidate = backend.prepare_seed()
     backend.register_parent(candidate['candidate_hash'],candidate['candidate_path'])
@@ -280,7 +281,7 @@ def test_strict_requests_flow_through_first_price_ticket_and_settlement(setup,tm
         def evaluate(self,ticket):
             require_execution_authority(ticket,begin=True)
             return super().evaluate(ticket)
-    config=RunConfig(n_agents=1,slots=1,rounds=1,warm_opportunities_per_agent=1)
+    config=RunConfig(n_agents=1,slots=1,rounds=1,warm_opportunities_per_agent=1,generation_calls=3)
     with ExperimentEngine(tmp_path/'controller',config,evaluator=TicketedScorer()) as engine:
         # Enter the live adapter callback path only; scoring stays an explicitly
         # simulated fixture. No model, benchmark or warm run is launched.

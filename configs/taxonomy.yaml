@@ -1,3 +1,0 @@
-version: maestro-v1-target-modtype-1
-target: [reduction, initialization, local_search, tie_break, restart, postprocess, data_structure, time_management, other]
-mod_type: [parameter_change, rule_replacement, new_component, removal, reimplementation, other]

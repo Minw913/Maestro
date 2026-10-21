@@ -1,0 +1,14 @@
+kind: deployment
+schema_version: 1
+cpu_workers: 20
+instance_workers: 10
+coral:
+  checkout_path: ../../vendor/coral
+  codex_executable: /home/zijianzhou/.local/bin/codex
+pace:
+  panel_manifest: ../../data/training/panel.json
+  seed_solver: ../../data/seed_solver
+  contract:
+    image: python@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641
+    hardware_id: instance-20260923-033000:c6c10461b86cfe765acc
+    toolchain_digest: f05796acba272e7d29c2e7a1a323a0dabb38d9c79cf4924502592a7606321496

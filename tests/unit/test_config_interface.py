@@ -92,10 +92,56 @@ def test_benchmark_override_validation():
         build_parser().parse_args(['resume', '--episode', 'e', '--benchmark', 'unsupported'])
 
 
-@pytest.mark.parametrize('name', ['mock_smoke', 'pace_pilot', 'codex_session_pilot', 'warm_start'])
+@pytest.mark.parametrize('name', ['mock_smoke', 'experiments/pace_remote'])
 def test_shipped_presets_use_new_interface(name):
     from pathlib import Path
     config = load_config(Path(__file__).resolve().parents[2]/'configs'/f'{name}.yaml')
     assert config.benchmark == 'pace'
     assert config.execution_mode == ('mock' if name == 'mock_smoke' else 'real')
     assert config.reserved_cpu_seconds == 620
+
+
+def test_preparation_defaults_and_independent_override(tmp_path):
+    defaults = RunConfig()
+    assert (defaults.preparation_calls, defaults.preparation_window_seconds) == (4, 300)
+    path = tmp_path/'preparation.yaml'
+    path.write_text('preparation_calls: 6\npreparation_window_seconds: 450\n')
+    config = load_config(path)
+    assert (config.preparation_calls, config.preparation_window_seconds) == (6, 450)
+    assert RunConfig.from_dict(config.to_dict()) == config
+    assert config.hash != defaults.hash
+    assert (config.planning_calls, config.generation_calls, config.runtime_repair_calls) == (1, 1, 3)
+    assert (config.planning_window_seconds, config.generation_window_seconds) == (120, 300)
+    assert config.reserved_cpu_seconds == defaults.reserved_cpu_seconds
+
+
+@pytest.mark.parametrize('value', [0, -1, 1.5, True, '4', None])
+def test_preparation_request_count_validation(value):
+    with pytest.raises(ValueError, match='preparation_calls'):
+        RunConfig(preparation_calls=value)
+
+
+@pytest.mark.parametrize('value', [0, -1, float('inf'), float('nan'), True, '300', None])
+def test_preparation_window_validation(value):
+    with pytest.raises(ValueError, match='preparation_window_seconds'):
+        RunConfig(preparation_window_seconds=value)
+
+
+def test_resume_rejects_changed_preparation_budget(tmp_path):
+    with ExperimentEngine(tmp_path, RunConfig()) as engine:
+        engine.ledger.create_episode('e', 'first_price', engine.config, {})
+        engine.config = replace(engine.config, preparation_calls=5)
+        with pytest.raises(IntegrityError, match='Resume config hash mismatch'):
+            engine.resume('e')
+
+
+@pytest.mark.parametrize('key,value', [
+    ('preparation_cpu_seconds', 5),
+    ('exploration_calls', 4),
+    ('exploration_window_seconds', 300),
+])
+def test_superseded_preparation_fields_rejected(tmp_path, key, value):
+    path = tmp_path/'obsolete.json'
+    path.write_text(json.dumps({**RunConfig().to_dict(), key: value}))
+    with pytest.raises(ValueError, match='Unknown config keys'):
+        load_config(path)

@@ -15,9 +15,17 @@ from maestro.types import canonical_json,MaestroError
 
 def _config(args):
     if getattr(args,'config',None):
-        config=load_config(args.config)
+        stage='warm_start' if getattr(args,'command',None)=='bootstrap' else 'market'
+        config=load_config(args.config,stage=stage)
     elif getattr(args,'bootstrap',None):
-        config=RunConfig.from_dict(json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config'])
+        config=RunConfig.from_dict(json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config']).for_stage('market')
+    elif getattr(args,'command',None) in ('resume','final-eval'):
+        from maestro.storage import Ledger
+        with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
+            row=ledger.connection.execute('SELECT config_json FROM episodes WHERE id=?',(args.episode,)).fetchone()
+            if row is None:
+                raise ValueError('Unknown episode')
+            config=RunConfig.from_dict(json.loads(row['config_json']))
     else:
         config=RunConfig()
     if getattr(args,'seed',None) is not None:
@@ -59,9 +67,12 @@ def build_parser():
     qualify.add_argument('--phase-seconds',type=float,default=120)
     qualify.add_argument('--historical-unknown',help='Read-only legacy UNKNOWN database to hash-attest')
     qualify.add_argument('--historical-sha256',help='Expected SHA256 of the historical evidence file')
+    sub.add_parser('pause',help='Cooperatively pause a DeepSeek controller; never resets quotas')
+    audit=sub.add_parser('deepseek-audit',help='Read-only DeepSeek request/restart audit; no inference')
+    audit.add_argument('--ledger',required=True,help='DeepSeek requests.sqlite path')
     for command in ('bootstrap','run','resume','smoke','final-eval'):
         item=sub.add_parser(command)
-        item.add_argument('--config')
+        item.add_argument('--config',help='Experiment manifest (bootstrap selects Warm; run selects Market), or flat debug config')
         item.add_argument('--seed',type=int)
         item.add_argument('--execution-mode', choices=['mock','real'], help='Simulated evaluation or real execution')
         item.add_argument('--benchmark', choices=['pace'], help='Benchmark task (PACE only)')
@@ -96,7 +107,18 @@ def build_parser():
 def main(argv=None):
     args=build_parser().parse_args(argv)
     try:
-        if args.command=='codex-check':
+        if args.command=='pause':
+            from maestro.execution.pause import PauseController
+            pause=PauseController(args.root)
+            pause.request()
+            result={'status':'PAUSE_REQUESTED','marker':str(pause.path.resolve()),
+                'drain_seconds':pause.grace_seconds,'provider_termination_confirmed':False}
+        elif args.command=='deepseek-audit':
+            from maestro.backends.coral.deepseek_lifecycle import audit_ledger
+            result=audit_ledger(args.ledger)
+            print(canonical_json(result))
+            return 0 if result['status']=='CLEAR' else 2
+        elif args.command=='codex-check':
             from maestro.backends.codex_session import CodexSessionClient
             import time
             client=CodexSessionClient(model=None,work_root=Path(args.root)/'codex-check',timeout=60)
@@ -129,6 +151,11 @@ def main(argv=None):
         elif args.command in ('bootstrap','run','resume','smoke','final-eval'):
             from maestro.loop import ExperimentEngine
             config=_config(args)
+            if args.command=='run':
+                warm=RunConfig.from_dict(json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config'])
+                config.validate_warm_source(warm)
+            if args.command=='smoke' and config.stage_configs:
+                raise MaestroError('Layered experiments require separate bootstrap and run commands')
             if args.command=='resume':
                 from maestro.storage import Ledger
                 with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
@@ -140,7 +167,9 @@ def main(argv=None):
                         raise ValueError('Resume config hash mismatch')
             if args.command=='smoke' and config.execution_mode!='mock':
                 raise MaestroError('smoke is explicitly simulated; use bootstrap/run for real evaluation')
-            with ExperimentEngine(args.root,config) as engine:
+            from contextlib import nullcontext
+            engine=ExperimentEngine(args.root,config)
+            with (engine.pause.signals() if getattr(engine.backend,'pause',None) is not None else nullcontext()), engine:
                 if args.command=='bootstrap':
                     result=engine.bootstrap()
                 elif args.command=='run':

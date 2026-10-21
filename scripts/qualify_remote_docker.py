@@ -1,9 +1,13 @@
 """Operator physical acceptance, uses the production DockerRunner; no inference."""
 from dataclasses import asdict
-import json, os, pathlib, subprocess, time
+import argparse, json, os, pathlib, subprocess, time
 from maestro.execution.sandbox import DockerRunner, RunRequest, ResourceLimits, Mount
 BASE=pathlib.Path(__file__).resolve().parents[1]
-ROOT=pathlib.Path(json.loads((BASE/'artifacts/remote-deployment-paths.json').read_text())['preflight_root'])
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--root',type=pathlib.Path)
+args=parser.parse_args()
+ROOT=args.root.resolve() if args.root else pathlib.Path(json.loads((BASE/'artifacts/remote-deployment-paths.json').read_text())['preflight_root'])
+if args.root: ROOT.mkdir(parents=True,exist_ok=False)
 IMAGE='python@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641'
 runner=DockerRunner(IMAGE); results=[]
 def case(name,code,limits,check,mounts=()):
@@ -27,8 +31,16 @@ for dest in ['/etc/escape','/candidate/escape']:
 try:socket.create_connection(('1.1.1.1',443),timeout=.2)
 except OSError:pass
 else:raise AssertionError('network escape')
-pathlib.Path('/scratch/ok').write_text('ok');print('BOUNDARIES_OK')
-""",normal,lambda r:r.returncode==0 and 'BOUNDARIES_OK' in r.stdout,(Mount(BASE/'fixtures/toy_graphs','/candidate'),))
+pathlib.Path('/scratch/ok').write_text('ok')
+mounts=[line.split() for line in pathlib.Path('/proc/mounts').read_text().splitlines()]
+assert any(row[1]=='/scratch' and 'noexec' in row[3].split(',') for row in mounts)
+script=pathlib.Path('/scratch/probe');script.write_text('#!/bin/sh\\nexit 0\\n');script.chmod(0o700)
+try:__import__('subprocess').run([str(script)],check=True)
+except PermissionError:pass
+else:raise AssertionError('scratch noexec bypass')
+assert __import__('subprocess').run(['python3','-c','print(1)'],check=True,capture_output=True).stdout.strip()==b'1'
+print('BOUNDARIES_NOEXEC_OK')
+""",normal,lambda r:r.returncode==0 and 'BOUNDARIES_NOEXEC_OK' in r.stdout,(Mount(BASE/'fixtures/toy_graphs','/candidate'),))
 case('cpu_timeout_fork_setsid',"""import os,time
 pid=os.fork()
 if pid==0:os.setsid()
