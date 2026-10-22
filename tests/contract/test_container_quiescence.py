@@ -254,3 +254,40 @@ def test_cleanup_cannot_mask_verifier_authorization_refusal(tmp_path, monkeypatc
         worker.verify(panel, [receipt(), receipt()], evaluator.contract, before_launch=revoked)
     assert isinstance(error.value.__cause__, OSError)
     assert calls == ["authority"]
+
+
+def test_docker_cli_thread_limit_does_not_change_candidate_environment_or_contract(tmp_path,monkeypatch):
+    import os
+    monkeypatch.setenv('GOMAXPROCS','99')
+    observed=[]
+    def invoke(argv,**kwargs):
+        assert kwargs['env']['GOMAXPROCS']=='2'
+        observed.append(argv)
+        if argv[1]=='info':
+            output=json.dumps({'OSType':'linux','SecurityOptions':['rootless'],'CgroupVersion':'2'})
+        elif argv[1:3]==['image','inspect']:output='[]'
+        elif argv[1]=='create':output=CONTAINER_ID
+        elif argv[1]=='start':
+            output=json.dumps({'returncode':0,'stdout':'','stderr':'','cpu_seconds':.1,'wall_seconds':.1,'timed_out':False,'diagnostics':{}})
+        elif argv[1]=='rm':output=''
+        else:raise AssertionError(argv)
+        return subprocess.CompletedProcess(argv,0,output,'')
+    monkeypatch.setattr('maestro.execution.sandbox.subprocess.run',invoke)
+    limits=ResourceLimits(cpu_seconds=30,wall_seconds=45,memory_mb=512,pids=32,output_bytes=4194304)
+    receipt=DockerRunner('image@sha256:'+'1'*64).run(_request(tmp_path),limits)
+    assert receipt.returncode==0 and os.environ['GOMAXPROCS']=='99'
+    create=next(argv for argv in observed if argv[1]=='create')
+    assert '--pids-limit=32' in create and '--memory=512m' in create and '--cpus=1.0' in create
+    assert '--env' not in create and not any(x.startswith('--env=') for x in create)
+    assert [a[1] for a in observed]==['info','image','create','start','rm']
+
+
+def test_host_process_exhaustion_does_not_retry_a_docker_operation(monkeypatch):
+    import errno
+    calls=[]
+    def fail(argv,**kwargs):
+        calls.append(argv);raise BlockingIOError(errno.EAGAIN,'host task quota')
+    monkeypatch.setattr('maestro.execution.sandbox.subprocess.run',fail)
+    with pytest.raises(SandboxUnavailable) as error:
+        DockerRunner('image@sha256:'+'1'*64).preflight()
+    assert error.value.__cause__.errno==errno.EAGAIN and len(calls)==1

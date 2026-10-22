@@ -1,6 +1,5 @@
 import json
 import hashlib
-from pathlib import Path
 
 import pytest
 
@@ -8,9 +7,7 @@ from maestro.tasks.pace.manifest import EvaluationContract, ManifestError, load_
 from maestro.tasks.pace.parser import ParseError, parse_graph, parse_solution
 from maestro.tasks.pace.scoring import aggregate_score, instance_score, validate_reference
 from maestro.tasks.pace.verifier import verify_solution
-
-
-ROOT = Path(__file__).resolve().parents[2]
+from maestro.tasks.pace.sanity import default_sanity_graph_path
 
 
 def test_isolated_vertex_requires_itself():
@@ -27,7 +24,7 @@ def test_isolated_vertex_requires_itself():
     ("1\n2\n", "not a dominating set"),
 ])
 def test_invalid_solutions(output, reason):
-    graph = parse_graph((ROOT / "fixtures/toy_graphs/star5.gr").read_text())
+    graph = parse_graph(default_sanity_graph_path().read_text())
     result = verify_solution(graph, output)
     assert not result.valid
     assert reason in result.reason

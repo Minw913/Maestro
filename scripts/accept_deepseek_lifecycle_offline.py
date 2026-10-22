@@ -25,6 +25,8 @@ from maestro.execution.pause import PauseController
 
 
 def main(root, executable):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     root.mkdir(parents=True, exist_ok=False)
     cert=root/'localhost-cert.pem';key=root/'localhost-key.pem'
     subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1',

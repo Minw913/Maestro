@@ -100,6 +100,66 @@ def test_each_actual_request_reserved_before_forward_and_capped(gateway):
     assert usage["output_token_limit_enforced"] is False
 
 
+@pytest.mark.parametrize('cap', [1, 2, 4, 6])
+@pytest.mark.parametrize('native_envelope', [False, True])
+def test_final_preparation_request_has_no_tools_for_parameterized_cap(gateway, cap, native_envelope):
+    store,make=gateway; forwarded=[]
+    def upstream(path, headers, body, timeout):
+        forwarded.append(json.loads(body)); return FakeResponse()
+    proxy,base=make(upstream,account='agent:PREPARATION',max_calls=cap,
+        allowed_tool_names=('maestro_tool',),tool_namespace='mcp__maestro',
+        final_response_on_last_request=True)
+    value={'model':'test-model','input':[{'type':'message','role':'user','content':[
+        {'type':'input_text','text':'read frozen code'}]}],
+        'tools':[{'type':'function','name':'bash'}],
+        'tool_choice':{'type':'function','name':'maestro_tool','namespace':'mcp__maestro'}}
+    if native_envelope:
+        value['input'].insert(0,{'type':'additional_tools','tools':[{'type':'namespace','name':'host'}]})
+    for _ in range(cap):assert request(base,value)[0]==200
+    for index,value in enumerate(forwarded):
+        declared=list(value.get('tools',[]))
+        for item in value['input']:
+            if item.get('type')=='additional_tools':declared.extend(item.get('tools',[]))
+        assert bool(declared)==(index<cap-1)
+    assert forwarded[-1]['tool_choice']=='none'
+    assert 'LAST allowed model request' in forwarded[-1]['input'][-1]['content'][0]['text']
+    assert request(base)[0]==429 and len(forwarded)==cap
+    assert store.usage(proxy.account)['unresolved_requests']==0
+
+
+def test_uncapped_preparation_remains_metered_and_deadline_bounded(gateway):
+    store,make=gateway;forwarded=[]
+    def upstream(path,headers,body,timeout):
+        forwarded.append(json.loads(body));return FakeResponse()
+    proxy,base=make(upstream,account='agent:PREPARATION',max_calls=0,
+        allowed_tool_names=('maestro_tool',),final_response_on_last_request=True)
+    for _ in range(9):assert request(base)[0]==200
+    assert len(forwarded)==9 and all(value.get('tools') for value in forwarded)
+    assert proxy.usage()['actual_requests']==9
+    assert store.snapshot(proxy.account)['max_calls']==0
+    proxy.deadline=time.monotonic()-1
+    assert request(base)[0]!=200 and len(forwarded)==9
+
+
+def test_zero_request_cap_cannot_disable_other_phase_limits(gateway):
+    _,make=gateway
+    for account in ('agent:PLAN_RO','agent:GENERATION','agent:RUNTIME_REPAIR'):
+        with pytest.raises(ValueError):make(lambda *args:FakeResponse(),account=account,max_calls=0)
+
+
+def test_final_preparation_forbidden_tool_is_charged_and_rejected(gateway):
+    store,make=gateway
+    tool={'type':'function_call','name':'maestro_tool','namespace':'mcp__maestro',
+          'call_id':'call_final','arguments':'{}'}
+    proxy,base=make(lambda *args:FakeResponse([terminal(output=[tool])]),
+        account='agent:PREPARATION',max_calls=1,allowed_tool_names=('maestro_tool',),
+        tool_namespace='mcp__maestro',final_response_on_last_request=True)
+    assert request(base)[0]!=200
+    assert store.usage(proxy.account)['calls']==1
+    assert store.usage(proxy.account)['unresolved_requests']==0
+    assert proxy.usage()['protocol_violations']==1
+
+
 def test_compaction_consumes_same_phase_budget(gateway):
     _store, make = gateway
     paths = []

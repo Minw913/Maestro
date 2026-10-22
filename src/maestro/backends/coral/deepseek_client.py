@@ -37,6 +37,7 @@ class CoralDeepSeekClient:
             from .runtime import resolve_runtime
             runtime=resolve_runtime('dsh')
         self.runtime=runtime;self._active=set();self._lock=threading.RLock()
+        self._cleanup_by_url={}
         self.max_response_bytes=32*1024*1024
 
     def preflight(self):
@@ -141,9 +142,13 @@ class CoralDeepSeekClient:
                 finally:
                     cleanup['cleanup_finished_monotonic']=time.monotonic()
                     (phase/'cleanup.json').write_text(json.dumps(cleanup,indent=2))
+                    with self._lock:self._cleanup_by_url[base_url]={**cleanup,'phase_path':str(phase)}
                 with self._lock:reclaimed=handle is None or handle.process.pid not in self._active
                 if reclaimed:shutil.rmtree(workdir)
 
     def close(self):
         with self._lock:
             if self._active:raise NativeCoralUnknown('DeepSeek native process reclamation unconfirmed')
+
+    def cleanup_receipt(self,base_url):
+        with self._lock:return dict(self._cleanup_by_url.get(base_url,{}))

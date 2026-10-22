@@ -79,23 +79,31 @@ def test_separate_deepseek_stages_own_memory_and_edit_grant(tmp_path):
     finally:backend.close()
 
 
-@pytest.mark.parametrize('cap', [2, 4])
+@pytest.mark.parametrize('cap', [0, 1, 2, 4, 6])
 def test_preparation_reports_real_remaining_requests_and_reserves_summary(tmp_path, cap):
     """Multiple broker reads in a response share one actual-request charge."""
     feedback = []
+    requests=9 if cap==0 else cap
     class BudgetAware(Native):
         def run_phase(self, prompt, *, base_url, deadline, tools=None, **kwargs):
-            assert f'at most {cap} actual model requests' in prompt
-            assert f'at most {cap - 1} tool-calling model responses' in prompt
-            assert 'final evidence summary with NO tool calls' in prompt
-            for index in range(cap - 1):
+            if cap:
+                assert f'at most {cap} actual model requests' in prompt
+                assert f'at most {cap - 1} tool-calling model responses' in prompt
+                assert 'final evidence summary with NO tool calls' in prompt
+            else:
+                assert 'no model request-count cap' in prompt
+                assert 'at most 0' not in prompt
+            for index in range(requests - 1):
                 self.request(base_url, tools=True)
                 for _ in range(2):
                     result = tools('maestro_tool', {'action': 'read', 'path': 'solver/run'})
                     budget = result['preparation_budget']
                     assert budget['consumed_requests'] == index + 1
-                    assert budget['remaining_requests'] == cap - index - 1
-                    assert budget['next_response_must_be_final_summary'] == (index == cap - 2)
+                    assert budget['remaining_requests'] == (cap - index - 1 if cap else None)
+                    assert budget['unlimited_requests']==(cap==0)
+                    assert not budget['budget_exhausted']
+                    assert budget['remaining_wall_seconds']>0
+                    assert budget['next_response_must_be_final_summary'] == bool(cap and index == cap - 2)
                     feedback.append(budget)
             self.request(base_url, tools=True)  # Final response contains no tool use.
             return SimpleNamespace(text='Evidence: solver/run; no further reads needed.')
@@ -121,9 +129,14 @@ def test_preparation_reports_real_remaining_requests_and_reserves_summary(tmp_pa
         backend.register_parent(candidate['candidate_hash'], candidate['candidate_path'])
         evidence, usage = backend.prepare_with_receipt(
             AgentState('agent', candidate['candidate_hash'], .5), 0, {}, deadline=time.monotonic()+10)
-        assert usage['calls'] == len(dispatched) == cap
-        assert len(evidence['read_trace']) == 2 * (cap - 1)
+        assert usage['calls'] == len(dispatched) == requests
+        assert all('tools' in value for value in dispatched[:-1])
+        if cap:
+            assert 'tools' not in dispatched[-1]
+            assert 'LAST allowed model request' in dispatched[-1]['system']
+        else:assert 'tools' in dispatched[-1]
+        assert len(evidence['read_trace']) == 2 * (requests - 1)
         assert evidence['status'] == 'PREPARED' and usage['usage_complete']
-        assert feedback[-1]['remaining_requests'] == 1
+        if feedback:assert feedback[-1]['remaining_requests'] == (1 if cap else None)
     finally:
         backend.close()

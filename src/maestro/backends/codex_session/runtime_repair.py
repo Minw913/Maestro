@@ -155,8 +155,9 @@ class OneShotRuntimeRepairMixin:
                 proxy.assert_resolved()
                 usage=proxy.usage()
                 actual=usage['calls']-before['calls']
+                logical=usage.get('logical_calls',usage['calls'])-before.get('logical_calls',before['calls'])
                 allowed=self.config.generation_calls if repair_index is None else 1
-                if not 1<=actual<=allowed or usage['protocol_violations'] or usage['terminal_failures']:
+                if not 1<=logical<=allowed or usage['protocol_violations'] or usage['terminal_failures']:
                     raise ValueError('Implementation/repair exceeded its completed-request envelope')
                 verify()
                 if time.monotonic()>=deadline:raise TimeoutError('One-shot response missed common deadline')
@@ -167,7 +168,7 @@ class OneShotRuntimeRepairMixin:
                 with self._phase_lock:self._one_shot_states[key]['candidate']=candidate['candidate_hash']
                 return candidate
             except Exception as error:
-                if self._usage(account)['unresolved_requests'] or getattr(error,'inflight_unknown',False) or getattr(error,'execution_unknown',False):
+                if self._blocking_requests(self._usage(account)) or getattr(error,'inflight_unknown',False) or getattr(error,'execution_unknown',False):
                     raise InferenceRequestUnknown('One-shot inference/execution requires reconciliation',request_id=account,scope_id=account,context={}) from error
                 raise
             finally:
@@ -176,6 +177,9 @@ class OneShotRuntimeRepairMixin:
                     'known_input_tokens':after['known_input_tokens']-before['known_input_tokens'],
                     'known_output_tokens':after['known_output_tokens']-before['known_output_tokens'],
                     'usage_complete':after.get('usage_complete',False),'unresolved_requests':after['unresolved_requests'],
+                    'continuation_blocking_requests':self._blocking_requests(after),
+                    'logical_calls':after.get('logical_calls',after['calls'])-before.get('logical_calls',before['calls']),
+                    'retry_attempts':after.get('retry_attempts',0)-before.get('retry_attempts',0),
                     'cpu_seconds':0.,'wall_seconds':time.monotonic()-start,'account':initial_account,
                     'request_account':account,'budget_unit':'provider_request','phase':phase,
                     'repair_index':repair_index,'actor_id':actor_id,'fresh_session':True,'gateway_diagnostics':proxy.usage()}
@@ -222,6 +226,16 @@ class OneShotRuntimeRepairMixin:
             parts.sort()
             if any(a[1]>=b[0] for a,b in zip(parts,parts[1:])):raise ValueError('Overlapping runtime edits')
             lines=existing[path]['content'].splitlines(keepends=True)
-            for start,end,text in reversed(parts):lines[start-1:end]=[text]
+            for start,end,text in reversed(parts):
+                # The protocol replaces complete lines. A model may omit the
+                # final newline in its JSON string; never concatenate the new
+                # statement with an untouched following source line.
+                original=lines[end-1]
+                if text and not text.endswith(('\n','\r')):
+                    ending=('\r\n' if original.endswith('\r\n') else
+                            '\n' if original.endswith('\n') else
+                            '\r' if original.endswith('\r') else '')
+                    text+=ending
+                lines[start-1:end]=[text]
             operations.append({'action':'write','path':'solver/'+path,'content':''.join(lines),'executable':existing[path]['executable']})
         return operations

@@ -10,6 +10,7 @@ from maestro.types import AgentState, IntegrityError, MaestroError, canonical_js
 
 from .manifest import load_panel, assert_smoke_disjoint
 from .runner import PaceEvaluator
+from .sanity import default_sanity_graph_path
 
 
 def _summary(source_episode_id, heldout_episode_id, ticket, result, contract):
@@ -70,8 +71,7 @@ def evaluate_final(engine, source_episode_id: str, manifest_path: str | Path) ->
         raise IntegrityError("current task contract differs from the source episode")
     panel = load_panel(manifest_path, expected_split="heldout")
     training.assert_disjoint(panel)
-    smoke_graph = engine.config.coral.get("smoke_graph") or (
-        Path(__file__).resolve().parents[4] / "fixtures" / "toy_graphs" / "star5.gr")
+    smoke_graph = engine.config.coral.get("smoke_graph") or default_sanity_graph_path()
     assert_smoke_disjoint(panel, smoke_graph)
     contract = replace(source_contract, instances=len(panel.instances))
     candidate_hash = board["champion_hash"]

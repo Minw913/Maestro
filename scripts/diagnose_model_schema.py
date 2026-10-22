@@ -1,3 +1,4 @@
+from maestro.storage.paths import diagnostic_native_root
 """Four-call model x fixed-empty-field schema diagnostic; frozen real plan context."""
 from pathlib import Path
 import argparse,copy,json,time,threading,sqlite3,subprocess
@@ -54,13 +55,15 @@ class VisibleTrace:
         (self.folder/'visible-trace.json').write_text(json.dumps(value,indent=2))
 
 def main(root,source,historical,live):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     if not live:raise PermissionError('Explicit live required')
     if root.exists():raise FileExistsError('No reused roots/retries')
     before={str(p.resolve()):reservations(p) for p in historical}
     assert not subprocess.check_output(['docker','ps','-aq'],text=True).strip()
     root.mkdir(parents=True,exist_ok=False)
     inputs=[]
-    for p in (source/'runtime/codex-autonomous-authority/native').glob('*/scope.json'):
+    for p in (diagnostic_native_root(source)).glob('*/scope.json'):
         s=json.loads(p.read_text())
         if s['prompt'].startswith('PLAN_RO:') and json.loads(s['prompt'].split('\n',1)[1])['agent_id']=='agent-1':inputs.append((s['prompt'],json.loads((p.parent/'schema.json').read_text())))
     assert len(inputs)==1

@@ -174,10 +174,8 @@ Project 2_ MAESTRO1/
     |       |-- test_private_views.py
     |       |-- test_v1_mock_episodes.py
     |       `-- test_pace_sandbox.py
-    |-- fixtures/
-    |   |-- toy_graphs/                    # 与正式/held-out 不重叠
-    |   |-- schema_examples/               # synthetic，只有格式示例
-    |   `-- mock_cases/                    # 失败、超时、重复、故障恢复
+    |-- tests/fixtures/                   # 测试专用的合成图与求解器
+    |-- src/maestro/tasks/pace/data/      # PACE 运行时固定 sanity-check 图
     |-- docs/
     |   |-- requirements.md                # 规格条款 -> 模块 -> 验收映射
     |   |-- coral_contract.md              # pinned API 与升级检查

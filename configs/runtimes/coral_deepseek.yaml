@@ -11,7 +11,13 @@ coral:
   deepseek_api_base: https://api.deepseek.com/anthropic
   deepseek_api_key_env: DEEPSEEK_API_KEY
   deepseek_reasoning_effort: low
-  deepseek_max_output_tokens: 32000
+  deepseek_max_output_tokens: 96000
+  deepseek_transport_retry:
+    max_retries_per_request: 1
+    max_extra_requests: 20
+    backoff_seconds: 10.0
+    continue_after_network_failure: true
+    warm_seed_fallback: true
   # Install and audit dsh, then freeze its full --version output and binary SHA256.
   deepseek_cli_version: UNQUALIFIED
   deepseek_cli_sha256: ''

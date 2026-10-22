@@ -28,14 +28,17 @@ def balanced_schedule(agent_ids, slots, opportunities, seed):
     return waves
 
 
-def validate_warm_completion(states, opportunity_counts, expected_opportunities):
+def validate_warm_completion(states, opportunity_counts, expected_opportunities,*,
+                             allow_seed_fallback=False,seed_hash=None,seed_score=None):
     """Precheck failures count as opportunities, never invented history rows."""
     states = states.values() if isinstance(states, dict) else states
     errors = []
     for state in states:
         if opportunity_counts.get(state.agent_id, 0) != expected_opportunities:
             errors.append(f"{state.agent_id}: unequal opportunity count")
-        if not state.history:
+        fallback=(allow_seed_fallback and seed_hash is not None and seed_score is not None
+            and state.parent_hash==seed_hash and state.parent_score==seed_score and state.ucb_n==0)
+        if not state.history and not fallback:
             errors.append(f"{state.agent_id}: no formal evaluation record")
         if any(record.agent_id != state.agent_id for record in state.history):
             errors.append(f"{state.agent_id}: foreign history")

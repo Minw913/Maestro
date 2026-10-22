@@ -12,6 +12,60 @@ from maestro.backends.coral.deepseek_client import CoralDeepSeekClient
 from maestro.backends.coral.deepseek_exec import command,environment
 
 
+@pytest.mark.skipif(os.environ.get('MAESTRO_RUN_NATIVE_WIRE')!='1'
+                   or not os.environ.get('MAESTRO_DSH_EXECUTABLE'),
+                   reason='Opt-in installed DSH local-only wire test')
+@pytest.mark.parametrize('cap', [0, 1, 4])
+def test_installed_dsh_final_preparation_request_is_tool_free(tmp_path, cap):
+    from maestro.backends.coral.deepseek_gate import DeepSeekQuotaProxy,DEEPSEEK_TOOL
+    from maestro.execution.budgets import BudgetStore
+    forwarded=[];tool_calls=[]
+    request_target=6 if cap==0 else cap
+    def upstream(payload, deadline):
+        forwarded.append(payload);final=len(forwarded)==request_target
+        if final:
+            if cap:
+                assert 'tools' not in payload and 'tool_choice' not in payload
+                assert 'LAST allowed model request' in str(payload['system'])
+            else:assert payload['tools'][0]['name']==DEEPSEEK_TOOL
+            content=[{'type':'text','text':'Evidence insufficient; no further reads.'}]
+        else:
+            assert payload['tools'][0]['name']==DEEPSEEK_TOOL
+            content=[{'type':'tool_use','id':f'call_{len(forwarded)}','name':DEEPSEEK_TOOL,
+                      'input':{'action':'list','path':'solver/'}}]
+        block=content[0]
+        events=[{'type':'message_start','message':{'type':'message','id':f'msg_{len(forwarded)}',
+            'role':'assistant','model':'deepseek-flash','stop_reason':None,'content':[],
+            'usage':{'input_tokens':10,'output_tokens':0}}},
+            {'type':'content_block_start','index':0,'content_block':
+             ({'type':'text','text':''} if final else {**block,'input':{}})},
+            {'type':'content_block_delta','index':0,'delta':
+             ({'type':'text_delta','text':block['text']} if final else
+              {'type':'input_json_delta','partial_json':json.dumps(block['input'])})},
+            {'type':'content_block_stop','index':0},
+            {'type':'message_delta','delta':{'stop_reason':'end_turn' if final else 'tool_use'},
+             'usage':{'output_tokens':3}}, {'type':'message_stop'}]
+        return b''.join(b'data: '+json.dumps(event).encode()+b'\n\n' for event in events),'text/event-stream'
+    store=BudgetStore(tmp_path/'budget.sqlite');deadline=time.monotonic()+30
+    proxy=DeepSeekQuotaProxy(store,'wire:0:agent:PREPARATION','deepseek-flash',deadline=deadline,
+        max_calls=cap,max_request_bytes=2*1024*1024,max_output_tokens=1000,
+        per_request_tokens=100,allowed_tool_names=(DEEPSEEK_TOOL,),
+        final_response_on_last_request=True,upstream=upstream)
+    client=CoralDeepSeekClient(model='deepseek-flash',work_root=tmp_path/'native',
+        executable=os.environ['MAESTRO_DSH_EXECUTABLE'],max_output_tokens=100,timeout=30)
+    try:
+        response=client.run_phase('PREPARATION: read evidence and finish within the configured cap.',
+            base_url=proxy.start(),deadline=deadline,
+            tools=lambda name,args:tool_calls.append((name,args)) or {'files':['solver/run']})
+        assert response.text=='Evidence insufficient; no further reads.'
+        assert len(tool_calls)==request_target-1 and len(forwarded)==request_target
+        assert proxy.usage()['calls']==request_target
+        proxy.assert_resolved()
+        cleanup=json.loads(next((tmp_path/'native').glob('*/cleanup.json')).read_text())
+        assert cleanup['local_process_group_reclaimed'] and cleanup['tool_service_reclaimed']
+    finally:client.close();proxy.close();store.close()
+
+
 def test_actual_coral_deepseek_runtime_start_and_scrubbed_prefix(tmp_path,monkeypatch):
     from coral.agent.builtin.deepseek_harness import DeepSeekHarnessRuntime
     client=CoralDeepSeekClient(model='offline-deepseek',work_root=tmp_path/'native',

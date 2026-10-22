@@ -1,3 +1,4 @@
+from maestro.storage.paths import diagnostic_native_root
 """Single-use LIVE qualification of MCP preparation, one implementation and fresh runtime repair.
 
 Four actual requests maximum: preparation 2, implementation 1, runtime repair 1.
@@ -64,6 +65,8 @@ def prior_cost(paths):
 
 
 def run(root,readiness,config_path,prior_ledgers,live,standalone=False):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     if not live:raise ValueError('Explicit --live is required')
     if root.exists():raise FileExistsError('Qualification root must not exist; no retry')
     if standalone:
@@ -133,7 +136,7 @@ def run(root,readiness,config_path,prior_ledgers,live,standalone=False):
         assert backend.precheck(repaired)==(True,'pass')
         authority.revoke(grant);grant=None
         result['checks']['fresh_runtime_patch_and_precheck']=True
-        phase_scopes=list((root/'runtime/codex-autonomous-authority/native').glob('*/scope.json'))
+        phase_scopes=list((diagnostic_native_root(root/'runtime')).glob('*/scope.json'))
         prompts=[json.loads(p.read_text())['prompt'] for p in phase_scopes]
         repair_prompts=[p for p in prompts if p.startswith('ISOLATED RUNTIME REPAIR.')]
         assert len(repair_prompts)==1 and nonce not in repair_prompts[0]

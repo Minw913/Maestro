@@ -159,11 +159,18 @@ class CodexQuotaProxy:
     def __init__(self, store, account, model, *, deadline, max_calls,
                  max_request_bytes, max_output_tokens, allowed_tool_names=(),
                  upstream=None, max_response_bytes=32 * 1024 * 1024, event_sink=None, tool_namespace=None, request_guard=None,
-                 diagnostic_sink=None):
+                 diagnostic_sink=None, final_response_on_last_request=False):
+        if type(final_response_on_last_request) is not bool:
+            raise ValueError("Final-response policy must be boolean")
+        self.final_response_on_last_request = final_response_on_last_request
         if diagnostic_sink is not None and not callable(diagnostic_sink):
             raise ValueError("Diagnostic sink must be callable")
         self._diagnostic_sink = diagnostic_sink
-        integers = (max_calls, max_request_bytes, max_output_tokens, max_response_bytes)
+        unlimited = (type(max_calls) is int and max_calls == 0
+                     and isinstance(account, str) and account.endswith(':PREPARATION'))
+        if type(max_calls) is not int or (max_calls <= 0 and not unlimited):
+            raise ValueError('Only preparation can omit its request-count cap')
+        integers = (max_request_bytes, max_output_tokens, max_response_bytes)
         if any(type(value) is not int or value <= 0 for value in integers):
             raise ValueError("Positive integer native request quotas are required")
         if (not isinstance(account, str) or not account or not isinstance(model, str)
@@ -206,7 +213,8 @@ class CodexQuotaProxy:
         except BudgetExceeded:
             store.create(account, max_calls=max_calls, max_request_bytes=max_request_bytes,
                          max_output_tokens=max_output_tokens, max_concurrent=1,
-                         deadline=time.time() + deadline - time.monotonic())
+                         deadline=time.time() + deadline - time.monotonic(),
+                         allow_unlimited_calls=unlimited)
         else:
             if (old["max_calls"], old["max_request_bytes"], old["max_output_tokens"],
                     old["max_concurrent"]) != (max_calls, max_request_bytes, max_output_tokens, 1):
@@ -343,7 +351,18 @@ class CodexQuotaProxy:
         tools = value.get("tools", [])
         if not isinstance(tools, list):
             raise ValueError("Native tool manifest is malformed")
-        admitted_tools = self._normalize_tools(value, declare=paths[handler.path] == "/responses")
+        snapshot = self.store.snapshot(self.account)
+        final_response = (self.final_response_on_last_request
+                          and snapshot['max_calls'] > 0
+                          and snapshot['calls'] == snapshot['max_calls']-1)
+        if final_response and paths[handler.path] != '/responses':
+            raise PermissionError('Last preparation request must return a summary, not compact context')
+        handler._maestro_final_preparation = final_response
+        admitted_tools = self._normalize_tools(value,
+            declare=paths[handler.path] == "/responses" and not final_response,
+            final_response=final_response)
+        if final_response:
+            value['tool_choice'] = 'none'
         choice = value.get("tool_choice", "auto")
         if isinstance(choice, dict):
             if (choice.get("type") not in {"function", "custom"}
@@ -362,7 +381,7 @@ class CodexQuotaProxy:
         forwarded.update({"Content-Type": "application/json", "Accept": "text/event-stream, application/json"})
         return paths[handler.path], forwarded, body, output_bound
 
-    def _normalize_tools(self, value, *, declare=True):
+    def _normalize_tools(self, value, *, declare=True, final_response=False):
         """Replace both classic and native embedded manifests authoritatively.
 
         Codex 0.156 can encode executable namespaces inside
@@ -389,7 +408,7 @@ class CodexQuotaProxy:
             value["input"] = [item for item in inputs
                               if not isinstance(item, dict) or item.get("type") != "additional_tools"]
         value.pop("tools", None)
-        if not declare:
+        if not declare and not final_response:
             return []  # Compact is a separate narrow schema, with no tool loop.
         if admitted:
             if native_envelope:
@@ -408,6 +427,9 @@ class CodexQuotaProxy:
                 "are forbidden. Each operation is authorized separately. Native namespaces, functions.exec, shell, "
                 "clock, wait, web, approvals, and other host tools are unavailable. Use the broker's "
                 "read/list/search for memory, write for persistent changes, and shell for isolated debugging.")
+        elif final_response:
+            from maestro.backends.preparation import FINAL_PREPARATION_INSTRUCTION
+            instruction = FINAL_PREPARATION_INSTRUCTION
         else:
             instruction = ("This is read-only single-request planning. No tools or executable namespaces "
                            "are available; use the frozen context and return the requested plan JSON.")
@@ -419,18 +441,18 @@ class CodexQuotaProxy:
             value["instructions"] = (previous+"\n" if isinstance(previous, str) and previous else "")+instruction
         return admitted
 
-    def _validate_item(self, item):
+    def _validate_item(self, item, *, tools_allowed=True):
         if not isinstance(item, dict):
             raise QuotaProxyError("Native response output item is malformed")
         kind = item.get("type")
         if kind in _SAFE_OUTPUT:
             return
-        if (kind in _FUNCTION_OUTPUT and item.get("name") in self.allowed_tool_names
+        if (tools_allowed and kind in _FUNCTION_OUTPUT and item.get("name") in self.allowed_tool_names
                 and item.get("namespace") == self.tool_namespace):
             return
         raise QuotaProxyError("Native response requested a forbidden host tool")
 
-    def _collect(self, response, path, observations=None):
+    def _collect(self, response, path, observations=None, *, tools_allowed=True):
         """Return buffered bytes, terminal response and a protocol violation."""
         observations = observations if observations is not None else {}
         observations.setdefault("sse_event_types", [])
@@ -539,7 +561,7 @@ class CodexQuotaProxy:
                         observations["error_code"] = self._safe_label(error.get("code"))
                 if "item" in value or kind in {"response.output_item.added", "response.output_item.done"}:
                     try:
-                        self._validate_item(value.get("item"))
+                        self._validate_item(value.get("item"), tools_allowed=tools_allowed)
                     except QuotaProxyError:
                         violation = True
                 nested = value.get("response")
@@ -549,12 +571,12 @@ class CodexQuotaProxy:
                     else:
                         for item in nested["output"]:
                             try:
-                                self._validate_item(item)
+                                self._validate_item(item, tools_allowed=tools_allowed)
                             except QuotaProxyError:
                                 violation = True
                 if isinstance(kind, str) and kind.endswith("_call"):
                     try:
-                        self._validate_item(value)
+                        self._validate_item(value, tools_allowed=tools_allowed)
                     except QuotaProxyError:
                         violation = True
                 if kind in {"response.completed", "response.failed", "response.incomplete"}:
@@ -584,7 +606,7 @@ class CodexQuotaProxy:
         else:
             for item in output:
                 try:
-                    self._validate_item(item)
+                    self._validate_item(item, tools_allowed=tools_allowed)
                 except QuotaProxyError:
                     violation = True
         return bytes(raw), terminal, violation, terminal_failure, is_sse
@@ -661,19 +683,29 @@ class CodexQuotaProxy:
             self._error(handler, code, message)
 
         try:
-            path, headers, body, output_bound = self._request(handler)
-            # Reserve a per-attempt share of the phase estimate without claiming
-            # that native ChatGPT enforces an output-token field it lacks.
-            output_bound = output_bound or max(1, self.max_output_tokens // self.max_calls)
-            try:
-                reservation = self.store.reserve(self.account, uuid.uuid4().hex,
-                                                 request_bytes=len(body), output_tokens=output_bound)
-            except BudgetExceeded:
-                if not self.store.snapshot(self.account)["active"]:
-                    with self._lock:
+            # Bind the final-request policy and reservation under the same lock:
+            # parallel HTTP handlers cannot observe a stale request index.
+            with self._lock:
+                path, headers, body, output_bound = self._request(handler)
+                # Native ChatGPT need not accept an output-token field.
+                if self.max_calls == 0:
+                    snapshot = self.store.snapshot(self.account)
+                    remaining = snapshot['max_output_tokens']-snapshot['output_tokens']
+                    if remaining <= 0:
                         self.quota_denied = True
                         self.quota_denied_count += 1
-                raise
+                        raise BudgetExceeded('Preparation output-token quota exhausted')
+                    output_bound = min(output_bound, remaining) if output_bound else remaining
+                else:
+                    output_bound = output_bound or max(1, self.max_output_tokens // self.max_calls)
+                try:
+                    reservation = self.store.reserve(self.account, uuid.uuid4().hex,
+                                                     request_bytes=len(body), output_tokens=output_bound)
+                except BudgetExceeded:
+                    if not self.store.snapshot(self.account)["active"]:
+                        self.quota_denied = True
+                        self.quota_denied_count += 1
+                    raise
             if self._closed or time.monotonic() >= self.deadline:
                 raise TimeoutError("Native phase closed after reservation")
             stage = "upstream_connect"
@@ -710,7 +742,8 @@ class CodexQuotaProxy:
                     completed = True
                 raise QuotaProxyError("Native upstream did not return an admitted response")
             stage = "upstream_read"
-            raw, terminal, violation, terminal_failure, is_sse = self._collect(response, path, observations)
+            raw, terminal, violation, terminal_failure, is_sse = self._collect(response, path, observations,
+                tools_allowed=not getattr(handler, '_maestro_final_preparation', False))
             stage = "response_validation"
             terminal_error = terminal.get("error")
             if isinstance(terminal_error, dict):

@@ -58,6 +58,56 @@ def test_actual_requests_usage_ceiling_and_no_quota_reset(gate):
             max_request_bytes=100000,max_output_tokens=100,per_request_tokens=20,upstream=owner.upstream)
 
 
+def test_uncapped_preparation_retains_token_limit_and_usage(tmp_path):
+    store=BudgetStore(tmp_path/'requests.sqlite');forwarded=[]
+    def upstream(value,deadline):
+        forwarded.append(value);return json.dumps(message()).encode(),'application/json'
+    owner=DeepSeekQuotaProxy(store,'agent:PREPARATION','offline-deepseek',deadline=time.monotonic()+20,
+        max_calls=0,max_request_bytes=100000,max_output_tokens=30,per_request_tokens=30,
+        allowed_tool_names=(DEEPSEEK_TOOL,),upstream=upstream,final_response_on_last_request=True)
+    try:
+        for _ in range(10):owner.complete(payload())
+        assert owner.usage()['calls']==10 and owner.usage()['output_tokens']==30
+        assert all(value.get('tools') for value in forwarded)
+        with pytest.raises(BudgetExceeded):owner.complete(payload())
+        assert len(forwarded)==10 and owner.usage()['unresolved_requests']==0
+    finally:owner.close();store.close()
+
+
+def test_uncapped_preparation_unknown_still_blocks(tmp_path):
+    store=BudgetStore(tmp_path/'requests.sqlite');forwarded=[]
+    def upstream(*args):
+        forwarded.append(1);return json.dumps(message(usage=False)).encode(),'application/json'
+    owner=DeepSeekQuotaProxy(store,'agent:PREPARATION','offline-deepseek',deadline=time.monotonic()+20,
+        max_calls=0,max_request_bytes=100000,max_output_tokens=100,per_request_tokens=20,
+        allowed_tool_names=(DEEPSEEK_TOOL,),upstream=upstream)
+    try:
+        with pytest.raises(ValueError):owner.complete(payload())
+        with pytest.raises(BudgetExceeded):owner.complete(payload())
+        with pytest.raises(InferenceRequestUnknown):owner.assert_resolved()
+        assert owner.usage()['calls']==1 and len(forwarded)==1
+    finally:owner.close();store.close()
+
+
+def test_maximum_per_request_bound_uses_remaining_phase_tokens(tmp_path):
+    store=BudgetStore(tmp_path/'requests.sqlite');forwarded=[]
+    def upstream(payload, deadline):
+        forwarded.append(payload)
+        value=message();value['usage']['output_tokens']=32000
+        return json.dumps(value).encode(),'application/json'
+    owner=DeepSeekQuotaProxy(store,'agent:PREPARATION','offline-deepseek',
+        deadline=time.monotonic()+20,max_calls=4,max_request_bytes=100000,max_output_tokens=96000,
+        per_request_tokens=96000,allowed_tool_names=(DEEPSEEK_TOOL,),upstream=upstream)
+    try:
+        for _ in range(3):owner.complete(payload(max_tokens=96000))
+        assert [value['max_tokens'] for value in forwarded]==[96000,64000,32000]
+        assert owner.usage()['calls']==3 and owner.usage()['output_tokens']==96000
+        with pytest.raises(BudgetExceeded,match='output-token'):owner.complete(payload(max_tokens=96000))
+        assert len(forwarded)==3 and owner.usage()['unresolved_requests']==0
+        assert owner.quota_denied
+    finally:owner.close();store.close()
+
+
 def test_native_tools_removed_and_broker_schema_owned(gate):
     owner,_,forwarded=gate
     owner.complete(payload(tools=[{'name':'bash','input_schema':{}},
@@ -161,3 +211,42 @@ def test_missing_mcp_registration_rejected_without_provider_spend(gate):
     with pytest.raises(PermissionError,match='registered maestro'):
         owner.complete(payload(tools=[]))
     assert not forwarded and store.usage(owner.account)['calls']==0
+
+
+@pytest.mark.parametrize('cap', [1, 2, 4, 6])
+@pytest.mark.parametrize('stream', [False, True])
+def test_last_preparation_request_disables_tools_at_configured_cap(tmp_path, cap, stream):
+    store=BudgetStore(tmp_path/'requests.sqlite'); forwarded=[]
+    def upstream(value, deadline):
+        forwarded.append(value)
+        return ((sse(message()), 'text/event-stream') if stream else
+                (json.dumps(message()).encode(), 'application/json'))
+    owner=DeepSeekQuotaProxy(store,'agent:PREPARATION','offline-deepseek',
+        deadline=time.monotonic()+20,max_calls=cap,max_request_bytes=100000,max_output_tokens=500,
+        per_request_tokens=20,allowed_tool_names=(DEEPSEEK_TOOL,),upstream=upstream,
+        final_response_on_last_request=True)
+    try:
+        for _ in range(cap):
+            owner.complete(payload(system=[{'type':'text','text':'original'}],
+                tool_choice={'type':'tool','name':DEEPSEEK_TOOL}))
+        assert all('tools' in value for value in forwarded[:-1])
+        final=forwarded[-1]
+        assert 'tools' not in final and 'tool_choice' not in final
+        assert final['system'][0]['text']=='original'
+        assert 'LAST allowed model request' in final['system'][-1]['text']
+        with pytest.raises(BudgetExceeded):owner.complete(payload())
+        assert len(forwarded)==cap and owner.usage()['unresolved_requests']==0
+    finally:owner.close();store.close()
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_final_preparation_tool_response_is_charged_but_not_delivered(gate, stream):
+    owner,store,forwarded=gate
+    owner.final_response_on_last_request=True
+    owner.complete(payload())
+    value=message(tool=DEEPSEEK_TOOL)
+    owner.upstream=lambda *_:((sse(value),'text/event-stream') if stream else
+                             (json.dumps(value).encode(),'application/json'))
+    with pytest.raises(PermissionError):owner.complete(payload())
+    assert owner.usage()['calls']==2 and owner.usage()['protocol_violations']==1
+    assert store.usage(owner.account)['unresolved_requests']==0

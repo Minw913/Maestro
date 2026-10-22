@@ -2,11 +2,16 @@
 from dataclasses import asdict
 import argparse, json, os, pathlib, subprocess, time
 from maestro.execution.sandbox import DockerRunner, RunRequest, ResourceLimits, Mount
+from maestro.tasks.pace.sanity import default_sanity_graph_path
 BASE=pathlib.Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--root',type=pathlib.Path)
 args=parser.parse_args()
-ROOT=args.root.resolve() if args.root else pathlib.Path(json.loads((BASE/'artifacts/remote-deployment-paths.json').read_text())['preflight_root'])
+pointer=BASE/'runtime/remote-deployment-paths.json'
+if not pointer.exists():pointer=BASE/'artifacts/remote-deployment-paths.json'
+ROOT=args.root.resolve() if args.root else pathlib.Path(json.loads(pointer.read_text())['preflight_root'])
+from maestro.storage.paths import diagnostic_root
+ROOT = diagnostic_root(ROOT)
 if args.root: ROOT.mkdir(parents=True,exist_ok=False)
 IMAGE='python@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641'
 runner=DockerRunner(IMAGE); results=[]
@@ -40,7 +45,7 @@ except PermissionError:pass
 else:raise AssertionError('scratch noexec bypass')
 assert __import__('subprocess').run(['python3','-c','print(1)'],check=True,capture_output=True).stdout.strip()==b'1'
 print('BOUNDARIES_NOEXEC_OK')
-""",normal,lambda r:r.returncode==0 and 'BOUNDARIES_NOEXEC_OK' in r.stdout,(Mount(BASE/'fixtures/toy_graphs','/candidate'),))
+""",normal,lambda r:r.returncode==0 and 'BOUNDARIES_NOEXEC_OK' in r.stdout,(Mount(default_sanity_graph_path().parent,'/candidate'),))
 case('cpu_timeout_fork_setsid',"""import os,time
 pid=os.fork()
 if pid==0:os.setsid()

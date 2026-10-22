@@ -17,6 +17,8 @@ from maestro.tasks.pace.verification import ContainerVerificationWorker
 
 
 def main(root,config_path):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     root.mkdir(parents=True,exist_ok=False)
     config=load_config(config_path).for_stage('warm_start')
     contract=EvaluationContract.standard(**{**config.pace['contract'],'cpu_workers':config.cpu_workers,'instance_workers':config.instance_workers})

@@ -54,7 +54,7 @@ def _control_request(action,payload):
 
 def build_parser():
     parser=argparse.ArgumentParser(prog='maestro',description='Market allocation for Coral research agents')
-    parser.add_argument('--root',default='artifacts/local',help='Local experiment artifact root')
+    parser.add_argument('--root',default='artifacts/runs/local',help='Standard experiment outputs; local runtime material is stored separately under runtime/')
     sub=parser.add_subparsers(dest='command',required=True)
     codex_check=sub.add_parser('codex-check',help='Check local ChatGPT Codex sign-in without reading credentials')
     codex_check.add_argument('--probe',action='store_true',help='Run one real, tool-free structured Codex turn')
@@ -85,6 +85,8 @@ def build_parser():
         if command=='final-eval':
             item.add_argument('--episode',required=True)
             item.add_argument('--manifest',required=True)
+    archive=sub.add_parser('export-artifacts',help='Export standard experiment outputs with standalone SQLite backups; no local runtime logs')
+    archive.add_argument('--output',required=True,help='New destination outside the original run root')
     for command in ('report','replay','status'):
         item=sub.add_parser(command)
         item.add_argument('--episode')
@@ -106,6 +108,22 @@ def build_parser():
 
 def main(argv=None):
     args=build_parser().parse_args(argv)
+    if args.command in ('bootstrap','run','resume','smoke','final-eval'):
+        from maestro.execution.local_logging import controller_logs
+        with controller_logs(args.root,args.command) as receipt:
+            try:
+                code=_execute(args)
+                receipt['exit_code']=code
+                return code
+            finally:
+                if (Path(args.root)/'deepseek-native-authority/requests.sqlite').is_file():
+                    from maestro.backends.coral.failure_report import write_failure_report
+                    try:receipt['failure_report']=write_failure_report(args.root)
+                    except Exception as error:receipt['failure_report_error']=type(error).__name__
+    return _execute(args)
+
+
+def _execute(args):
     try:
         if args.command=='pause':
             from maestro.execution.pause import PauseController
@@ -119,6 +137,8 @@ def main(argv=None):
             print(canonical_json(result))
             return 0 if result['status']=='CLEAR' else 2
         elif args.command=='codex-check':
+            from maestro.storage.paths import diagnostic_root
+            args.root=str(diagnostic_root(args.root))
             from maestro.backends.codex_session import CodexSessionClient
             import time
             client=CodexSessionClient(model=None,work_root=Path(args.root)/'codex-check',timeout=60)
@@ -143,7 +163,8 @@ def main(argv=None):
             if not args.live:
                 raise ValueError('codex-qualify requires --live to authorize its bounded real requests')
             from maestro.backends.codex_session.qualification import run_qualification
-            result=run_qualification(args.root,model=args.model,executable=args.executable,
+            from maestro.storage.paths import diagnostic_root
+            result=run_qualification(str(diagnostic_root(args.root)),model=args.model,executable=args.executable,
                 historical_path=args.historical_unknown,historical_sha256=args.historical_sha256,
                 phase_seconds=args.phase_seconds,reasoning_effort=args.reasoning_effort)
             print(canonical_json(result))
@@ -188,6 +209,9 @@ def main(argv=None):
                 from maestro.reports import report
                 result['replay']=verify_ledger(args.root)
                 result['report']=report(args.root)['report']
+        elif args.command=='export-artifacts':
+            from maestro.storage.export import export_outputs
+            result=export_outputs(args.root,args.output)
         elif args.command=='replay':
             from maestro.replay import verify_ledger
             result=verify_ledger(args.root,args.episode)
@@ -208,6 +232,17 @@ def main(argv=None):
         print(canonical_json(result))
         return 0
     except (MaestroError,ValueError,OSError,PermissionError,RuntimeError) as error:
+        if args.command in ('bootstrap','run','resume','smoke','final-eval'):
+            from maestro.backends.coral.deepseek_lifecycle import exception_details
+            from maestro.storage.paths import run_paths
+            from datetime import datetime,timezone
+            try:
+                local=run_paths(args.root).local;local.mkdir(parents=True,exist_ok=True)
+                with (local/'controller-errors.jsonl').open('a') as stream:
+                    stream.write(canonical_json({'utc':datetime.now(timezone.utc).isoformat(),
+                        'command':args.command,**exception_details(error)})+'\n')
+            except OSError:
+                pass  # Diagnostic storage must not mask the original failure.
         print(canonical_json({'error':type(error).__name__,'message':str(error)}),file=sys.stderr)
         return 2
 

@@ -17,7 +17,8 @@ RUNTIME_CORAL_FIELDS = frozenset({
     'planning_api_base','generation_api_base','planning_api_key_env','generation_api_key_env',
     'planning_seconds','planning_output_tokens','generation_output_tokens','anthropic_beta',
     'session_timeout_seconds','deepseek_api_base','deepseek_api_key_env',
-    'deepseek_cli_version','deepseek_cli_sha256','deepseek_reasoning_effort','deepseek_max_output_tokens'})
+    'deepseek_cli_version','deepseek_cli_sha256','deepseek_reasoning_effort','deepseek_max_output_tokens',
+    'deepseek_transport_retry'})
 DEPLOYMENT_CORAL_FIELDS = frozenset({'checkout_path','codex_executable','deepseek_executable','generation_image','smoke_graph'})
 DEPLOYMENT_PACE_FIELDS = frozenset({'panel_manifest','seed_solver','heldout_manifest'})
 DEPLOYMENT_CONTRACT_FIELDS = frozenset({'image','hardware_id','toolchain_digest'})
@@ -83,6 +84,8 @@ def _fragment(path, role, seen, sources):
                 maximum=settings.get('deepseek_max_output_tokens',32000)
                 if type(maximum) is not int or not 1<=maximum<=96000:
                     raise ValueError('Invalid DeepSeek output-token bound')
+                from maestro.backends.coral.deepseek_retry import RetryPolicy
+                RetryPolicy.parse(settings.get('deepseek_transport_retry'))
             elif factory=='maestro.backends.coral.native_backend:native_factory':
                 if settings.get('runtime','codex')!='codex' or any(k.startswith('deepseek_') for k in settings):
                     raise ValueError('Codex runtime cannot inherit DeepSeek settings')

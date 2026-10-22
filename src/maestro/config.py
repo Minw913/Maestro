@@ -78,7 +78,9 @@ class RunConfig:
             if not value.is_finite():
                 raise ValueError(f'{name} must be finite')
             object.__setattr__(self, name,value)
-        for name in ('n_agents','slots','rounds','warm_opportunities_per_agent','warm_concurrency','cpu_workers','instance_workers','refresh_interval','preparation_calls','generation_calls','planning_calls','max_candidate_revisions','runtime_repair_calls'):
+        if type(self.preparation_calls) is not int or self.preparation_calls < 0:
+            raise ValueError('preparation_calls must be a nonnegative integer (0 = no call-count cap)')
+        for name in ('n_agents','slots','rounds','warm_opportunities_per_agent','warm_concurrency','cpu_workers','instance_workers','refresh_interval','generation_calls','planning_calls','max_candidate_revisions','runtime_repair_calls'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f'{name} must be a positive integer')
         if self.slots > self.n_agents:

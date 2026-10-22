@@ -34,6 +34,8 @@ def historical(path):
     return rows
 
 def run(root,source,config_path,live,accept_unknown,planning_seconds=120,historical_ledgers=()):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     if not live or not accept_unknown:raise PermissionError('Explicit live and historical-UNKNOWN exception required')
     if root.exists():raise FileExistsError('No retries or reused qualification root')
     prior=source/'codex-autonomous-authority/requests.sqlite';before=historical(prior)
@@ -77,7 +79,10 @@ def run(root,source,config_path,live,accept_unknown,planning_seconds=120,histori
             workspace=backend._workspace(state)
             # Source episode is authoritative; never infer identity from run IDs.
             old_episode=db.execute('SELECT id FROM episodes').fetchone()[0]
-            private=source/'coral-workspaces'/old_episode/agent/'private'
+            from maestro.storage.paths import run_paths
+            workspace_base=run_paths(source).local/'coral-workspaces'
+            if not workspace_base.exists():workspace_base=source/'coral-workspaces'
+            private=workspace_base/old_episode/agent/'private'
             if private.exists():shutil.copytree(private,workspace.private,dirs_exist_ok=True,symlinks=False)
         backend.set_board(snapshot['board'])
         db.close()

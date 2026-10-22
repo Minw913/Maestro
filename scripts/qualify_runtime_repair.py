@@ -16,13 +16,15 @@ from maestro.execution.budgets import BudgetStore
 from maestro.execution.grants import GrantAuthority
 from maestro.execution.sandbox import DockerRunner,RunRequest,ResourceLimits,Mount
 from maestro.tasks.pace.runner import smoke_test
+from maestro.tasks.pace.sanity import default_sanity_graph_path
 from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
 from maestro.tasks.pace.verifier import verify_graph_solution
 from maestro.types import AgentState,Plan,stable_hash
 base=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--root',required=True,type=Path)
-root=parser.parse_args().root.resolve();root.mkdir(parents=True,exist_ok=False)
+from maestro.storage.paths import diagnostic_root
+root=diagnostic_root(parser.parse_args().root);root.mkdir(parents=True,exist_ok=False)
 image='python@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641'
 seed=base/'data/seed_solver';source=(seed/'run').read_text();line=next(i for i,s in enumerate(source.splitlines(),1) if 'stream=sys.stdin.buffer' in s)
 broken=source.replace('stream=sys.stdin.buffer','stream=missing_stream')
@@ -56,7 +58,7 @@ b=StrictCodexBackend(client,store,WorkspaceStore(root/'workspaces',root/'cas'),p
 def precheck(candidate):
  class Bounded:
   def run(self,request,limits):return b._run_fixed_precheck(request,limits,deadline=deadline)
- return smoke_test(candidate['candidate_path'],base/'fixtures/toy_graphs/star5.gr',Bounded(),image=image)
+ return smoke_test(candidate['candidate_path'],default_sanity_graph_path(),Bounded(),image=image)
 b._precheck=precheck;b.begin_episode('physical-runtime-repair');parent=b.prepare_seed();b.register_parent(parent['candidate_hash'],parent['candidate_path'])
 state=AgentState('a',parent['candidate_hash'],0);plan=Plan('p','v','a',state.parent_hash,'local_search','parameter_change','SECRET_PLAN_MARKER','implement','test')
 (b._workspace(state).private/'notes').write_text('SECRET_MEMORY_MARKER');a=GrantAuthority();deadline=time.monotonic()+60

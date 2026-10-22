@@ -1,6 +1,12 @@
-artifacts/
-data/
+/runtime/
 /docs/
+/Overleaf/
+# Historical mixed records stay local; new standard outputs are shareable.
+/artifacts/*
+!/artifacts/README.md
+!/artifacts/runs/
+!/artifacts/exports/
+data/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -17,3 +23,7 @@ old_docs/
 !.env.example
 !.env.template
 auth.json
+
+# Live SQLite sidecars are included through SQLite backup, not Git copies.
+*.sqlite-wal
+*.sqlite-shm

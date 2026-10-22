@@ -65,6 +65,10 @@ class PlanningReceipt:
     input_tokens: int | None
     output_tokens: int | None
     actual_requests: int = 1
+    logical_requests: int | None = None
+    retry_attempts: int = 0
+    known_input_tokens: int | None = None
+    known_output_tokens: int | None = None
 
 
 class OpenAICompatibleProvider:

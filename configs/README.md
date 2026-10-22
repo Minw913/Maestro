@@ -4,8 +4,8 @@
 use that entry; the command selects its stage:
 
 ```sh
-python -m maestro --root artifacts/EXPERIMENT bootstrap --config configs/experiments/pace_remote.yaml
-python -m maestro --root artifacts/EXPERIMENT run --bootstrap CHECKPOINT_PATH --config configs/experiments/pace_remote.yaml --policy first_price
+python -m maestro --root artifacts/runs/EXPERIMENT bootstrap --config configs/experiments/pace_remote.yaml
+python -m maestro --root artifacts/runs/EXPERIMENT run --bootstrap CHECKPOINT_PATH --config configs/experiments/pace_remote.yaml --policy first_price
 ```
 
 These are usage examples, not launch authorization. The checked-in deployment
@@ -81,3 +81,17 @@ Provide credentials only in the controller environment. See
 [DeepSeek provisioning, protocol boundaries and switching](../docs/deepseek_runtime.md).
 Runtime changes invalidate checkpoint/resume compatibility; no automatic fallback
 or conversion occurs.
+
+The DeepSeek preset allows at most 20 extra transport retry requests across a
+new experiment, with one retry per logical request after a 10-second wait. Phase
+deadlines and request limits still apply. Existing frozen configurations and
+ledger retry policies keep their recorded limits; editing this preset does not
+extend an existing experiment's quota or settle UNKNOWN costs.
+
+An operator can explicitly extend a quiescent experiment's shared retry cap with
+`DeepSeekRetryStore.operator_extend_retry_limit(...)` after obtaining authorization
+and verifying controller/container reclamation under the formal-controller lock.
+The method appends a durable extension, retains the frozen base policy and all
+previous charges, and rejects active or unreconciled requests. Reports distinguish
+the root's effective cap from each episode's original configuration. This does
+not change model-call caps, deadlines, retry eligibility or per-request retries.

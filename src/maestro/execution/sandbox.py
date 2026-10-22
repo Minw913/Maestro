@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
@@ -147,10 +148,16 @@ class DockerRunner:
                  require_rootless: bool = True):
         self.image, self.executable, self.require_rootless = image, executable, require_rootless
 
+    @staticmethod
+    def _docker_environment() -> dict[str, str]:
+        # Twenty attached Go clients share the controller's task quota. Bound
+        # client scheduler parallelism; this does not enter candidate env/limits.
+        return {**os.environ, "GOMAXPROCS": "2"}
+
     def _docker(self, args: list[str], *, timeout: float = 15) -> subprocess.CompletedProcess:
         try:
             return subprocess.run([self.executable, *args], capture_output=True, text=True,
-                                  timeout=timeout, check=False)
+                                  timeout=timeout, check=False, env=self._docker_environment())
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as error:
             raise SandboxUnavailable(f"Docker unavailable: {error}") from error
 
@@ -245,7 +252,8 @@ class DockerRunner:
             try:
                 completed = subprocess.run([self.executable, "start", "--attach", "--interactive", container_id],
                                            input=request.stdin, capture_output=True, text=True,
-                                           timeout=limits.wall_seconds + 20, check=False)
+                                           timeout=limits.wall_seconds + 20, check=False,
+                                           env=self._docker_environment())
             except subprocess.TimeoutExpired:
                 # A failed kill is recoverable only if the finally block can
                 # independently confirm force-removal. Never infer quiescence

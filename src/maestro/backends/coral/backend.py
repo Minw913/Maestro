@@ -334,6 +334,7 @@ def default_factory(config, root=None) -> CoralBackend:
     from .runtime import verify_checkout
     from .supervisor import ControlledCoralSupervisor
     from maestro.tasks.pace.runner import smoke_test
+    from maestro.tasks.pace.sanity import default_sanity_graph_path
 
     settings = config.coral
     required = ("generation_image", "model", "planning_api_base", "planning_model", "generation_api_base")
@@ -350,14 +351,17 @@ def default_factory(config, root=None) -> CoralBackend:
     generation_key_env = settings.get("generation_api_key_env", "MAESTRO_GENERATION_API_KEY")
     if not os.environ.get(planning_key_env) or not os.environ.get(generation_key_env):
         raise BackendUnavailable(f"Set both credential environment variables: {planning_key_env}, {generation_key_env}")
-    root = Path(root or settings.get("run_root", "artifacts/live")).resolve()
+    root = Path(root or settings.get("run_root", "artifacts/runs/live")).resolve()
+    from maestro.storage.paths import run_paths, require_separated_runtime
+    require_separated_runtime(root)
+    local = run_paths(root).local
     authority = root / "coral-authority"
     authority.mkdir(parents=True, exist_ok=True, mode=0o700)
     store = BudgetStore(authority / "budgets.sqlite")
     planning_upstream = HTTPUpstream(settings["planning_api_base"], os.environ[planning_key_env])
     generation_upstream = HTTPUpstream(settings["generation_api_base"], os.environ[generation_key_env], auth_header="x-api-key",
                                        anthropic_beta=tuple(settings.get("anthropic_beta", ())))
-    provider = DockerAgentSandboxProvider(authority, store, image=settings["generation_image"],
+    provider = DockerAgentSandboxProvider(local / "coral-authority", store, image=settings["generation_image"],
         upstream=generation_upstream, limits=ResourceLimits(
             cpu_seconds=config.generation_cpu_seconds, wall_seconds=config.generation_window_seconds,
             memory_mb=max(1, config.memory_bytes//(1024*1024)), pids=config.pids_max,
@@ -410,10 +414,10 @@ def default_factory(config, root=None) -> CoralBackend:
                             max_output_tokens=int(settings.get("planning_output_tokens", 2048)))
     supervisor = ControlledCoralSupervisor(resolve_runtime("claude_code"), provider,
         model=settings.get("runtime_model", settings["model"]), log_root=authority / "runtime-logs")
-    workspace_store = WorkspaceStore(root / "coral-workspaces", root / "coral-cas")
+    workspace_store = WorkspaceStore(local / "coral-workspaces", root / "coral-cas")
     pace_contract = config.pace.get("contract", {})
     candidate_runner = DockerRunner(pace_contract.get("image"))
-    toy = Path(settings.get("smoke_graph", Path(__file__).resolve().parents[4] / "fixtures/toy_graphs/star5.gr"))
+    toy = Path(settings.get("smoke_graph", default_sanity_graph_path()))
     if not toy.is_file():
         raise BackendUnavailable("Configured fixed toy smoke graph is missing")
     from maestro.tasks.pace.manifest import load_panel, assert_smoke_disjoint

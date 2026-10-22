@@ -76,6 +76,28 @@ def evidence(backend,candidate):
     return outcome.evidence
 
 
+@pytest.mark.parametrize('ending',['\n','\r\n'])
+@pytest.mark.parametrize('replacement',['    pass','    pass\n',''])
+def test_runtime_line_patch_preserves_following_statement(ending,replacement):
+    source=ending.join(['def main():','    missing','    return 1',''])
+    files=[{'path':'run','content':source,'executable':True}]
+    problem=RuntimeFailure('candidate','NameError','missing',(('run',2),))
+    patch={'edits':[{'path':'run','start_line':2,'end_line':2,'replacement':replacement}]}
+    operation=OneShotRuntimeRepairMixin._implementation_operations(patch,files,problem)[0]
+    content=operation['content']
+    compile(content,'run','exec')
+    assert 'pass    return' not in content
+    assert content.splitlines()[-1]=='    return 1'
+    assert content.endswith(ending)
+
+
+def test_runtime_line_patch_preserves_eof_without_adding_newline():
+    files=[{'path':'run','content':'print(missing)','executable':True}]
+    problem=RuntimeFailure('candidate','NameError','missing',(('run',1),))
+    patch={'edits':[{'path':'run','start_line':1,'end_line':1,'replacement':'print(1)'}]}
+    assert OneShotRuntimeRepairMixin._implementation_operations(patch,files,problem)[0]['content']=='print(1)'
+
+
 def test_one_initial_request_then_fresh_runtime_patch(setup):
     b,s,p,c,authority,grant=setup;deadline=time.monotonic()+20
     candidate=b.generate(s,p,0,deadline=deadline,grant=grant(0),grant_authority=authority)

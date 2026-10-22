@@ -68,8 +68,11 @@ def parallel_plans(states, contexts, backend, round_index, deadline, *, budget_u
     if budget_unit not in ("provider_request", "session_turn"):
         raise ValueError("Unknown planning budget unit")
     required_cap = "single_request" if budget_unit == "provider_request" else "single_session_turn"
+    bounded_recovery=(isinstance(caps,dict) and budget_unit=='provider_request'
+        and caps.get('single_logical_request') is True
+        and type(caps.get('max_request_attempts')) is int and 1<=caps['max_request_attempts']<=101)
     allowed = (isinstance(caps, dict)
-               and caps.get(required_cap) is True
+               and (caps.get(required_cap) is True or bounded_recovery)
                and caps.get("hard_request_timeout") is True
                and caps.get("mutates_input_state") is False
                and callable(getattr(backend, "plan_with_receipt", None)))
@@ -104,7 +107,10 @@ def parallel_plans(states, contexts, backend, round_index, deadline, *, budget_u
                      else getattr(receipt, "session_turns", None))
             unknown = (receipt.get("request_count_unknown") if isinstance(receipt, dict)
                        else getattr(receipt, "request_count_unknown", False))
-            metered = (calls == 1) if budget_unit == "provider_request" else (calls is None and turns == 1 and unknown is True)
+            logical=(receipt.get('logical_requests') if isinstance(receipt,dict) else getattr(receipt,'logical_requests',None))
+            retries=(receipt.get('retry_attempts') if isinstance(receipt,dict) else getattr(receipt,'retry_attempts',None))
+            metered = ((logical==1 and type(calls) is int and 1<=calls<=caps['max_request_attempts']
+                        and retries==calls-1) if bounded_recovery else calls==1) if budget_unit == "provider_request" else (calls is None and turns == 1 and unknown is True)
             if not isinstance(decision, PlanDecision) or not metered or not isinstance(context, dict):
                 raise ValueError("invalid or unmetered single-request planning result")
             if context.get("agent_id") != agent:
@@ -129,6 +135,10 @@ def parallel_plans(states, contexts, backend, round_index, deadline, *, budget_u
     gate.set()
     try:
         done, pending = wait(futures, timeout=max(0, deadline - time.monotonic()))
+        grace=caps.get('cleanup_grace_seconds',0.)
+        if pending and bounded_recovery and isinstance(grace,(int,float)) and 0<grace<=5:
+            drained,pending=wait(pending,timeout=grace)
+            done|=drained  # execute() still rejects results returned after the original deadline.
     except BaseException:
         with lock:
             cancelled_agents.update(ids)

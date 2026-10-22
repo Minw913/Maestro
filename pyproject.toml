@@ -20,6 +20,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "maestro.storage" = ["schema.sql"]
+"maestro.tasks.pace" = ["data/*.gr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

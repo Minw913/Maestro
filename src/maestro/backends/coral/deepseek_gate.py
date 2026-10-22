@@ -20,8 +20,9 @@ from urllib.parse import urlsplit
 
 from maestro.execution.budgets import BudgetExceeded
 from maestro.llm import InferenceRequestUnknown
+from maestro.backends.preparation import FINAL_PREPARATION_INSTRUCTION
 from maestro.backends.codex_session.tools import MAESTRO_TOOL_SPEC
-from .deepseek_lifecycle import RequestJournal
+from .deepseek_lifecycle import RequestJournal, exception_details
 
 DEEPSEEK_TOOL = 'mcp__maestro__maestro_tool'
 
@@ -52,6 +53,8 @@ class DeepSeekUpstream:
 
     def __call__(self, payload, deadline, *, progress=None):
         report=progress or (lambda *args, **kwargs: None)
+        started=time.monotonic();operation='before_dispatch';received=0
+        abort_info={'reason':None,'monotonic':None}
         remaining=deadline-time.monotonic()
         if remaining<=0:
             report('NEVER_DISPATCHED')
@@ -59,14 +62,36 @@ class DeepSeekUpstream:
             raise TimeoutError('DeepSeek deadline elapsed before dispatch')
         expired=threading.Event();finished=threading.Event();sent=False
         pause=self.pause
+        def diagnostics():
+            now=time.monotonic()
+            return {'transport_operation':operation,'elapsed_seconds':now-started,
+                    'deadline_remaining_seconds':deadline-now,'dispatch_sent':sent,
+                    'bytes_received':received,'local_abort_requested':expired.is_set(),
+                    'local_abort_reason':abort_info['reason'],
+                    'local_abort_monotonic':abort_info['monotonic']}
         class DeadlineConnection(http.client.HTTPSConnection):
             watched_socket=None
             def connect(inner):
+                nonlocal operation
+                operation='tcp_tls_connect'
                 super().connect()
                 inner.watched_socket=inner.sock
+                details={}
+                # Optional socket observations must never change request behavior.
+                for method,keys in [('getpeername',('peer_ip','peer_port')),
+                                    ('getsockname',('local_ip','local_port'))]:
+                    try:
+                        address=getattr(inner.sock,method)()
+                        if isinstance(address,tuple) and len(address)>=2:
+                            details.update(zip(keys,address[:2]))
+                    except (AttributeError,OSError):pass
+                try:details['tls_version']=inner.sock.version()
+                except (AttributeError,OSError):pass
+                report('CONNECTED',**details,**diagnostics())
                 if expired.is_set() or time.monotonic()>=deadline:
                     inner.close()
                     raise TimeoutError('DeepSeek deadline elapsed during connect/DNS')
+                operation='send_request'
             def send(inner,data):
                 nonlocal sent
                 if pause:pause.check()
@@ -78,12 +103,16 @@ class DeepSeekUpstream:
                     report('DISPATCH_STARTED');sent=True
                 return super().send(data)
         connection=DeadlineConnection(self.endpoint.hostname,self.endpoint.port,timeout=remaining)
-        def abort():
+        def abort(reason):
+            abort_info.update(reason=reason,monotonic=time.monotonic())
             expired.set()
-            if connection.watched_socket:
-                try:connection.watched_socket.shutdown(socket.SHUT_RDWR)
-                except OSError:pass
-            connection.close()
+            try:
+                report('LOCAL_ABORT',reason=reason,**diagnostics())
+            finally:
+                if connection.watched_socket:
+                    try:connection.watched_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:pass
+                connection.close()
         def watch():
             pause_recorded=False
             while not finished.wait(.05):
@@ -93,14 +122,16 @@ class DeepSeekUpstream:
                     pause_recorded=True
                 limit=pause.drain_deadline(deadline) if pause else deadline
                 if time.monotonic()>=limit:
-                    abort();return
+                    abort('pause_drain_deadline' if limit<deadline else 'phase_deadline');return
         watchdog=threading.Thread(target=watch,daemon=True);watchdog.start()
-        received=0
+        failed=False
         try:
             if pause:pause.check()
             path=self.endpoint.path.rstrip('/')+'/v1/messages'
+            operation='send_request'
             connection.request('POST',path,json.dumps(payload).encode(),{
                 'Content-Type':'application/json','x-api-key':self._key,'anthropic-version':'2023-06-01'})
+            operation='read_response_headers'
             response=connection.getresponse()
             content_type=response.getheader('Content-Type','application/json')
             report('HEADERS',http_status=response.status,
@@ -109,11 +140,13 @@ class DeepSeekUpstream:
             if response.status!=200:raise DeepSeekHTTPError(response.status)
             wire=bytearray();buffer=b'';last_progress=0.0
             while True:
+                operation='read_response_body'
                 chunk=response.read1(65536)
                 if not chunk:break
                 wire.extend(chunk);received=len(wire)
                 if received>32*1024*1024:raise ValueError('DeepSeek response exceeds byte limit')
                 if 'event-stream' in content_type:
+                    operation='parse_stream'
                     buffer+=chunk
                     while b'\n\n' in buffer.replace(b'\r\n',b'\n'):
                         buffer=buffer.replace(b'\r\n',b'\n')
@@ -142,12 +175,18 @@ class DeepSeekUpstream:
                 report('TERMINAL',provider_message_id=message.get('id',''),usage=message.get('usage',{}))
             return raw,content_type
         except BaseException as error:
-            report('ERROR',exception_class=type(error).__name__)
+            failed=True
+            report('ERROR',**exception_details(error),**diagnostics())
             if not sent:report('NEVER_DISPATCHED')
             raise
         finally:
             finished.set();connection.close();watchdog.join(timeout=1)
-            report('TRANSPORT_CLOSED',bytes_received=received)
+            report('TRANSPORT_CLOSED',reason='exception' if failed else 'terminal_or_eof',
+                   watchdog_reclaimed=not watchdog.is_alive(),**diagnostics())
+
+
+class DeepSeekStreamIncomplete(ValueError):
+    """Transport EOF before a complete terminal SSE frame; no final receipt."""
 
 
 def terminal_receipt(raw,content_type):
@@ -161,7 +200,7 @@ def terminal_receipt(raw,content_type):
     frames=raw.decode('utf-8').replace('\r\n','\n').split('\n\n')
     tail=frames.pop()
     if any(line.strip() and not line.startswith(':') for line in tail.splitlines()):
-        raise ValueError('Incomplete DeepSeek SSE frame')
+        raise DeepSeekStreamIncomplete('Incomplete DeepSeek SSE frame')
     for frame in frames:
         data='\n'.join(line[5:].strip() for line in frame.splitlines() if line.startswith('data:'))
         if not data:continue
@@ -186,14 +225,21 @@ def terminal_receipt(raw,content_type):
         elif kind=='error':raise ValueError('Provider stream error')
         elif kind not in {'ping','content_block_delta','content_block_stop'}:
             raise ValueError('Unknown DeepSeek event')
-    if not stopped:raise ValueError('DeepSeek stream truncated before message_stop')
+    if not stopped:raise DeepSeekStreamIncomplete('DeepSeek stream truncated before message_stop')
     return message
 
 
 class DeepSeekQuotaProxy:
     def __init__(self,store,account,model,*,deadline,max_calls,max_request_bytes,max_output_tokens,
                  upstream,per_request_tokens=32000,reasoning_effort='low',allowed_tool_names=(),
-                 request_guard=None,**kwargs):
+                 request_guard=None,final_response_on_last_request=False,**kwargs):
+        if type(final_response_on_last_request) is not bool:
+            raise ValueError('Final-response policy must be boolean')
+        self.final_response_on_last_request=final_response_on_last_request
+        unlimited=(type(max_calls) is int and max_calls==0
+                   and isinstance(account,str) and account.endswith(':PREPARATION'))
+        if type(max_calls) is not int or (max_calls<=0 and not unlimited):
+            raise ValueError('Only preparation can omit its request-count cap')
         self.store,self.account,self.model=store,account,model
         self.deadline,self.max_bytes,self.token_budget=deadline,max_request_bytes,max_output_tokens
         if type(per_request_tokens) is not int or not 1<=per_request_tokens<=max_output_tokens:
@@ -210,7 +256,8 @@ class DeepSeekQuotaProxy:
         try:old=store.snapshot(account)
         except BudgetExceeded:
             store.create(account,max_calls=max_calls,max_request_bytes=max_request_bytes,
-                max_output_tokens=max_output_tokens,max_concurrent=1,deadline=time.time()+deadline-time.monotonic())
+                max_output_tokens=max_output_tokens,max_concurrent=1,deadline=time.time()+deadline-time.monotonic(),
+                allow_unlimited_calls=unlimited)
         else:
             if (old['max_calls'],old['max_request_bytes'],old['max_output_tokens'],old['max_concurrent'])!=(max_calls,max_request_bytes,max_output_tokens,1) or old['active']:
                 raise BudgetExceeded('DeepSeek phase budget cannot be reset or expanded')
@@ -219,7 +266,7 @@ class DeepSeekQuotaProxy:
             store.connection.execute('''CREATE TABLE IF NOT EXISTS deepseek_gateway_receipts(
                 reservation_id TEXT PRIMARY KEY,protocol_violation INTEGER NOT NULL)''')
 
-    def _payload(self,value):
+    def _payload(self,value,*,final_response=False):
         if not isinstance(value,dict) or value.get('model')!=self.model:
             raise PermissionError('DeepSeek model differs from frozen configuration')
         if not isinstance(value.get('messages'),list):raise ValueError('Messages list required')
@@ -245,14 +292,21 @@ class DeepSeekQuotaProxy:
         # trusted broker's schema regardless of the incoming definition.
         requested=value.get('tools',[])
         if not isinstance(requested,list):raise ValueError('Invalid tools')
-        if self.tools and not any(isinstance(t,dict) and t.get('name')==DEEPSEEK_TOOL for t in requested):
+        if self.tools and not final_response and not any(isinstance(t,dict) and t.get('name')==DEEPSEEK_TOOL for t in requested):
             raise PermissionError('Phase requires its registered maestro MCP broker before inference')
         result['tools']=([{'name':DEEPSEEK_TOOL,'description':MAESTRO_TOOL_SPEC['description'],
                           'input_schema':MAESTRO_TOOL_SPEC['inputSchema']}]
-            if self.tools and any(isinstance(t,dict) and t.get('name')==DEEPSEEK_TOOL for t in requested) else [])
+            if self.tools and not final_response and any(isinstance(t,dict) and t.get('name')==DEEPSEEK_TOOL for t in requested) else [])
         if not result['tools']:
             result.pop('tools');result.pop('tool_choice',None)
         else:result['tool_choice']={'type':'auto','disable_parallel_tool_use':True}
+        if final_response:
+            system=result.get('system','')
+            if isinstance(system,str):
+                result['system']=(system+'\n' if system else '')+FINAL_PREPARATION_INSTRUCTION
+            elif isinstance(system,list):
+                result['system']=[*system,{'type':'text','text':FINAL_PREPARATION_INSTRUCTION}]
+            else:raise ValueError('Invalid system instructions')
         maximum=result.get('max_tokens',self.per_request_tokens)
         if type(maximum) is not int or maximum<=0:raise ValueError('Invalid max_tokens')
         result['max_tokens']=min(maximum,self.per_request_tokens)
@@ -266,8 +320,19 @@ class DeepSeekQuotaProxy:
         with self._lock:
             if self._closed or time.monotonic()>=self.deadline:raise PermissionError('DeepSeek phase expired')
             if self.guard:self.guard()
-            try:payload=self._payload(value)
+            snapshot=self.store.snapshot(self.account)
+            final_response=(self.final_response_on_last_request
+                and snapshot['max_calls']>0
+                and snapshot['calls']==snapshot['max_calls']-1)
+            try:payload=self._payload(value,final_response=final_response)
             except (ValueError,PermissionError):self._violations+=1;raise
+            # A larger per-request ceiling must not strand later preparation
+            # or repair calls by reserving already-consumed phase tokens again.
+            remaining=snapshot['max_output_tokens']-snapshot['output_tokens']
+            if remaining<=0:
+                self.quota_denied=True
+                raise BudgetExceeded('DeepSeek phase output-token quota exhausted')
+            payload['max_tokens']=min(payload['max_tokens'],remaining)
             body=json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
             try:
                 reservation=self.store.reserve(self.account,uuid.uuid4().hex,request_bytes=len(body),output_tokens=payload['max_tokens'])
@@ -309,7 +374,7 @@ class DeepSeekQuotaProxy:
             blocks=message.get('content',[])
             if not isinstance(blocks,list):raise ValueError('Invalid content blocks')
             violation=any(not isinstance(b,dict) or b.get('type') not in {'text','thinking','redacted_thinking','tool_use'}
-                or (b.get('type')=='tool_use' and (not self.tools or b.get('name')!=DEEPSEEK_TOOL)) for b in blocks)
+                or (b.get('type')=='tool_use' and (final_response or not self.tools or b.get('name')!=DEEPSEEK_TOOL)) for b in blocks)
             with self.store._transaction():
                 self.store.connection.execute('INSERT INTO deepseek_gateway_receipts VALUES(?,?)',(reservation,int(violation)))
             if violation:

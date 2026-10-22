@@ -18,6 +18,7 @@ from maestro.backends.codex_session.autonomous_backend import StrictCodexBackend
 from maestro.backends.coral.workspace import WorkspaceStore
 from maestro.execution.budgets import BudgetStore
 from maestro.tasks.pace.runner import smoke_test
+from maestro.tasks.pace.sanity import default_sanity_graph_path
 from maestro.types import stable_hash
 
 spec = importlib.util.spec_from_file_location('calibration_driver', Path(__file__).with_name('calibrate_codex_timing.py'))
@@ -98,7 +99,7 @@ def builder(*, fault=False):
                     receipts.append(receipt)
                     return receipt
             try:
-                return smoke_test(candidate['candidate_path'],BASE/'fixtures/toy_graphs/star5.gr',Metered(),
+                return smoke_test(candidate['candidate_path'],default_sanity_graph_path(),Metered(),
                     image=driver.IMAGE,solver_argv=('/candidate/run',))
             finally:
                 usage=dict(backend.last_generation_usage)
@@ -110,6 +111,8 @@ def builder(*, fault=False):
 
 
 def main(root):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     root.mkdir(parents=True,exist_ok=False)
     outcomes={}
     for name,fault in [('complete-chain',False),('planning-fault-stop',True)]:

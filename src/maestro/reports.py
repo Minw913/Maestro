@@ -65,6 +65,11 @@ def report(root,episode_id=None):
                 row['heldout_record']=heldout_data
                 row['costs']['heldout']={'cpu_seconds':heldout_data['cpu_seconds'],'wall_seconds':heldout_data['wall_seconds'],'llm_calls':0,'tokens':0}
             row['comparison_eligible']=ep['policy'] in ('uniform','ucb','first_price') and ep['status']=='COMPLETED' and cfg.get('profile','v1_cooperative')=='v1_cooperative'
+            warm_payload=db.execute('SELECT payload FROM warm_checkpoints WHERE id=?',(ep['bootstrap_id'] or e,)).fetchone()
+            row['seed_fallback_agents']=json.loads(warm_payload[0]).get('seed_fallback_agents',{}) if warm_payload else {}
+            row['warm_history_complete']=not bool(row['seed_fallback_agents'])
+            if row['seed_fallback_agents']:row['comparison_eligible']=False
+            row['failure_policy']=cfg.get('coral',{}).get('deepseek_transport_retry')
             if ep['bootstrap_id']:
                 prefix=db.execute('SELECT sum(cpu_seconds) cpu,sum(llm_calls) calls,sum(tokens) tokens FROM resource_usage WHERE episode_id=?',(ep['bootstrap_id'],)).fetchone()
                 row['common_prefix_cost']={'cpu_seconds':prefix['cpu'] or 0,'llm_calls':prefix['calls'] or 0,'tokens':prefix['tokens'] or 0}
@@ -77,7 +82,31 @@ def report(root,episode_id=None):
             for board in db.execute('SELECT round_index,payload FROM public_board_versions WHERE episode_id=? ORDER BY round_index',(e,)):
                 b=json.loads(board['payload'])
                 trajectory.append({'episode_id':e,'policy':ep['policy'],'round_index':board['round_index'],'champion_score':b['champion_score'],'champion_hash':b['champion_hash']})
-        (output/'summary.json').write_text(canonical_json({'episodes':summary,'mock_is_not_real_pace':True}),encoding='utf-8')
+        from maestro.backends.coral.failure_report import write_failure_report
+        failures=write_failure_report(root,output,{ep['id'] for ep in episodes})
+        retry_budget=None
+        provider=root/'deepseek-native-authority'/'requests.sqlite'
+        if provider.is_file():
+            import sqlite3
+            import threading
+            from maestro.backends.coral.deepseek_retry import DeepSeekRetryStore
+            store=object.__new__(DeepSeekRetryStore)
+            store.connection=sqlite3.connect(provider.resolve().as_uri()+'?mode=ro',uri=True)
+            store.connection.row_factory=sqlite3.Row;store._lock=threading.RLock()
+            try:
+                if store.connection.execute("SELECT 1 FROM sqlite_master WHERE name='deepseek_retry_policy'").fetchone():
+                    policy=store.connection.execute('SELECT payload FROM deepseek_retry_policy WHERE id=1').fetchone()
+                    if policy:
+                        limit=store.extra_request_limit()
+                        used=store.connection.execute('SELECT count(*) FROM deepseek_request_attempts WHERE attempt_index>0').fetchone()[0]
+                        retry_budget={'scope':'shared_root_all_arms','base_policy':json.loads(policy[0]),
+                            'effective_max_extra_requests':limit,'extra_requests_used':used,
+                            'remaining_extra_requests':max(0,limit-used),'prior_charges_retained':True}
+                        if store.connection.execute("SELECT 1 FROM sqlite_master WHERE name='deepseek_retry_limit_extensions'").fetchone():
+                            retry_budget['operator_extensions']=[dict(row) for row in store.connection.execute('SELECT * FROM deepseek_retry_limit_extensions ORDER BY id')]
+            finally:store.connection.close()
+        (output/'summary.json').write_text(canonical_json({'episodes':summary,'mock_is_not_real_pace':True,
+            'request_failures':failures,'transport_retry_budget':retry_budget}),encoding='utf-8')
         for name,rows in [('trajectory.csv',trajectory),('wallets.csv',wallets)]:
             with (output/name).open('w',newline='',encoding='utf-8') as stream:
                 if rows:
@@ -90,7 +119,8 @@ def report(root,episode_id=None):
         with (export/'events.jsonl').open('w',encoding='utf-8') as stream:
             for event in db.execute('SELECT * FROM events ORDER BY id'):
                 stream.write(canonical_json(dict(event))+'\n')
-        return {'report':str(output/'summary.json'),'episodes':summary}
+        return {'report':str(output/'summary.json'),'episodes':summary,'request_failures':failures,
+                'transport_retry_budget':retry_budget}
 
 
 def _trajectory_svg(path,rows):

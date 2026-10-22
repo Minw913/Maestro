@@ -119,6 +119,15 @@ def test_native_stages_have_separate_quotas_and_edit_grant(backend):
         owner.prepare_with_receipt(state,0,{},deadline=time.monotonic()+20)
 
 
+def test_uncapped_preparation_accepts_more_than_four_metered_requests(backend):
+    owner,state,native,forwarded=backend
+    owner.config=replace(owner.config,preparation_calls=0)
+    native.preparation_requests=9
+    evidence,usage=owner.prepare_with_receipt(state,0,{},deadline=time.monotonic()+20)
+    assert evidence['status']=='PREPARED' and usage['calls']==9
+    assert len(forwarded)==9 and all(value.get('tools') for value in forwarded)
+
+
 def test_no_planning_without_same_round_preparation(backend):
     owner,state,_,forwarded=backend
     with pytest.raises(PermissionError):owner.plan_with_receipt(state,0,{},deadline=time.monotonic()+20)

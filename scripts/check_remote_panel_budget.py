@@ -2,7 +2,12 @@
 import json,pathlib,dataclasses
 from maestro.execution.sandbox import DockerRunner,RunRequest,ResourceLimits,Mount
 from maestro.tasks.pace.manifest import VERIFIER_SOURCE_FILES
-base=pathlib.Path(__file__).resolve().parents[1];root=pathlib.Path(json.loads((base/'artifacts/remote-deployment-paths.json').read_text())['preflight_root']);records=json.loads((root/'selected-data-records.json').read_text());package=root/'trusted-package'
+from maestro.storage.paths import diagnostic_root
+base=pathlib.Path(__file__).resolve().parents[1]
+pointer=base/'runtime/remote-deployment-paths.json'
+if not pointer.exists():pointer=base/'artifacts/remote-deployment-paths.json'
+root=diagnostic_root(pathlib.Path(json.loads(pointer.read_text())['preflight_root']))
+records=json.loads((root/'selected-data-records.json').read_text());package=root/'trusted-package'
 for name in VERIFIER_SOURCE_FILES:
  p=package/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes((base/'src'/name).read_bytes())
 code="""import sys,time,json

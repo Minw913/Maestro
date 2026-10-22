@@ -22,7 +22,8 @@ def main():
     parser.add_argument('--solutions', type=Path, required=True)
     parser.add_argument('--image', required=True)
     args = parser.parse_args()
-    root, panel_path = args.root.resolve(), args.panel.resolve()
+    from maestro.storage.paths import diagnostic_root
+    root, panel_path = diagnostic_root(args.root), args.panel.resolve()
     root.mkdir(parents=True, exist_ok=False)
     source = Path(__file__).resolve().parents[1] / 'src'
     captured = root / 'trusted-source'

@@ -312,3 +312,166 @@ request and token caps, disallowed tools, persistent UNKNOWN, config switching,
 Coral's actual dsh lifecycle with injected process output, and actual cancellation
 of an inert local process. They do not use a real model or assert physical
 candidate qualification. Compilation and diff whitespace checks passed.
+
+## Standard experiment outputs and local runtime separation (2026-10-21)
+
+New experiment roots default to `artifacts/runs/local`, with standard outputs
+under `artifacts/runs/<run>` and matching local material under
+`runtime/runs/<run>`. Provider request/usage SQLite databases remain experiment
+accounting evidence. Native model logs, startup policies/scopes, auth-check
+caches, mutable workspaces and pause markers are local-only. The experiment CLI
+automatically tees controller stdout/stderr and appends timestamped exit receipts
+there. Terminal output and resource/request accounting are preserved.
+
+Qualification/calibration/diagnostic commands redirect new artifact-root requests
+to local runtime roots, reject already-existing historical artifact roots, and
+retain their original single-use/no-retry budgets. DeepSeek restart scanning
+covers local qualification ledgers as well as standard and historical output
+roots, excluding private transient export staging. Existing mixed-layout runs
+and ledgers are not moved or rewritten; further native execution requires an
+explicit offline migration. Pause control still honors historical pause markers.
+
+`export-artifacts --output artifacts/exports/<snapshot>` privately stages a
+whitelisted standard-output snapshot, makes standalone SQLite backups including
+committed WAL, checks integrity and credential/capability patterns, then copies
+verified outputs into the shareable destination with a manifest and SHA256SUMS.
+Raw native/controller logs and mutable workspaces are excluded even from legacy
+mixed roots. UNKNOWN/status values are unchanged; no global atomicity, completion
+or replay success is implied. A failed credential check creates no shareable
+export directory. New `artifacts/runs/` and `artifacts/exports/` trees are eligible
+for Git while runtime and historical mixed roots stay ignored.
+
+Validation: full offline regression **851 passed, 12 skipped** (93.25 seconds),
+plus final targeted path/export/factory checks **13 passed**. Tests verify both
+Codex and DeepSeek factory paths with injected model/Docker boundaries, SQLite
+WAL/UNKNOWN preservation, controller log/exit placement, no credential-pattern
+publication, Git ignore policy, pause compatibility and cross-directory UNKNOWN
+blocking. No real model call, candidate evaluation or formal experiment ran.
+Updated the operational guides and Overleaf Experiment Artifacts chapter.
+
+## 2026-10-22: connection-reset diagnosis (offline only)
+
+The Warm episode `warm-48868628e7aa459e` remains stopped after its second-wave
+preparation reset. Its 43 completed requests and one UNKNOWN are unchanged.
+Transport diagnostics now preserve bounded, message-free exception chains and
+traceback locations, errno, failing operation, socket/TLS observations, elapsed
+and remaining time, explicit phase/pause-drain local-abort reasons, and watchdog
+reclamation. These additions neither retry requests nor reconcile UNKNOWN.
+
+Read-only investigation and localhost acceptance evidence:
+`runtime/connection-investigation-20261022T0041Z/report.md`. Current TLS handshakes
+succeeded, but cannot identify the origin of the old reset; old tracebacks cannot
+be recovered. A real local TLS peer TCP reset reproduced errno 104 during body
+read with no local abort. Four installed DSH processes also passed the local-only
+interruption/cleanup acceptance. Regression and supplements cover 876 distinct
+passing cases with one Windows-only skip. No new inference, experiment restart,
+provider support message, or live qualification was performed. A provider support
+draft is saved with the original message ID and UTC timeline.
+
+## 2026-10-22: opt-in bounded DeepSeek network recovery
+
+Implemented the user-selected transport recovery policy: at most one replacement
+per logical request, ten seconds of backoff within the original common deadline,
+and at most ten extra physical requests shared by Warm Start and Market. Every
+attempt has its own persistent request reservation; UNKNOWN and its token reserve
+remain unchanged. Logical turns and actual requests are reported separately.
+Only a completed identical-payload replacement can permit local continuation;
+read-only cost audit stays BLOCKED while usage is unknown. Runtime-only code
+repair, EditGrant, tool budgets, evaluation tickets and settlement are unchanged.
+
+Prepared current-setting config and evidence:
+`runtime/deepseek-retry-readiness-20261022T015904Z/report.md`.
+The installed four-way localhost TLS acceptance actively sends TCP RST after
+HTTP200/message_start, then returns complete replacements after a minimum
+10.002485-second wait: eight local requests, four retained UNKNOWN, four complete
+usage receipts and all four native process groups/tool services reclaimed.
+This is local protocol acceptance, not real provider qualification or an
+experiment. Separate exception-injection integration checks cover preparation,
+planning and one-shot generation, with each result/code applied once. Full
+regression: 896 passed, one Windows-only skip; post-fix targeted tests also pass.
+The first offline timing-assertion failure is preserved alongside the corrected
+acceptance. No real model request, old-run restart, UNKNOWN reconciliation or
+new live qualification was performed.
+
+### Local network failure abstention and automatic diagnostics (2026-10-22)
+
+The explicitly enabled continuation policy now permits locally reclaimed network
+failures to abstain one agent phase after bounded retry exhaustion. Later waves
+and ordinary requests continue after the extra-retry cap is spent. Original
+UNKNOWN reservations remain charged; unconfirmed process reclamation still
+blocks dispatch. Cleanup grace never admits late results. Optional measured-seed
+fallback preserves empty personal history and zero UCB samples; first-price
+cold-start valuation is explicitly zero and comparison eligibility is flagged.
+
+Every command exit with a provider ledger emits per-attempt failure JSON/CSV and
+sanitized traceback text, with agent/stage, logical/retry mapping, timestamps,
+cleanup proof and missing-evidence flags. Historical evidence is read-only.
+
+Evidence: `runtime/deepseek-failure-readiness-20261022T022842Z/report.md`.
+Installed four-way localhost TLS test: eight intentionally reset attempts cause
+four abstentions, then four subsequent ordinary requests succeed. All local
+native process groups/tool services reclaimed; eight UNKNOWN costs retained.
+These are synthetic protocol faults, not real provider failures. Final regression
+with installed native wire enabled: 903 passed, one Windows-only skipped.
+Old real ledger and all 110 previously frozen source files remain unchanged.
+No external model call, new live qualification or formal experiment was started.
+
+### Four-agent live DeepSeek recovery-version qualification (2026-10-22)
+
+Single-use live qualification PASSED at UTC 02:55:42.466513–02:57:04.327201.
+Twenty logical/actual requests: preparation eight, planning four, one-shot initial
+implementation four, fresh runtime repair four. Twenty trusted terminal usage
+receipts, zero UNKNOWN/retries/HTTP429; measured peak four concurrent transports.
+Usage: 31,196 input and 11,411 output tokens (3,072 cache-read input tokens are a
+subset). Currency charges were not queried. Sixteen native process groups/tool
+services reclaimed, systemd exit zero/empty cgroup, no rootless running containers.
+
+Four isolated copies of the real greedy solver had a deliberately injected
+NameError. Model-generated plans were admitted before EditGrants. Initial code
+added only the requested comment and retained the fault; fresh repair agents
+fixed the runtime exception with minimal patches and no search-agent memory.
+All four passed fixed precheck and real heuristic_032 graph execution/solution
+verification. Qualification preparation was explicitly capped at two turns;
+target experiment remains preparation_calls=0. No full panel evaluation, new
+Warm Start, Market or heldout ran, and no natural network failure occurred.
+
+A historical cascade with completed request receipts but UNKNOWN controller
+scopes now requires exact per-scope native cleanup and stopped supervisor evidence
+in the explicitly authorized quarantine artifact. Original ledgers and costs
+remain untouched. Guard regression and full installed-native-wire regression:
+906 passed, one Windows-only skipped. Frozen execution base commit is
+c36ba8b1cdff9a96fb094d94c43bafdd57f1fb40 plus source-manifest SHA256 overlays.
+
+Report: runtime/server-deepseek-recovery-qualification-20261022T025148Z/report.md.
+Readiness/source freeze: runtime/server-recovery-preflight-20261022T025148Z/.
+The old launch pointer still describes its stopped historical experiment.
+
+### Docker host task-capacity recovery (2026-10-22)
+
+The main run pace-ds_deepseek-flash_20261022T030615Z stopped during wave 2
+on BlockingIOError errno11 while spawning a Docker CLI. Its 72 model requests
+all have terminal receipts; the UNKNOWN is an incomplete formal evaluation.
+A no-model twenty-real-graph control under original TasksMax256 reached kernel
+pids.peak256 and recorded 80 rejected task creations, despite all solvers
+ultimately succeeding. This is resource-pressure failure, not acceptable capacity.
+
+DockerRunner now sets GOMAXPROCS=2 for all host Docker clients, including start
+attach and cleanup, without injecting it into candidate environments. Patched
+TasksMax256: twenty valid graph solutions, pids.peak254, zero rejection events.
+Final TasksMax512: twenty valid solutions, peak209, zero rejection events.
+The finite host task cap was applied without restarting the failed controller;
+no Docker daemon/shared service configuration or candidate limit was changed.
+The candidate pids32 contract and evaluation/model request budgets are intact.
+
+Physical boundaries/cancellation six cases passed. Full installed-native-wire
+regression: 908 passed, one Windows-only skipped. Both original ledgers retain
+the same fingerprints. Local cgroup pids.current0/populated0 and no rootless
+containers confirm local reclamation; missing evaluation result/cost remains
+UNKNOWN, with no invented score, refund, model call or experiment restart.
+
+Evidence and independently frozen execution overlay:
+runtime/docker-process-recovery-20261022T033633Z/report.md.
+Only execution/sandbox.py differs from the prior live-qualified model source.
+The reusable concurrency acceptance now also fails its exit status on nonzero
+kernel task-limit events; the originally executed diagnostic driver and raw
+control evidence are preserved alongside the stricter acceptance interpretation.

@@ -328,6 +328,8 @@ def verify_never_dispatched(root):
 
 def run(root, *, backend_builder=None, proxy_upstream=None, client_instrumentation=True,
         execution_kind='live_timing', phase_windows=None, wave_count=3, request_cap=48, prior_ledger=None, continue_before_dispatch=False):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     base = Path(__file__).resolve().parents[1]
     if execution_kind != 'offline_no_model_acceptance' and (backend_builder is not None or proxy_upstream is not None):
         raise ValueError('Injected protocol fixtures are restricted to explicit offline acceptance')

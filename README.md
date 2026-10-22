@@ -21,9 +21,9 @@ Python 3.12+:
 ```powershell
 python -m venv .venv
 .venv\Scripts\python -m pip install -e '.[test]'
-.venv\Scripts\python -m maestro --root artifacts/demo smoke --config configs/mock_smoke.yaml
-.venv\Scripts\python -m maestro --root artifacts/demo replay --verify-ledger
-.venv\Scripts\python -m maestro --root artifacts/demo report
+.venv\Scripts\python -m maestro --root artifacts/runs/demo smoke --config configs/mock_smoke.yaml
+.venv\Scripts\python -m maestro --root artifacts/runs/demo replay --verify-ledger
+.venv\Scripts\python -m maestro --root artifacts/runs/demo report
 .venv\Scripts\python -m pytest -q --basetemp .test-temp
 ```
 
@@ -41,13 +41,22 @@ reservation stays unchanged. See [concurrency settings](docs/operations.md#cpu-a
 ## Individual commands
 
 ```text
-python -m maestro --root artifacts/run bootstrap --config configs/mock_smoke.yaml --seed 0
-python -m maestro --root artifacts/run run --bootstrap <checkpoint.json> --policy first_price
-python -m maestro --root artifacts/run resume --episode <episode-id>
-python -m maestro --root artifacts/run status
+python -m maestro --root artifacts/runs/EXPERIMENT bootstrap --config configs/mock_smoke.yaml --seed 0
+python -m maestro --root artifacts/runs/EXPERIMENT run --bootstrap <checkpoint.json> --policy first_price
+python -m maestro --root artifacts/runs/EXPERIMENT resume --episode <episode-id>
+python -m maestro --root artifacts/runs/EXPERIMENT status
+python -m maestro --root artifacts/runs/EXPERIMENT report
 ```
 
 The bootstrap command prints its checkpoint path. Reuse that exact checkpoint for all policy arms. Eligible pending plans are resubmitted without another planning call; a refresh is due every three rounds or after execution/failure/parent change.
+
+Warm Start and its subsequent Market belong to one experiment output root.
+Keep the same `--root` for both commands: they share the authority ledger, CAS,
+provider request accounting and checkpoint directory. They retain distinct
+episode IDs, and Market records its source Warm ID. Run Market only after a
+successful, complete bootstrap; the final unfiltered `report` includes both
+episodes. A separate `runtime/runs/EXPERIMENT/` holds local logs and mutable
+workspaces, not another experiment or another Warm/Market output root.
 
 ## Execution and accounting
 
@@ -64,9 +73,9 @@ Source versions, prompts, output and verifier artifacts are immutable; wallet an
 For an existing ChatGPT Codex login, check the connection without an external API token:
 
 ```powershell
-.venv\Scripts\python -m maestro --root artifacts/session-check codex-check
-.venv\Scripts\python -m maestro --root artifacts/session-check codex-check --strict
-.venv\Scripts\python -m maestro --root artifacts/session-check codex-check --probe
+.venv\Scripts\python -m maestro --root runtime/session-check codex-check
+.venv\Scripts\python -m maestro --root runtime/session-check codex-check --strict
+.venv\Scripts\python -m maestro --root runtime/session-check codex-check --probe
 ```
 
 `--strict` checks the native autonomous app-server protocol and existing login
@@ -136,3 +145,10 @@ An optional [Coral DeepSeek runtime](docs/deepseek_runtime.md) is available thro
 `configs/experiments/pace_remote_deepseek.yaml`. The original Codex adapter and
 default entry remain in place. The DeepSeek path requires its own installed CLI,
 API credential and live/physical qualification before real use.
+
+
+Standard outputs now live under `artifacts/runs/<run>/`; local model/controller
+logs, mutable workspaces and operational state belong under Git-ignored
+`runtime/`. Use `export-artifacts --output artifacts/exports/<snapshot>` to
+prepare standard outputs with standalone SQLite backups for GitHub publication.
+See [the output directory contract](artifacts/README.md).

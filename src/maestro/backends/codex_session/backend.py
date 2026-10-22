@@ -341,23 +341,27 @@ def session_factory(config, root=None):
     provenance = verify_checkout(settings.get("checkout_path", settings.get("checkout")))
     from maestro.execution.sandbox import DockerRunner
     from maestro.tasks.pace.runner import smoke_test
+    from maestro.tasks.pace.sanity import default_sanity_graph_path
     from maestro.tasks.pace.manifest import load_panel, assert_smoke_disjoint
-    root = Path(root or settings.get("run_root", "artifacts/codex-session-pilot")).resolve()
+    root = Path(root or settings.get("run_root", "artifacts/runs/codex-session-pilot")).resolve()
+    from maestro.storage.paths import run_paths, require_separated_runtime
+    require_separated_runtime(root)
+    local = run_paths(root).local
     authority_root = root / "codex-session-authority"
-    client = CodexSessionClient(model=settings.get("model", ""), work_root=authority_root / "broker",
+    client = CodexSessionClient(model=settings.get("model", ""), work_root=local / "codex-session-authority" / "broker",
         executable=settings.get("codex_executable"),
         timeout=float(settings.get("session_timeout_seconds", 120)))
     client.require_chatgpt_login()
     contract = config.pace.get("contract", {})
     candidate_runner = DockerRunner(contract.get("image"))
     candidate_runner.preflight()
-    toy = Path(settings.get("smoke_graph", Path(__file__).resolve().parents[4] / "fixtures/toy_graphs/star5.gr"))
+    toy = Path(settings.get("smoke_graph", default_sanity_graph_path()))
     if not toy.is_file():
         raise BackendUnavailable("Configured fixed toy graph is missing")
     assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
     store = SessionTurnStore(authority_root / "session-turns.sqlite")
     backend = CodexSessionBackend(client, store,
-        WorkspaceStore(root / "coral-workspaces", root / "coral-cas"),
+        WorkspaceStore(local / "coral-workspaces", root / "coral-cas"),
         precheck=lambda candidate: smoke_test(candidate["candidate_path"], toy, candidate_runner,
             image=contract.get("image", ""), solver_argv=tuple(contract.get("solver_argv", ("/candidate/run",)))),
         seed_solver=config.pace.get("seed_solver", ""), candidate_runner=candidate_runner,

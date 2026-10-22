@@ -115,10 +115,17 @@ def test_preparation_defaults_and_independent_override(tmp_path):
     assert config.reserved_cpu_seconds == defaults.reserved_cpu_seconds
 
 
-@pytest.mark.parametrize('value', [0, -1, 1.5, True, '4', None])
+@pytest.mark.parametrize('value', [-1, 1.5, True, '4', None])
 def test_preparation_request_count_validation(value):
     with pytest.raises(ValueError, match='preparation_calls'):
         RunConfig(preparation_calls=value)
+
+
+def test_preparation_zero_is_uncapped_but_other_phases_stay_positive():
+    config=RunConfig(preparation_calls=0,preparation_window_seconds=300)
+    assert RunConfig.from_dict(config.to_dict())==config
+    for name in ('planning_calls','generation_calls','runtime_repair_calls'):
+        with pytest.raises(ValueError):RunConfig(**{name:0})
 
 
 @pytest.mark.parametrize('value', [0, -1, float('inf'), float('nan'), True, '300', None])

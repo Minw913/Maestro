@@ -21,6 +21,7 @@ from maestro.backends.codex_session.autonomous_client import AutonomousCodexClie
 from maestro.backends.codex_session.client import resolve_codex
 from maestro.backends.codex_session.quota_proxy import CodexQuotaProxy
 from maestro.execution.budgets import BudgetStore
+from maestro.backends.coral.native_client import CoralCodexClient
 
 
 pytestmark = pytest.mark.skipif(os.environ.get("MAESTRO_RUN_NATIVE_WIRE") != "1",
@@ -94,6 +95,57 @@ def _assert_native_backend_contract(value):
                 result.append(tool.get("name"))
         return result
     assert names(declarations) == ["maestro_tool"]
+
+
+@pytest.mark.parametrize('cap', [0, 1, 4])
+def test_installed_coral_codex_final_preparation_request_is_tool_free(tmp_path, cap):
+    executable=resolve_codex(os.environ.get('MAESTRO_CODEX_EXECUTABLE'))
+    fake_home=tmp_path/'codex-home';_fake_chatgpt_home(fake_home)
+    forwarded=[];tool_calls=[]
+    request_target=6 if cap==0 else cap
+    def upstream(path, headers, body, timeout):
+        value=json.loads(body);forwarded.append(value)
+        final=len(forwarded)==request_target
+        if final:
+            if cap:
+                assert value['tool_choice']=='none'
+                assert not value.get('tools')
+                assert not any(item.get('type')=='additional_tools' for item in value['input'])
+                assert 'LAST allowed model request' in value['input'][-1]['content'][0]['text']
+            else:_assert_native_backend_contract(value)
+            item={'id':'msg_final','type':'message','status':'completed','role':'assistant',
+                  'content':[{'type':'output_text','text':'Evidence insufficient; no further reads.',
+                              'annotations':[]}]}
+        else:
+            _assert_native_backend_contract(value)
+            item={'id':f'fc_{len(forwarded)}','type':'function_call','status':'completed',
+                  'call_id':f'call_{len(forwarded)}','namespace':'mcp__maestro','name':'maestro_tool',
+                  'arguments':json.dumps({'action':'list','path':'solver/'})}
+        return _Response(len(forwarded),item)
+    deadline=time.monotonic()+30
+    store=BudgetStore(tmp_path/'budget.sqlite')
+    proxy=CodexQuotaProxy(store,'wire:0:agent:PREPARATION','gpt-6-astra',deadline=deadline,
+        max_calls=cap,max_request_bytes=2*1024*1024,max_output_tokens=1000,
+        allowed_tool_names=('maestro_tool',),tool_namespace='mcp__maestro',
+        final_response_on_last_request=True,upstream=upstream)
+    base=proxy.start();origin=urlsplit(base)
+    environment=dict(os.environ,CODEX_HOME=str(fake_home),
+        HTTPS_PROXY=f'http://{origin.hostname}:{origin.port}',
+        HTTP_PROXY=f'http://{origin.hostname}:{origin.port}',
+        ALL_PROXY=f'http://{origin.hostname}:{origin.port}',NO_PROXY='127.0.0.1,localhost,::1')
+    client=CoralCodexClient(model='gpt-6-astra',work_root=tmp_path/'native',
+                            executable=executable,environment=environment,timeout=30)
+    try:
+        response=client.run_phase('PREPARATION: read evidence and finish within the configured cap.',
+            base_url=base,deadline=deadline,
+            tools=lambda name,args:tool_calls.append((name,args)) or {'files':['solver/run']})
+        assert response.text=='Evidence insufficient; no further reads.'
+        assert len(tool_calls)==request_target-1 and len(forwarded)==request_target
+        assert proxy.usage()['actual_requests']==request_target
+        proxy.assert_resolved()
+        cleanup=json.loads(next((tmp_path/'native').glob('*/cleanup.json')).read_text())
+        assert cleanup['local_process_group_reclaimed'] and cleanup['tool_service_reclaimed']
+    finally:client.close();proxy.close();store.close()
 
 
 @pytest.mark.parametrize("request_cap", [1, 3])
@@ -246,7 +298,7 @@ def test_installed_coral_codex_runtime_mcp_uses_metered_provider(tmp_path,reques
         allowed_tool_names=(MCP_TOOL,),tool_namespace=MCP_NAMESPACE,upstream=upstream)
     declared_names=[]
     original_normalize=proxy._normalize_tools
-    def observe_tools(value,*,declare=True):
+    def observe_tools(value,*,declare=True,final_response=False):
         def names(items):
             for item in items:
                 if item.get('type')=='namespace':
@@ -256,7 +308,7 @@ def test_installed_coral_codex_runtime_mcp_uses_metered_provider(tmp_path,reques
         for entry in value.get('input',[]):
             if entry.get('type')=='additional_tools':items+=entry.get('tools',[])
         declared_names.append(list(names(items)))
-        return original_normalize(value,declare=declare)
+        return original_normalize(value,declare=declare,final_response=final_response)
     proxy._normalize_tools=observe_tools
     client=None
     try:

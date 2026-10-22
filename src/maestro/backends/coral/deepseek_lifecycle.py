@@ -9,6 +9,30 @@ import time
 from maestro.execution.budgets import BudgetStore
 
 
+def exception_details(error):
+    """Preserve traceback locations and errno, never messages, source or locals.
+
+    Exception strings and formatted tracebacks can contain credentials, request
+    bodies or response text. Frame locations are sufficient to locate a failed
+    transport operation without copying any of those values into the ledger.
+    """
+    chain=[];seen=set();current=error
+    while current is not None and id(current) not in seen and len(chain)<4:
+        seen.add(id(current));frames=[];tb=current.__traceback__
+        while tb is not None:
+            frames.append({'file':Path(tb.tb_frame.f_code.co_filename).name,
+                           'function':tb.tb_frame.f_code.co_name,'line':tb.tb_lineno})
+            tb=tb.tb_next
+        number=getattr(current,'errno',None)
+        chain.append({'exception_class':type(current).__name__,
+                      'exception_errno':number if type(number) is int else None,
+                      'frames':frames[-32:]})
+        current=(current.__cause__ if current.__cause__ is not None else
+                 None if current.__suppress_context__ else current.__context__)
+    return {'exception_class':type(error).__name__,
+            'exception_errno':chain[0]['exception_errno'],'exception_chain':chain}
+
+
 class RequestJournal:
     def __init__(self, store, reservation, request_hash):
         self.store, self.reservation = store, reservation
@@ -25,7 +49,11 @@ class RequestJournal:
         # URLs, prompts, response text/thinking or arbitrary exception messages.
         allowed = {'request_hash', 'provider_message_id', 'response_request_id',
                    'http_status', 'media_type', 'event_type', 'usage', 'bytes_received',
-                   'exception_class', 'reason'}
+                   'exception_class', 'exception_errno', 'exception_chain', 'reason',
+                   'transport_operation', 'elapsed_seconds', 'deadline_remaining_seconds',
+                   'local_abort_requested', 'local_abort_reason', 'local_abort_monotonic',
+                   'dispatch_sent', 'peer_ip', 'peer_port', 'local_ip', 'local_port',
+                   'tls_version', 'watchdog_reclaimed'}
         if set(data) - allowed:
             raise ValueError('Unsupported transport metadata')
         with self.store._transaction():
@@ -106,6 +134,63 @@ def ledger_fingerprint(path):
     finally:db.close()
 
 
+def _snapshot_terminal_proof(path, pending, entry):
+    """A frozen export is not another execution: require its original's proof.
+
+    Both ledgers remain untouched. Matching account/reservation IDs alone is
+    insufficient; the original request identity and immutable bounds must match.
+    """
+    original=Path(entry['snapshot_of']).resolve()
+    if original==path.resolve() or not original.is_file():return False
+    if ledger_fingerprint(original)!=entry.get('source_ledger_fingerprint'):return False
+    original_audit=audit_ledger(original)
+    states={r['reservation_id']:r['state'] for r in original_audit['requests']}
+    if any(states.get(r['reservation_id']) not in {'COMPLETED','REJECTED','NEVER_DISPATCHED'} for r in pending):
+        return False
+    snapshot=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
+    source=sqlite3.connect(original.as_uri()+'?mode=ro',uri=True)
+    try:
+        query=('SELECT account,request_id,request_bytes,output_tokens FROM '
+               'inference_reservations WHERE reservation_id=?')
+        return all(snapshot.execute(query,(r['reservation_id'],)).fetchone()==
+                   source.execute(query,(r['reservation_id'],)).fetchone() for r in pending)
+    finally:snapshot.close();source.close()
+
+
+def _reclaimed_historical_scopes(entry,audit):
+    """Bind explicit quarantine to exact native cleanup and supervisor evidence.
+
+    This never settles remote usage or changes a historical scope's state.
+    """
+    proofs=entry.get('reclaimed_scopes',[])
+    if not isinstance(proofs,list):return False
+    if {p.get('account') for p in proofs}!={s['account'] for s in audit['unresolved_scopes']}:return False
+    if len(proofs)!=len(audit['unresolved_scopes']):return False
+    try:
+        for proof in proofs:
+            documents={}
+            for role in ('scope','cleanup','supervisor'):
+                file=Path(proof[role+'_path'])
+                raw=file.read_bytes()
+                if hashlib.sha256(raw).hexdigest()!=proof[role+'_sha256']:return False
+                documents[role]=json.loads(raw)
+            scope=documents['scope'];cleanup=documents['cleanup'];supervisor=documents['supervisor']
+            identity,_=json.JSONDecoder().raw_decode(scope['prompt'].split('\n',1)[1])
+            account=proof['account'].split(':')
+            if (len(account)!=4 or account[3]!='PREPARATION'
+                    or identity.get('episode_id')!=account[0]
+                    or identity.get('round_index')!=int(account[1])
+                    or identity.get('agent_id')!=account[2]):return False
+            if cleanup.get('local_process_group_reclaimed') is not True:return False
+            if (supervisor.get('kind')!='systemd_cgroup_empty'
+                    or supervisor.get('MainPID')!=0 or supervisor.get('ControlGroup')!=''
+                    or supervisor.get('ActiveState') not in ('inactive','failed')
+                    or supervisor.get('remaining_native_processes')!=0
+                    or supervisor.get('running_rootless_containers')!=0):return False
+        return True
+    except (KeyError,TypeError,ValueError,OSError):return False
+
+
 def _historical_exception(root,path,audit):
     """An explicit operator artifact may quarantine an exact historical snapshot.
 
@@ -126,13 +211,18 @@ def _historical_exception(root,path,audit):
     pending=[r for r in audit['requests'] if r['state'] not in {'COMPLETED','REJECTED','NEVER_DISPATCHED'}]
     allowed=set(entry.get('reservation_ids',[]))
     accounts={r['account'] for r in pending}
-    return (bool(allowed) and {r['reservation_id'] for r in pending}==allowed
-        and all(s['account'] in accounts for s in audit['unresolved_scopes'])
+    scopes_match=(all(s['account'] in accounts for s in audit['unresolved_scopes'])
+        if 'reclaimed_scopes' not in entry else _reclaimed_historical_scopes(entry,audit))
+    matches=(bool(allowed) and {r['reservation_id'] for r in pending}==allowed
+        and scopes_match
         and all(b['account'] in accounts for b in audit['active_budgets'])
         and entry.get('ledger_fingerprint')==ledger_fingerprint(path))
+    if matches and 'snapshot_of' in entry:
+        return _snapshot_terminal_proof(path,pending,entry)
+    return matches
 
 
-def check_restart_ledgers(root, *, artifacts_root=None):
+def check_restart_ledgers(root, *, artifacts_root=None, allow_recovered_transport=False):
     """Check this run and sibling artifact runs; a new directory is no bypass.
 
     Includes qualification roots that nest their runtime one directory deeper.
@@ -141,7 +231,14 @@ def check_restart_ledgers(root, *, artifacts_root=None):
     root = Path(root).resolve()
     paths = {root / 'deepseek-native-authority' / 'requests.sqlite'}
     parents={root.parent}
-    if artifacts_root is not None:parents.add(Path(artifacts_root).resolve())
+    if artifacts_root is not None:
+        base=Path(artifacts_root).resolve()
+        parents.add(base)
+        local=base.parent/'runtime'
+        if local.exists():
+            paths.update(p for p in local.rglob('deepseek-native-authority/requests.sqlite')
+                if not any(part.startswith('export-staging-') for part in p.parts))
+        if (base/'runs').exists():parents.add(base/'runs')
     for parent in parents:
         for pattern in ('*/deepseek-native-authority/requests.sqlite',
                         '*/*/deepseek-native-authority/requests.sqlite'):
@@ -149,6 +246,9 @@ def check_restart_ledgers(root, *, artifacts_root=None):
     for path in sorted(paths):
         if not path.exists():continue
         audit=audit_ledger(path)
+        if allow_recovered_transport and path.resolve()==root/'deepseek-native-authority'/'requests.sqlite':
+            from .deepseek_retry import audit_retry_continuation
+            if audit_retry_continuation(path)['status']=='CONTINUABLE_WITH_UNKNOWN_COST':continue
         if audit['status'] != 'CLEAR' and not _historical_exception(root,path,audit):
             raise RuntimeError(f'DeepSeek restart blocked by unresolved evidence: {path}; '
                                'use deepseek-audit, do not reset quotas or change directories')

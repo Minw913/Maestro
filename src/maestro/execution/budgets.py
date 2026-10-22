@@ -59,9 +59,12 @@ class BudgetStore:
                 raise
 
     def create(self, account: str, *, max_calls: int, max_request_bytes: int,
-               max_output_tokens: int, deadline: float, max_concurrent: int = 1) -> None:
-        limits = (max_calls, max_request_bytes, max_output_tokens, max_concurrent)
-        if any(n <= 0 for n in limits) or deadline <= time.time():
+               max_output_tokens: int, deadline: float, max_concurrent: int = 1,
+               allow_unlimited_calls: bool = False) -> None:
+        limits = (max_request_bytes, max_output_tokens, max_concurrent)
+        if (type(allow_unlimited_calls) is not bool or type(max_calls) is not int
+                or max_calls < 0 or (max_calls == 0 and not allow_unlimited_calls)
+                or any(n <= 0 for n in limits) or deadline <= time.time()):
             raise ValueError("Budget limits and future deadline are required")
         with self._transaction():
             old = self.connection.execute("SELECT * FROM inference_budgets WHERE account=?", (account,)).fetchone()
@@ -83,7 +86,7 @@ class BudgetStore:
             row = self.connection.execute("SELECT * FROM inference_budgets WHERE account=?", (account,)).fetchone()
             if row is None or time.time() >= row["deadline"]:
                 raise BudgetExceeded("Missing or expired phase account")
-            if (row["calls"] + 1 > row["max_calls"] or
+            if ((row["max_calls"] > 0 and row["calls"] + 1 > row["max_calls"]) or
                 row["request_bytes"] + request_bytes > row["max_request_bytes"] or
                 row["output_tokens"] + output_tokens > row["max_output_tokens"] or
                 row["active"] >= row["max_concurrent"]):

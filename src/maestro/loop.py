@@ -224,17 +224,23 @@ class ExperimentEngine:
                 opportunities[agent] += 1
             self._round(warm_id,index,states,'uniform',purpose='WARM',warm_invite=wave)
         try:
-            validate_warm_completion(states,opportunities,c.warm_opportunities_per_agent)
+            fallback_enabled=bool(c.coral.get('deepseek_transport_retry',{}).get('warm_seed_fallback',False))
+            validate_warm_completion(states,opportunities,c.warm_opportunities_per_agent,
+                allow_seed_fallback=fallback_enabled,seed_hash=seed_hash,seed_score=initial_score)
         except BootstrapIncomplete:
             with self.ledger.transaction() as db:
                 db.execute("UPDATE episodes SET status='BOOTSTRAP_INCOMPLETE' WHERE id=?",(warm_id,))
                 self.ledger.event('BOOTSTRAP_INCOMPLETE',{'opportunities':dict(opportunities)},warm_id)
             raise
+        fallback_agents={a:{'reason':'NO_FORMAL_WARM_HISTORY','parent_hash':seed_hash,
+            'parent_score':initial_score,'formal_warm_evaluations':0} for a,s in states.items() if not s.history}
+        if fallback_agents:self.ledger.event('WARM_SEED_FALLBACK',{'agents':fallback_agents},warm_id)
         payload = {'warm_id':warm_id,'schema_version':2,'config':c.to_dict(),
             'config_hash':c.hash,'shared_config_hash':c.shared_config_hash,'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
             'coral_revision':CORAL_REVISION,'states':self._state_payload(states),
             'board':self._board(states,len(schedule)-1),'direction_briefs':briefs,
-            'opportunities':dict(opportunities),'warm_waves':len(schedule)}
+            'opportunities':dict(opportunities),'warm_waves':len(schedule),
+            'seed_fallback_agents':fallback_agents}
         if self.backend and hasattr(self.backend,'export_warm_memory'):
             payload['private_memory_manifest']=self.backend.export_warm_memory()
         digest = self.artifacts.put_json(payload)
@@ -247,7 +253,8 @@ class ExperimentEngine:
         checkpoint = folder / 'checkpoint.json'
         checkpoint.write_text(canonical_json({'artifact_hash':digest,'payload':payload}),encoding='utf-8')
         return {'warm_id':warm_id,'checkpoint':str(checkpoint),'content_hash':digest,
-            'warm_waves':len(schedule),'opportunities':dict(opportunities)}
+            'warm_waves':len(schedule),'opportunities':dict(opportunities),
+            'seed_fallback_agents':fallback_agents}
 
     def _evaluate_seed(self, episode_id, states, candidate):
         self._check_pause()
@@ -368,6 +375,9 @@ class ExperimentEngine:
                     for row in db.execute('''SELECT r.account,t.data_json FROM deepseek_request_events t
                         JOIN inference_reservations r USING(reservation_id) WHERE t.kind='REJECTED' ''')
                     if row[0].startswith(e+':')]
+            if getattr(store,'retry_policy',None):
+                failures=[f for f in failures if not store.replacement_complete(f['account'])
+                    and not (f['http_status'] in (429,500,502,503,504) and store.abandonment_authorized(f['account']))]
         if failures:
             self.ledger.set_round_phase(e,r,'INFRASTRUCTURE_FAILURE')
             with self.ledger.transaction() as ledger_db:
@@ -382,7 +392,9 @@ class ExperimentEngine:
         self.ledger.set_round_phase(e,r,'PREPARATION')
         self.ledger.event('PREPARATION_WINDOW_OPENED',
             {'deadline':time.time()+self.config.preparation_window_seconds,
-             'max_requests_per_agent':self.config.preparation_calls},e,r)
+             'max_requests_per_agent':self.config.preparation_calls or None,
+             'configured_preparation_calls':self.config.preparation_calls,
+             'unlimited_requests':self.config.preparation_calls==0},e,r)
         pool = ThreadPoolExecutor(max_workers=max(1,len(states)),thread_name_prefix='maestro-preparation')
         def execute(agent, state):
             began = time.monotonic()
@@ -397,6 +409,12 @@ class ExperimentEngine:
         futures={pool.submit(execute,a,s):a for a,s in states.items()}
         self._generation_futures.update(futures)
         done,pending=wait(futures,timeout=max(0,deadline-time.monotonic()))
+        if pending and getattr(self.backend,'failure_continuation_enabled',False):
+            # Cleanup only: dispatch/admission deadlines remain unchanged.
+            drained,pending=wait(pending,timeout=5.)
+            done|=drained
+            self.ledger.event('PHASE_CLEANUP_DRAIN',{'phase':'PREPARATION',
+                'reclaimed_callbacks':len(drained),'pending_callbacks':len(pending),'deadline_extended':False},e,r)
         # A Future cancellation does not prove a running native CLI stopped.
         # Preserve the phase and stop progression if any callback is unresolved.
         prepared, failures, unknown = {}, {}, bool(pending)
@@ -404,7 +422,7 @@ class ExperimentEngine:
             for future in done:
                 agent=futures[future]
                 evidence,usage,error,began,returned=future.result()
-                uncertain=bool(getattr(error,'inflight_unknown',False) or usage.get('unresolved_requests',0))
+                uncertain=bool(getattr(error,'inflight_unknown',False) or usage.get('continuation_blocking_requests',usage.get('unresolved_requests',0)))
                 unknown |= uncertain
                 accepted=(evidence is not None and error is None
                           and evidence.get('accepted_monotonic',float('inf'))<deadline and returned<deadline)
@@ -496,7 +514,7 @@ class ExperimentEngine:
                         pass
                 actual=_receipt_value(receipt,'actual_requests')
                 calls=(actual or 0) if receipt else int(measured.get('calls',0))
-                tokens=((_receipt_value(receipt,'input_tokens') or 0)+(_receipt_value(receipt,'output_tokens') or 0)) if receipt else int(measured.get('known_input_tokens',0))+int(measured.get('known_output_tokens',0))
+                tokens=int(measured.get('known_input_tokens',0))+int(measured.get('known_output_tokens',0)) if measured else ((_receipt_value(receipt,'input_tokens') or 0)+(_receipt_value(receipt,'output_tokens') or 0))
                 self.ledger.usage(e,r,a,'planning',calls=calls,tokens=tokens,
                     payload={'simulated':False,'receipt':to_jsonable(receipt),'scope':scope,
                         'usage_complete':actual is not None and measured.get('usage_complete',receipt is not None),
@@ -566,7 +584,11 @@ class ExperimentEngine:
             if purpose == 'WARM':
                 value,bid,samples = Decimal(0),Decimal(0),[]
             else:
-                value,samples = estimate_value(state.history,plan.target,plan.mod_type,state.parent_score,champion,scale=c.reward_scale,catchup=c.catchup_fraction)
+                if not state.history and c.coral.get('deepseek_transport_retry',{}).get('warm_seed_fallback',False):
+                    value,samples=Decimal(0),[]
+                    self.ledger.event('COLD_START_ZERO_VALUATION',{'agent_id':a,'reason':'NO_FORMAL_HISTORY',
+                        'parent_hash':state.parent_hash,'value':'0','sample_ids':[]},e,r)
+                else:value,samples = estimate_value(state.history,plan.target,plan.mod_type,state.parent_score,champion,scale=c.reward_scale,catchup=c.catchup_fraction)
                 bid = cooperative_bid(value,c.bid_cap)
             submission = Submission(a,plan.version_id,value,bid)
             submissions.append(submission)
@@ -619,6 +641,7 @@ class ExperimentEngine:
         amounts = {}
         next_invitation = frontier = 0
         pool = ThreadPoolExecutor(max_workers=capacity,thread_name_prefix='maestro-generation')
+        cleanup_deadline=None
 
         def mark_unknown(reason):
             self.ledger.set_round_phase(e,r,'GENERATION_UNKNOWN')
@@ -683,10 +706,28 @@ class ExperimentEngine:
             while active:
                 done,_=wait(active,timeout=max(0,deadline-time.monotonic()),return_when=FIRST_COMPLETED)
                 if not done:
-                    for future in active:
-                        future.cancel()
-                    mark_unknown('Generation callbacks unreturned at common deadline')
-                    raise MaestroError('Generation callback unresolved at common deadline; containment reconciliation required')
+                    if getattr(self.backend,'failure_continuation_enabled',False):
+                        if cleanup_deadline is None:cleanup_deadline=time.monotonic()+5.
+                        done,_=wait(active,timeout=max(0,cleanup_deadline-time.monotonic()))
+                        if done:
+                            self.ledger.event('PHASE_CLEANUP_DRAIN',{'phase':'GENERATION',
+                                'reclaimed_callbacks':len(done),'pending_callbacks':len(active)-len(done),
+                                'deadline_extended':False},e,r)
+                            # Late callbacks are failures, never admitted results.
+                            for future in done:
+                                if future.exception() is None:
+                                    a=active.pop(future);outcomes[a]=None
+                                    states[a].needs_refresh=True
+                                    self.ledger.release_hold(e,r,a,'GENERATION_DEADLINE')
+                            resolve_priority()
+                            if not active:break
+                            done={f for f in done if f in active}
+                            if not done:continue
+                    if done:pass
+                    else:
+                        for future in active:future.cancel()
+                        mark_unknown('Generation callbacks unreturned at common deadline')
+                        raise MaestroError('Generation callback unresolved at common deadline; containment reconciliation required')
                 # Detect every uncertain callback in this completion batch
                 # before releasing holds or starting any replacement.
                 for future in done:
@@ -876,7 +917,8 @@ class ExperimentEngine:
                     payload={'revision':attempt,'repair_index':attempt-1 if attempt else None,
                         'usage':usage,'grant_id':grant.grant_id,'simulated':False,
                         'usage_complete':bool(usage.get('usage_complete',False)),
-                        'request_count_unknown':bool(usage.get('unresolved_requests',0))})
+                        'request_count_unknown':bool(usage.get('continuation_blocking_requests',usage.get('unresolved_requests',0))),
+                        'cost_usage_unknown':not bool(usage.get('usage_complete',False))})
             if time.monotonic()>=deadline:passed,last_reason=False,'DEADLINE';outcome=None
             with self.ledger.transaction() as db:
                 db.execute('INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)',

@@ -89,9 +89,11 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
                     "INSERT INTO codex_phase_scopes VALUES(?,'DISPATCHING') "
                     "ON CONFLICT(account) DO UPDATE SET status='DISPATCHING'", (account,))
         uncertain = False
+        phase_error=None
         try:
             yield
         except BaseException as exc:
+            phase_error=exc
             uncertain = bool(getattr(exc, "inflight_unknown", False) or getattr(exc, "execution_unknown", False))
             try:
                 uncertain |= self.budget_store.snapshot(account)["active"] > 0
@@ -110,6 +112,10 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
                 with self.budget_store._transaction():
                     self.budget_store.connection.execute("UPDATE codex_phase_scopes SET status=? WHERE account=?",
                         ("UNKNOWN" if uncertain else "COMPLETED", account))
+                cleanup=getattr(self,'_record_phase_cleanup',None)
+                if callable(cleanup):cleanup(account)
+                finalize=getattr(self,'_local_abstention',None)
+                if phase_error is not None and callable(finalize):finalize(account,phase_error)
                 self._active_accounts.discard(account)
                 self._phase_condition.notify_all()
 
@@ -168,6 +174,9 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
         except BudgetExceeded:
             return {"calls": 0, "known_input_tokens": 0, "known_output_tokens": 0,
                     "input_tokens": None, "output_tokens": None, "unresolved_requests": 0}
+
+    def _blocking_requests(self,usage):
+        return usage.get('unresolved_requests',0)
 
     def _planning_provider_id(self, account):
         """Use the metered provider receipt identity, never the local thread ID."""
@@ -398,6 +407,7 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
     from maestro.execution.sandbox import DockerRunner
     from maestro.tasks.pace.manifest import assert_smoke_disjoint, load_panel
     from maestro.tasks.pace.runner import smoke_test
+    from maestro.tasks.pace.sanity import default_sanity_graph_path
 
     if getattr(config,"profile",None) != "v1_cooperative" or getattr(config,"execution_mode",None) != "real":
         raise BackendUnavailable("Strict Codex factory requires pace/v1_cooperative")
@@ -407,20 +417,23 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
     if settings.get("director_mode", "predeclared") != "predeclared":
         raise BackendUnavailable("Strict Codex currently uses declared distinct startup directions")
     provenance = verify_checkout(settings.get("checkout_path", settings.get("checkout")))
-    root = Path(root or "artifacts/strict-codex").resolve()
+    root = Path(root or "artifacts/runs/strict-codex").resolve()
+    from maestro.storage.paths import run_paths, require_separated_runtime
+    require_separated_runtime(root)
+    local = run_paths(root).local
     authority = root / "codex-autonomous-authority"
     authority.mkdir(parents=True, exist_ok=True, mode=0o700)
-    authenticator = CodexSessionClient(model=settings["model"], work_root=authority/"auth-check",
+    authenticator = CodexSessionClient(model=settings["model"], work_root=local/"codex-autonomous-authority"/"auth-check",
                                      executable=settings.get("codex_executable"))
     authenticator.require_chatgpt_login()
     image = config.pace.get("contract", {}).get("image", "")
     runner = DockerRunner(image)
     runner.preflight(image=image)
-    client = (client_factory or AutonomousCodexClient)(model=settings["model"], work_root=authority/"native",
+    client = (client_factory or AutonomousCodexClient)(model=settings["model"], work_root=local/"codex-autonomous-authority"/"native",
                                   executable=settings.get("codex_executable"),
                                   reasoning_effort=settings.get("codex_reasoning_effort", "low"),
                                   timeout=max(config.preparation_window_seconds, config.planning_window_seconds, config.generation_window_seconds))
-    toy = Path(settings.get("smoke_graph", Path(__file__).resolve().parents[4]/"fixtures/toy_graphs/star5.gr"))
+    toy = Path(settings.get("smoke_graph", default_sanity_graph_path()))
     assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
     store = BudgetStore(authority/"requests.sqlite")
     def precheck(candidate):
@@ -447,7 +460,7 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
             usage["cpu_seconds"]=usage.get("cpu_seconds",0.0)+cpu
             usage["wall_seconds"]=usage.get("wall_seconds",0.0)+usage["precheck_wall_seconds"]
             backend.last_generation_usage=usage
-    backend = (backend_class or StrictCodexBackend)(client, store, WorkspaceStore(root/"coral-workspaces", root/"coral-cas"),
+    backend = (backend_class or StrictCodexBackend)(client, store, WorkspaceStore(local/"coral-workspaces", root/"coral-cas"),
         precheck=precheck,
         seed_solver=config.pace.get("seed_solver", ""), candidate_runner=runner, image=image,
         config=config, authenticator=authenticator, provenance=provenance)

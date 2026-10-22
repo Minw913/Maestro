@@ -1,3 +1,4 @@
+from maestro.storage.paths import diagnostic_native_root
 """One four-cell concurrent prompt/label diagnostic; maximum four live requests.
 
 Frozen preparation is input, not a new agent preparation or formal experiment.
@@ -52,13 +53,15 @@ def reservations(path):
     db.close();return rows
 
 def main(root,source,historical,live):
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(root)
     if not live:raise PermissionError('Explicit --live required')
     if root.exists():raise FileExistsError('Never reuse or retry a diagnostic root')
     before={str(p.resolve()):reservations(p) for p in historical}
     assert not subprocess.check_output(['docker','ps','-aq'],text=True).strip()
     root.mkdir(parents=True,exist_ok=False)
     inputs={}
-    for p in (source/'runtime/codex-autonomous-authority/native').glob('*/scope.json'):
+    for p in (diagnostic_native_root(source)).glob('*/scope.json'):
         scope=json.loads(p.read_text())
         if scope['prompt'].startswith('PLAN_RO:'):
             context=json.loads(scope['prompt'].split('\n',1)[1])

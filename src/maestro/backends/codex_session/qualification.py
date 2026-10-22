@@ -110,7 +110,8 @@ def run_qualification(output_root, *, model, executable=None, historical_path=No
         _require(actual == historical_sha256, "Historical UNKNOWN evidence hash mismatch")
         historical = {"path": str(historical_path), "sha256": actual,
                       "status": "HISTORICAL_UNRESOLVED_PRESERVED", "refunded": False}
-    root = Path(output_root).resolve()
+    from maestro.storage.paths import diagnostic_root
+    root = diagnostic_root(output_root)
     root.mkdir(parents=True, exist_ok=False)
     episode = "qualification-"+secrets.token_hex(8)
     manifest = {"schema_version": 1, "episode_id": episode, "model": model,

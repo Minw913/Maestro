@@ -19,7 +19,9 @@ class PauseController:
     grace_seconds = 30.0
 
     def __init__(self, root):
-        self.path = Path(root) / 'authority' / 'pause-request.json'
+        from maestro.storage.paths import run_paths
+        self.path = run_paths(root).local / 'authority' / 'pause-request.json'
+        self.legacy_path = Path(root) / 'authority' / 'pause-request.json'
         self._at = None
 
     def request(self):
@@ -36,7 +38,7 @@ class PauseController:
 
     @property
     def requested(self):
-        if self._at is None and self.path.exists():
+        if self._at is None and (self.path.exists() or self.legacy_path.exists()):
             self._at = time.monotonic()
         return self._at is not None
 

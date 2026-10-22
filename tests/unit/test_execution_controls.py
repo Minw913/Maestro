@@ -36,6 +36,26 @@ def test_budget_survives_restart_and_cannot_expand(tmp_path):
     store.close()
 
 
+def test_unlimited_call_budget_requires_opt_in_and_cannot_expand_old_account(tmp_path):
+    path=tmp_path/'quota.sqlite';store=BudgetStore(path);deadline=time.time()+60
+    limits=dict(max_calls=0,max_request_bytes=1000,max_output_tokens=100,deadline=deadline)
+    with pytest.raises(ValueError):store.create('uncapped',**limits)
+    store.create('uncapped',**limits,allow_unlimited_calls=True)
+    for index in range(9):
+        rid=store.reserve('uncapped',str(index),request_bytes=10,output_tokens=10)
+        store.finish(rid,actual_output_tokens=1)
+    store.close();store=BudgetStore(path)
+    store.create('uncapped',**limits,allow_unlimited_calls=True)
+    assert store.snapshot('uncapped')['calls']==9
+    store.create('finite',**{**limits,'max_calls':4})
+    with pytest.raises(BudgetExceeded):store.create('finite',**limits,allow_unlimited_calls=True)
+    with store._transaction():
+        store.connection.execute('UPDATE inference_budgets SET deadline=? WHERE account=?',
+                                 (time.time()-1,'uncapped'))
+    with pytest.raises(BudgetExceeded):store.reserve('uncapped','late',request_bytes=1,output_tokens=1)
+    store.close()
+
+
 def test_budget_atomic_concurrent_claims(tmp_path):
     store = BudgetStore(tmp_path / "quota.sqlite"); account(store)
     def reserve(index):
