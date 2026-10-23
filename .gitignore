@@ -27,3 +27,6 @@ auth.json
 # Live SQLite sidecars are included through SQLite backup, not Git copies.
 *.sqlite-wal
 *.sqlite-shm
+
+# Third-party benchmark checkouts, each with its own venv.
+/repos/
