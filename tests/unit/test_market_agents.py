@@ -78,31 +78,31 @@ class PolicyTests(unittest.TestCase):
 
     def test_balanced_rotation_and_eligibility_do_not_reseed(self):
         counts = Counter(a for t in range(20) for a in rank(
-            "uniform", self.submissions, self.states, t, 19)[:2])
+            "uniform", self.submissions, self.states, t, 19, slots=2)[:2])
         self.assertEqual(counts, {a: 10 for a in "abcd"})
-        complete = rank("uniform", self.submissions, self.states, 0, 19)
+        complete = rank("uniform", self.submissions, self.states, 0, 19, slots=2)
         removed = complete[1]
         partial = [replace(x, eligible=False) if x.agent_id == removed else x for x in self.submissions]
-        self.assertEqual(rank("uniform", partial, self.states, 0, 19),
+        self.assertEqual(rank("uniform", partial, self.states, 0, 19, slots=2),
                          [a for a in complete if a != removed])
 
     def test_first_price_is_seeded_stable_and_never_reorders_by_text(self):
         submissions = [replace(s, bid=Decimal(i)) for i, s in enumerate(self.submissions)]
-        self.assertEqual(rank("first_price", submissions, self.states, 0, 5), list("dcba"))
-        self.assertEqual(rank("first_price", self.submissions, self.states, 0, 5),
-                         rank("first_price", self.submissions[::-1], self.states, 0, 5))
+        self.assertEqual(rank("first_price", submissions, self.states, 0, 5, slots=2), list("dcba"))
+        self.assertEqual(rank("first_price", self.submissions, self.states, 0, 5, slots=2),
+                         rank("first_price", self.submissions[::-1], self.states, 0, 5, slots=2))
 
     def test_ucb_uses_warm_history_and_cold_start(self):
         for a, s in self.states.items():
             s.ucb_n = 10
             s.ucb_total = Decimal(10 if a == "a" else 0)
-        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0)[0], "a")
+        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0, slots=2)[0], "a")
         self.states["d"].ucb_n = 0
-        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0)[0], "d")
+        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0, slots=2)[0], "d")
 
     def test_duplicate_submission_rejected(self):
         with self.assertRaises(ValueError):
-            rank("uniform", self.submissions * 2, self.states, 0, 0)
+            rank("uniform", self.submissions * 2, self.states, 0, 0, slots=2)
 
 
 class PlanTests(unittest.TestCase):

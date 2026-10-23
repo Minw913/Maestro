@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
 import math
-from maestro.market.credit import decimal, money
+from maestro.market.credit import DEFAULT_CREDIT, decimal, money
 from maestro.market.reputation import TrackRecord, metrics, require_full_profile
 from maestro.market.audits import audit_slots, sample_audits
 
@@ -45,7 +45,7 @@ class FullAllocation:
 
 def allocate(plans, records, wealth, *, slots, rule="M_0", gamma=Decimal(1),
              a0=Decimal(1), epsilon=Decimal(0), seed=0, payment_rule="first_price",
-             bid_cap=Decimal(100), q_max=None, profile):
+             bid_cap=DEFAULT_CREDIT.bid_cap, q_max=None, profile):
     """Fill priority slots sequentially, then draw audits from unselected plans.
 
     ``records`` are frozen A/B/N snapshots; only virtual exploration counts change

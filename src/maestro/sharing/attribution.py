@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 import hashlib
 import json
-from maestro.market.credit import decimal, money
+from maestro.market.credit import QUANTUM, decimal, money
 from maestro.market.reputation import require_full_profile
 from maestro.sharing.disclosure import VerificationReceipt
 
@@ -112,7 +112,7 @@ def attribute_credit(base_rewards, dependencies, *, eta, credited_candidates=Non
         after[receiver] = money(after[receiver] - pool)
         for index, owner in enumerate(owners):
             amount = (money(pool - allocated) if index == len(owners) - 1
-                      else (pool / len(owners)).quantize(Decimal(".000001"), rounding=ROUND_DOWN))
+                      else (pool / len(owners)).quantize(QUANTUM, rounding=ROUND_DOWN))
             allocated += amount
             after[owner] = money(after[owner] + amount)
             transfers.append(CreditTransfer(receiver, owner, amount, tuple(sorted(source_modules[owner]))))

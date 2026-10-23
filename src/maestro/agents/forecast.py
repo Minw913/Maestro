@@ -1,7 +1,7 @@
 """Full-spec diagnostic/history mixture. V1 history-only value stays separate."""
 from dataclasses import dataclass
 from decimal import Decimal
-from maestro.market.credit import decimal, money, score
+from maestro.market.credit import DEFAULT_CREDIT, decimal, money, score
 from maestro.market.batches import phi
 from maestro.market.reputation import require_full_profile
 
@@ -17,7 +17,7 @@ class ReferenceForecast:
 
 
 def reference_forecast(records, *, parent, champion, diagnostic_probability,
-                       diagnostic_gain, kappa, alpha=Decimal(100), beta=Decimal(25), profile):
+                       diagnostic_gain, kappa, alpha=DEFAULT_CREDIT.reward_scale, beta=DEFAULT_CREDIT.beta, profile):
     """Caller prefilters same task/protocol/labels before passing records."""
     require_full_profile(profile)
     p, c = score(parent), score(champion)
