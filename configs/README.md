@@ -50,7 +50,7 @@ Code configuration example has been removed; the backend implementation remains.
 The default native runtime entry selects Codex;
 changing to Claude requires equivalent permission/metering integration and
 qualification, not merely swapping a model string. The versioned PACE vocabulary lives in
-`src/maestro/tasks/pace/taxonomy.py`; its version and complete contents are frozen
+`src/maestro/tasks/taxonomy.py`; its version and complete contents are frozen
 in the resolved configuration as `plan_taxonomy` and included in its hash.
 
 ## Generation window and replacement

@@ -314,7 +314,7 @@ def smoke_test(candidate_path: str | Path, graph_path: str | Path, runner, *, im
         ResourceLimits(cpu_seconds=1.0, wall_seconds=3.0, memory_mb=128,
                        pids=8, output_bytes=65536, cpus=1))
     if receipt.timed_out or receipt.returncode != 0:
-        from .runtime_failure import classify_runtime_failure, RuntimePrecheckFailure
+        from maestro.tasks.runtime_failure import classify_runtime_failure, RuntimePrecheckFailure
         from maestro.backends.coral.workspace import candidate_tree_hash
         evidence = classify_runtime_failure(candidate_tree_hash(candidate), receipt)
         if evidence is not None:

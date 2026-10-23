@@ -6,7 +6,7 @@ import pytest
 from maestro.config import RunConfig
 from maestro.execution.pause import PauseRequested
 from maestro.loop import ExperimentEngine
-from maestro.tasks.pace.runtime_failure import RuntimeFailure, RuntimePrecheckFailure
+from maestro.tasks.runtime_failure import RuntimeFailure, RuntimePrecheckFailure
 from maestro.types import AgentState, Plan
 
 

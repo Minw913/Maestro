@@ -13,7 +13,8 @@ from maestro.backends.coral.workspace import solver_files, candidate_tree_hash
 from maestro.execution.grants import GrantError, GrantAuthority
 from maestro.execution.budgets import BudgetExceeded
 from maestro.llm import InferenceRequestUnknown
-from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
+from maestro.tasks.base import benchmark_for
+from maestro.tasks.runtime_failure import RuntimePrecheckFailure
 
 
 def schema(name, properties):
@@ -141,7 +142,7 @@ class OneShotRuntimeRepairMixin:
                 'Return edits only to existing files within three lines of a reported traceback location; '
                 'at most three edits and twelve replacement lines total. The controller tests the patch.\n'+
                 json.dumps({'files':files,'runtime_error':asdict(evidence),
-                    'solver_argv':list(self.config.pace.get('contract',{}).get('solver_argv',('/candidate/run',)))},ensure_ascii=False))
+                    'solver_argv':list(benchmark_for(self.config.benchmark).solver_argv(self.config))},ensure_ascii=False))
             output_schema=PATCH_SCHEMA
         actor_id=state.agent_id if repair_index is None else 'runtime-repair-'+uuid.uuid4().hex
         before=self._usage(account);start=time.monotonic();self.last_generation_usage={}

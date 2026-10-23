@@ -24,6 +24,7 @@ from maestro.llm import PlanningResponseError
 from maestro.backends.codex_session.quota_proxy import CodexQuotaProxy
 from maestro.backends.codex_session.tools import StageToolBroker, ToolScopeExpired
 from maestro.bootstrap.director import make_direction_briefs
+from maestro.tasks.pace.benchmark import PACE
 from maestro.config import load_config
 from maestro.execution.budgets import BudgetStore, BudgetExceeded
 from maestro.execution.grants import GrantAuthority
@@ -398,7 +399,7 @@ def run(root, *, backend_builder=None, proxy_upstream=None, client_instrumentati
             'graph_path': str(graph), 'graph_sha256': graph_hash, 'formal_score': None,
             'diagnostic_parent_score_scope': 'single real debug graph, prior verified receipt; not 20-instance formal score'}, indent=2))
         ids = [f'agent-{i}' for i in range(1, 5)]
-        briefs = make_direction_briefs(ids, 0, context={'seed_artifact': seed_hash})
+        briefs = make_direction_briefs(ids, 0, directions=PACE.directions, context={'seed_artifact': seed_hash})
         instruction = (' Calibration task: implement one substantive improvement to the real PACE DS solver, '
             'read solver/run and list/read your own private memory using the bounded tools, and persist notes. '
             'The frozen runtime has Python3 standard library, no C++ compiler; preserve executable run entry point. '

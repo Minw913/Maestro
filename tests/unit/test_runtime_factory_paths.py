@@ -40,8 +40,6 @@ def test_factories_keep_native_and_workspaces_out_of_outputs(tmp_path,monkeypatc
         import maestro.backends.coral.deepseek_backend as module
         monkeypatch.setattr(module,'verify_checkout',lambda *args:{})
         monkeypatch.setattr(module,'check_restart_ledgers',lambda *args,**kwargs:None)
-        monkeypatch.setattr(module,'load_panel',lambda *args,**kwargs:object())
-        monkeypatch.setattr(module,'assert_smoke_disjoint',lambda *args:None)
         monkeypatch.setattr(module,'DockerRunner',Runner)
         monkeypatch.setattr(module,'CoralDeepSeekClient',Client)
         monkeypatch.setattr(module,'NativeDeepSeekBackend',Backend)

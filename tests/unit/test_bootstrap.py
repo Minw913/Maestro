@@ -4,6 +4,7 @@ import unittest
 
 from maestro.types import AgentState, HistoryRecord, BootstrapIncomplete
 from maestro.bootstrap.director import make_direction_briefs
+from maestro.tasks.pace.benchmark import PACE
 from maestro.bootstrap.warm_start import balanced_schedule, validate_warm_completion
 from maestro.bootstrap.snapshot import (make_snapshot, verify_snapshot, clone_arms,
                                         serialize_state, deserialize_state)
@@ -33,8 +34,8 @@ class BootstrapTests(unittest.TestCase):
             balanced_schedule(list("abc"), 4, 3, 5)
 
     def test_director_is_deterministic_diverse_and_not_a_market_bidder(self):
-        briefs = make_direction_briefs(list("abcd"), 19, context={"seed_artifact": "seed"})
-        self.assertEqual(briefs, make_direction_briefs(list("abcd"), 19, context={"seed_artifact": "seed"}))
+        briefs = make_direction_briefs(list("abcd"), 19, directions=PACE.directions, context={"seed_artifact": "seed"})
+        self.assertEqual(briefs, make_direction_briefs(list("abcd"), 19, directions=PACE.directions, context={"seed_artifact": "seed"}))
         self.assertEqual(len({b["objective"] for b in briefs}), 4)
         self.assertEqual(len({b["direction_id"] for b in briefs}), 4)
         self.assertTrue(all(b["seed_artifact"] == "seed" and "bid" not in b for b in briefs))
@@ -45,7 +46,7 @@ class BootstrapTests(unittest.TestCase):
             calls.append(context)
             return []
         with self.assertRaises(ValueError):
-            make_direction_briefs(list("abcd"), 0, provider=provider)
+            make_direction_briefs(list("abcd"), 0, directions=PACE.directions, provider=provider)
         self.assertEqual(len(calls), 1)
 
     def test_warm_requires_equal_opportunities_and_real_outcomes(self):

@@ -36,6 +36,7 @@ from maestro.execution.grants import GrantAuthority, GrantError
 from maestro.execution.budgets import BudgetStore
 from maestro.execution.cpu_pool import GlobalCpuPool
 from maestro.backends.mock import MockEvaluator
+from maestro.tasks.base import benchmark_for
 from maestro.execution.pause import PauseController
 
 
@@ -69,8 +70,8 @@ class ExperimentEngine:
             if backend is not None:
                 raise ValueError('Mock mode cannot silently use a live backend')
             self.evaluator = evaluator or MockEvaluator(seed=config.seed)
-            self.panel_hash = stable_hash({'execution_mode':'mock','benchmark':'pace','instances':config.evaluation_instance_count,'seed':config.seed})
-            self.contract_hash = stable_hash({'execution_mode':'mock','benchmark':'pace','reserved_cpu':config.reserved_cpu_seconds,'panel':self.panel_hash})
+            self.panel_hash = stable_hash({'execution_mode':'mock','benchmark':config.benchmark,'instances':config.evaluation_instance_count,'seed':config.seed})
+            self.contract_hash = stable_hash({'execution_mode':'mock','benchmark':config.benchmark,'reserved_cpu':config.reserved_cpu_seconds,'panel':self.panel_hash})
         else:
             try:
                 self._prepare_live()
@@ -87,42 +88,27 @@ class ExperimentEngine:
 
     def _prepare_live(self):
         """Every production prerequisite is explicit; there is no mock fallback."""
-        from maestro.tasks.pace.manifest import load_panel, EvaluationContract
-        from maestro.tasks.pace.runner import PaceEvaluator
-        manifest = self.config.pace.get('panel_manifest')
-        if not manifest:
-            raise MaestroError('execution_mode=real with benchmark=pace requires pace.panel_manifest, seed_solver, pinned runner and Coral backend')
-        self._live_panel = load_panel(manifest,expected_split='training')
-        contract_settings = dict(self.config.pace.get('contract',{}))
-        for name in ('cpu_workers','instance_workers'):
-            value = getattr(self.config,name)
-            if name in contract_settings and contract_settings[name] != value:
-                raise IntegrityError(f'Top-level {name} and PACE contract disagree')
-            contract_settings[name] = value
-        self._live_contract = EvaluationContract.standard(**contract_settings)
-        if self.config.evaluation_instance_count != self._live_contract.instances:
-            raise IntegrityError('Config and PACE panel contract disagree')
-        self.panel_hash = self._live_panel.panel_hash
-        self.contract_hash = self._live_contract.contract_hash
+        benchmark = benchmark_for(self.config.benchmark)
+        live = benchmark.live(self.config)
+        self._live_panel, self._live_contract = live.panel, live.contract
+        self.panel_hash = live.panel_hash
+        self.contract_hash = live.contract_hash
         if self.backend is None:
             factory = self.config.coral.get('backend_factory')
             if not factory or ':' not in factory:
-                raise MaestroError('execution_mode=real with benchmark=pace requires a trusted coral.backend_factory module:callable or injected CoralBackend')
+                raise MaestroError(f'execution_mode=real with benchmark={self.config.benchmark} requires a trusted coral.backend_factory module:callable or injected CoralBackend')
             module,name = factory.split(':',1)
             self.backend = getattr(importlib.import_module(module),name)(self.config,self.root)
         self.backend.preflight(self.config)
         if self.evaluator is None:
             runner = getattr(self.backend,'candidate_runner',None)
-            self.evaluator = PaceEvaluator(self._live_panel,self._live_contract,
-                runner=runner,artifact_store=self.artifacts.put,
-                cpu_workers=self.config.cpu_workers,
-                instance_workers=self.config.instance_workers,cpu_pool=self.cpu_pool)
+            self.evaluator = live.evaluator(runner=runner,artifact_store=self.artifacts.put,cpu_pool=self.cpu_pool)
         if isinstance(self.evaluator,MockEvaluator):
             raise MaestroError('MockEvaluator is forbidden with execution_mode=real')
         if hasattr(self.evaluator,'preflight'):
             self.evaluator.preflight()
-        if not self.config.pace.get('seed_solver'):
-            raise MaestroError('pace.seed_solver is required')
+        if not benchmark.seed_solver(self.config):
+            raise MaestroError(f'{self.config.benchmark}.seed_solver is required')
 
     def close(self, *, timeout=30.0):
         if self._closed:
@@ -187,10 +173,10 @@ class ExperimentEngine:
         warm_id = _new_id('warm')
         agent_ids = [f'agent-{i+1}' for i in range(c.n_agents)]
         if c.execution_mode == 'mock':
-            seed_hash = self.artifacts.put_json({'execution_mode':'mock','benchmark':'pace','solver':'common-seed-v1','seed':c.seed})
+            seed_hash = self.artifacts.put_json({'execution_mode':'mock','benchmark':c.benchmark,'solver':'common-seed-v1','seed':c.seed})
             seed_candidate = {'candidate_hash':seed_hash,'kind':'mock','seed':True}
         else:
-            seed_candidate = self.backend.prepare_seed(c.pace['seed_solver'])
+            seed_candidate = self.backend.prepare_seed(benchmark_for(c.benchmark).seed_solver(c))
             seed_hash = seed_candidate['candidate_hash']
         states = {a:AgentState(a,seed_hash,0.0,c.initial_wealth) for a in agent_ids}
         self.ledger.create_episode(warm_id,'warm',c,states)
@@ -203,7 +189,7 @@ class ExperimentEngine:
         for state in states.values():
             state.parent_score = initial_score
         director_provider = getattr(self.backend,'director_provider',None) if self.backend else None
-        briefs = make_direction_briefs(agent_ids,c.seed,provider=director_provider,
+        briefs = make_direction_briefs(agent_ids,c.seed,directions=benchmark_for(c.benchmark).directions,provider=director_provider,
             context={'seed_artifact':seed_hash,'contract_hash':self.contract_hash})
         director_hash = self.artifacts.put_json(briefs)
         self.ledger.event('DIRECTOR_COMPLETED',{'artifact_hash':director_hash,'source':briefs[0]['source']},warm_id)
@@ -796,11 +782,11 @@ class ExperimentEngine:
             try:
                 if c.execution_mode=='mock':
                     reservation=self.budgets.reserve(account,f'revision-{revision}',request_bytes=512,output_tokens=4096)
-                    body={'execution_mode':'mock','benchmark':'pace','agent_id':a,'round_index':r,'purpose':purpose,
+                    body={'execution_mode':'mock','benchmark':c.benchmark,'agent_id':a,'round_index':r,'purpose':purpose,
                         'parent_hash':plan.parent_hash,'target':plan.target,'mod_type':plan.mod_type,
                         'change':plan.change,'revision':revision,'seed':c.seed}
                     if purpose=='MAIN' and r in c.failures.get('duplicate_candidate_rounds',[]):
-                        body={'execution_mode':'mock','benchmark':'pace','forced_duplicate_round':r,'seed':c.seed}
+                        body={'execution_mode':'mock','benchmark':c.benchmark,'forced_duplicate_round':r,'seed':c.seed}
                     digest=self.artifacts.put_json(body)
                     candidate={'candidate_hash':digest,'source':body,'kind':'mock'}
                     failure_cases=c.failures if purpose=='MAIN' else c.failures.get('warm',{})
@@ -865,7 +851,7 @@ class ExperimentEngine:
         This is pre-admission checking. Formal outcomes never reenter this loop
         and no EvalTicket/evaluation budget is refunded or silently rerun.
         """
-        from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
+        from maestro.tasks.runtime_failure import RuntimePrecheckFailure
         from maestro.execution.budgets import BudgetExceeded
         candidate=None
         failure=None

@@ -3,22 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from maestro.tasks.pace.taxonomy import TARGETS
-
-_DIRECTIONS = (
-    ("structural_reduction", ("reduction", "initialization"),
-     "Explore safe reduction rules and seed construction.",
-     "Improve the initial dominating set without changing validity."),
-    ("local_improvement", ("local_search", "postprocess"),
-     "Explore bounded local moves and postprocessing.",
-     "Improve solution quality through verified local exchanges."),
-    ("search_diversification", ("restart", "tie_break"),
-     "Explore restarts and deterministic tie handling.",
-     "Reduce sensitivity to an unproductive search trajectory."),
-    ("execution_efficiency", ("data_structure", "time_management"),
-     "Explore incremental data structures and time allocation.",
-     "Perform more useful search within the fixed CPU contract."),
-)
+from maestro.tasks.taxonomy import TARGETS
 
 
 def _hash(value):
@@ -26,8 +11,8 @@ def _hash(value):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
-def make_direction_briefs(agent_ids, seed, *, provider=None, context=None):
-    """Offline deterministic defaults or exactly one explicitly injected call.
+def make_direction_briefs(agent_ids, seed, *, directions, provider=None, context=None):
+    """Offline deterministic defaults from the benchmark's `directions`, or exactly one injected call.
 
     A live provider must itself be a budgeted single-call client. This function
     never retries or silently falls back when live output fails validation.
@@ -53,10 +38,10 @@ def make_direction_briefs(agent_ids, seed, *, provider=None, context=None):
             raise ValueError("director must return a list of briefs")
         briefs = [dict(item) for item in payload]
     else:
-        order = sorted(range(len(_DIRECTIONS)), key=lambda i: _hash([seed, "direction", i]))
+        order = sorted(range(len(directions)), key=lambda i: _hash([seed, "direction", i]))
         briefs = []
         for index, agent in enumerate(ids):
-            name, focus, objective, hypothesis = _DIRECTIONS[order[index % len(order)]]
+            name, focus, objective, hypothesis = directions[order[index % len(order)]]
             variant = index // len(order)
             if variant:
                 objective += f" Independently test bounded variant {variant + 1}."

@@ -13,7 +13,7 @@ from maestro.market.credit import DEFAULT_CREDIT
 
 
 CORAL_REVISION = '0123dfb939b35228cf2c1fde224cd0561e727408'
-from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES, taxonomy_identity
+from maestro.tasks.taxonomy import TARGETS, MOD_TYPES, taxonomy_identity
 
 
 

@@ -12,7 +12,7 @@ from typing import Any
 
 from maestro.types import Plan
 
-from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES
+from maestro.tasks.taxonomy import TARGETS, MOD_TYPES
 
 PLAN_FIELDS = {"plan_id", "version_id", "agent_id", "parent_hash", "target",
                "mod_type", "diagnosis", "change", "expected_effect",

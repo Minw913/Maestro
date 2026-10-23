@@ -20,11 +20,12 @@ from maestro.backends.coral.deepseek_lifecycle import audit_ledger,exception_det
 from maestro.backends.coral.failure_report import write_failure_report
 from maestro.backends.coral.workspace import solver_files
 from maestro.bootstrap.director import make_direction_briefs
+from maestro.tasks.pace.benchmark import PACE
 from maestro.config import load_config
 from maestro.execution.budgets import BudgetExceeded
 from maestro.execution.grants import GrantAuthority
 from maestro.execution.sandbox import DockerRunner,RunRequest,ResourceLimits,Mount
-from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
+from maestro.tasks.runtime_failure import RuntimePrecheckFailure
 from maestro.tasks.pace.verifier import verify_graph_solution
 from maestro.types import AgentState
 
@@ -98,7 +99,7 @@ def run(args):
         backend.budget_store=store;backend.begin_episode(episode)
         parent=backend.prepare_seed();backend.register_parent(parent['candidate_hash'],parent['candidate_path'])
         states={f'agent-{i}':AgentState(f'agent-{i}',parent['candidate_hash'],0) for i in range(1,5)}
-        directions=make_direction_briefs(list(states),0,context={'seed_artifact':parent['candidate_hash']})
+        directions=make_direction_briefs(list(states),0,directions=PACE.directions,context={'seed_artifact':parent['candidate_hash']})
         nonces={}
         for direction in directions:
             agent=direction['agent_id'];nonce=hashlib.sha256((episode+agent).encode()).hexdigest();nonces[agent]=nonce

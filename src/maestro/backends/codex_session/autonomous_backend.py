@@ -405,9 +405,7 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
     from .autonomous_client import AutonomousCodexClient
     from maestro.backends.coral.runtime import verify_checkout
     from maestro.execution.sandbox import DockerRunner
-    from maestro.tasks.pace.manifest import assert_smoke_disjoint, load_panel
-    from maestro.tasks.pace.runner import smoke_test
-    from maestro.tasks.pace.sanity import default_sanity_graph_path
+    from maestro.tasks.base import benchmark_for
 
     if getattr(config,"profile",None) != "v1_cooperative" or getattr(config,"execution_mode",None) != "real":
         raise BackendUnavailable("Strict Codex factory requires pace/v1_cooperative")
@@ -426,15 +424,15 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
     authenticator = CodexSessionClient(model=settings["model"], work_root=local/"codex-autonomous-authority"/"auth-check",
                                      executable=settings.get("codex_executable"))
     authenticator.require_chatgpt_login()
-    image = config.pace.get("contract", {}).get("image", "")
+    benchmark = benchmark_for(config.benchmark)
+    image = benchmark.image(config)
     runner = DockerRunner(image)
     runner.preflight(image=image)
     client = (client_factory or AutonomousCodexClient)(model=settings["model"], work_root=local/"codex-autonomous-authority"/"native",
                                   executable=settings.get("codex_executable"),
                                   reasoning_effort=settings.get("codex_reasoning_effort", "low"),
                                   timeout=max(config.preparation_window_seconds, config.planning_window_seconds, config.generation_window_seconds))
-    toy = Path(settings.get("smoke_graph", default_sanity_graph_path()))
-    assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
+    smoke = benchmark.smoke_check(config)
     store = BudgetStore(authority/"requests.sqlite")
     def precheck(candidate):
         receipts=[]
@@ -449,8 +447,7 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
                 receipts.append(receipt)
                 return receipt
         try:
-            return smoke_test(candidate["candidate_path"],toy,MeteredRunner(),image=image,
-                solver_argv=tuple(config.pace.get("contract",{}).get("solver_argv",("/candidate/run",))))
+            return smoke(candidate["candidate_path"],MeteredRunner())
         finally:
             usage=dict(backend.last_generation_usage)
             cpu=sum(receipt.cpu_seconds for receipt in receipts)
@@ -462,7 +459,7 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
             backend.last_generation_usage=usage
     backend = (backend_class or StrictCodexBackend)(client, store, WorkspaceStore(local/"coral-workspaces", root/"coral-cas"),
         precheck=precheck,
-        seed_solver=config.pace.get("seed_solver", ""), candidate_runner=runner, image=image,
+        seed_solver=benchmark.seed_solver(config), candidate_runner=runner, image=image,
         config=config, authenticator=authenticator, provenance=provenance)
     try:
         backend.preflight(config)

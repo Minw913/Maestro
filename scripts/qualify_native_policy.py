@@ -15,7 +15,7 @@ from maestro.backends.coral.native_backend import native_factory
 from maestro.backends.coral.workspace import solver_files
 from maestro.execution.budgets import BudgetStore,BudgetExceeded
 from maestro.execution.grants import GrantAuthority,GrantError
-from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
+from maestro.tasks.runtime_failure import RuntimePrecheckFailure
 from maestro.execution.sandbox import DockerRunner,RunRequest,ResourceLimits,Mount
 from maestro.tasks.pace.verifier import verify_graph_solution
 from maestro.types import AgentState,Plan

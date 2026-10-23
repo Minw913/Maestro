@@ -9,9 +9,7 @@ from maestro.backends.base import BackendUnavailable
 from maestro.execution.budgets import BudgetStore
 from maestro.execution.grants import GrantError
 from maestro.execution.sandbox import DockerRunner
-from maestro.tasks.pace.manifest import assert_smoke_disjoint,load_panel
-from maestro.tasks.pace.runner import smoke_test
-from maestro.tasks.pace.sanity import default_sanity_graph_path
+from maestro.tasks.base import benchmark_for
 from .deepseek_client import CoralDeepSeekClient
 from .deepseek_gate import DeepSeekQuotaProxy,DeepSeekUpstream,DEEPSEEK_TOOL,provider_endpoint
 from .native_backend import NativeCoralBackend
@@ -198,9 +196,9 @@ def native_factory(config,root=None):
         max_output_tokens=settings.get('deepseek_max_output_tokens',32000),
         timeout=max(config.preparation_window_seconds,config.planning_window_seconds,config.generation_window_seconds))
     client.preflight()  # Version/help only, never inference.
-    image=config.pace.get('contract',{}).get('image','');runner=DockerRunner(image);runner.preflight(image=image)
-    toy=Path(settings.get('smoke_graph',default_sanity_graph_path()))
-    assert_smoke_disjoint(load_panel(config.pace['panel_manifest'],expected_split='training'),toy)
+    benchmark=benchmark_for(config.benchmark)
+    image=benchmark.image(config);runner=DockerRunner(image);runner.preflight(image=image)
+    smoke=benchmark.smoke_check(config)
     policy=RetryPolicy.parse(settings.get('deepseek_transport_retry'))
     store=DeepSeekRetryStore(authority/'requests.sqlite') if policy else BudgetStore(authority/'requests.sqlite')
     if policy:store.enable_retries(policy)
@@ -217,8 +215,7 @@ def native_factory(config,root=None):
                 receipt=backend._run_fixed_precheck(request,limits,deadline=broker.deadline)
                 receipts.append(receipt);return receipt
         try:
-            return smoke_test(candidate['candidate_path'],toy,MeteredRunner(),image=image,
-                solver_argv=tuple(config.pace.get('contract',{}).get('solver_argv',('/candidate/run',))))
+            return smoke(candidate['candidate_path'],MeteredRunner())
         finally:
             usage=dict(backend.last_generation_usage);cpu=sum(r.cpu_seconds for r in receipts)
             usage.update(precheck_cpu_seconds=cpu,precheck_wall_seconds=time.monotonic()-began,
@@ -227,7 +224,7 @@ def native_factory(config,root=None):
             usage['wall_seconds']=usage.get('wall_seconds',0.)+usage['precheck_wall_seconds']
             backend.last_generation_usage=usage
     backend=NativeDeepSeekBackend(client,store,WorkspaceStore(local/'coral-workspaces',root/'coral-cas'),
-        precheck=precheck,seed_solver=config.pace.get('seed_solver',''),candidate_runner=runner,image=image,
+        precheck=precheck,seed_solver=benchmark.seed_solver(config),candidate_runner=runner,image=image,
         config=config,provenance=provenance,proxy_factory=proxy)
     backend.pause=pause
     client.pause=pause

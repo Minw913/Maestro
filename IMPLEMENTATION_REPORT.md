@@ -237,7 +237,7 @@ formal Warm Start remains paused and requires the outstanding acceptance work.
 ## PACE taxonomy placement (2026-10-21)
 
 Moved the plan vocabulary from `configs/taxonomy.yaml` to
-`src/maestro/tasks/pace/taxonomy.py`. Planner validation, retrieval, direction
+`src/maestro/tasks/taxonomy.py`. Planner validation, retrieval, direction
 assignment and native preparation/planning prompts share its constants and version.
 The resolved `plan_taxonomy` identity includes the version and all categories in
 configuration/checkpoint hashes; incompatible identities are rejected. The

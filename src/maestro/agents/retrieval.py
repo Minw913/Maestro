@@ -5,7 +5,7 @@ from dataclasses import asdict, is_dataclass
 from decimal import Decimal
 import hashlib
 import json
-from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES, TAXONOMY_VERSION
+from maestro.tasks.taxonomy import TARGETS, MOD_TYPES, TAXONOMY_VERSION
 
 
 

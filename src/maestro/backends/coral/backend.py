@@ -333,8 +333,7 @@ def default_factory(config, root=None) -> CoralBackend:
     from .runtime import resolve_runtime
     from .runtime import verify_checkout
     from .supervisor import ControlledCoralSupervisor
-    from maestro.tasks.pace.runner import smoke_test
-    from maestro.tasks.pace.sanity import default_sanity_graph_path
+    from maestro.tasks.base import benchmark_for
 
     settings = config.coral
     required = ("generation_image", "model", "planning_api_base", "planning_model", "generation_api_base")
@@ -415,21 +414,16 @@ def default_factory(config, root=None) -> CoralBackend:
     supervisor = ControlledCoralSupervisor(resolve_runtime("claude_code"), provider,
         model=settings.get("runtime_model", settings["model"]), log_root=authority / "runtime-logs")
     workspace_store = WorkspaceStore(local / "coral-workspaces", root / "coral-cas")
-    pace_contract = config.pace.get("contract", {})
-    candidate_runner = DockerRunner(pace_contract.get("image"))
-    toy = Path(settings.get("smoke_graph", default_sanity_graph_path()))
-    if not toy.is_file():
-        raise BackendUnavailable("Configured fixed toy smoke graph is missing")
-    from maestro.tasks.pace.manifest import load_panel, assert_smoke_disjoint
-    assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
+    benchmark = benchmark_for(config.benchmark)
+    candidate_runner = DockerRunner(benchmark.image(config))
+    smoke = benchmark.smoke_check(config, require_file=True,
+                                  missing_message="Configured fixed toy smoke graph is missing")
 
     def precheck(candidate):
-        return smoke_test(candidate["candidate_path"], toy, candidate_runner,
-            image=pace_contract.get("image", ""),
-            solver_argv=tuple(pace_contract.get("solver_argv", ("/candidate/run",))))
+        return smoke(candidate["candidate_path"], candidate_runner)
 
     backend = CoralBackend(supervisor, workspace_store, precheck=precheck,
-        seed_solver=config.pace.get("seed_solver", ""), planner_client=planner,
+        seed_solver=benchmark.seed_solver(config), planner_client=planner,
         planning_seconds=float(settings.get("planning_seconds", 120)), generation_calls=config.generation_calls)
     backend.candidate_runner = candidate_runner
     backend.provenance = provenance

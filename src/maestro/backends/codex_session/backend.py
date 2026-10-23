@@ -340,9 +340,8 @@ def session_factory(config, root=None):
         raise BackendUnavailable("Session pilot currently uses the declared balanced SearchDirector briefs")
     provenance = verify_checkout(settings.get("checkout_path", settings.get("checkout")))
     from maestro.execution.sandbox import DockerRunner
-    from maestro.tasks.pace.runner import smoke_test
-    from maestro.tasks.pace.sanity import default_sanity_graph_path
-    from maestro.tasks.pace.manifest import load_panel, assert_smoke_disjoint
+    from maestro.tasks.base import benchmark_for
+    benchmark = benchmark_for(config.benchmark)
     root = Path(root or settings.get("run_root", "artifacts/runs/codex-session-pilot")).resolve()
     from maestro.storage.paths import run_paths, require_separated_runtime
     require_separated_runtime(root)
@@ -352,19 +351,14 @@ def session_factory(config, root=None):
         executable=settings.get("codex_executable"),
         timeout=float(settings.get("session_timeout_seconds", 120)))
     client.require_chatgpt_login()
-    contract = config.pace.get("contract", {})
-    candidate_runner = DockerRunner(contract.get("image"))
+    candidate_runner = DockerRunner(benchmark.image(config))
     candidate_runner.preflight()
-    toy = Path(settings.get("smoke_graph", default_sanity_graph_path()))
-    if not toy.is_file():
-        raise BackendUnavailable("Configured fixed toy graph is missing")
-    assert_smoke_disjoint(load_panel(config.pace["panel_manifest"], expected_split="training"), toy)
+    smoke = benchmark.smoke_check(config, require_file=True)
     store = SessionTurnStore(authority_root / "session-turns.sqlite")
     backend = CodexSessionBackend(client, store,
         WorkspaceStore(local / "coral-workspaces", root / "coral-cas"),
-        precheck=lambda candidate: smoke_test(candidate["candidate_path"], toy, candidate_runner,
-            image=contract.get("image", ""), solver_argv=tuple(contract.get("solver_argv", ("/candidate/run",)))),
-        seed_solver=config.pace.get("seed_solver", ""), candidate_runner=candidate_runner,
+        precheck=lambda candidate: smoke(candidate["candidate_path"], candidate_runner),
+        seed_solver=benchmark.seed_solver(config), candidate_runner=candidate_runner,
         provenance=provenance, planning_seconds=config.planning_window_seconds,
         generation_turns=config.generation_calls)
     try:

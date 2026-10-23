@@ -17,7 +17,7 @@ from maestro.execution.grants import GrantAuthority
 from maestro.execution.sandbox import DockerRunner,RunRequest,ResourceLimits,Mount
 from maestro.tasks.pace.runner import smoke_test
 from maestro.tasks.pace.sanity import default_sanity_graph_path
-from maestro.tasks.pace.runtime_failure import RuntimePrecheckFailure
+from maestro.tasks.runtime_failure import RuntimePrecheckFailure
 from maestro.tasks.pace.verifier import verify_graph_solution
 from maestro.types import AgentState,Plan,stable_hash
 base=Path(__file__).resolve().parents[1]

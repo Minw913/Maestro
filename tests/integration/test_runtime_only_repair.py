@@ -15,7 +15,7 @@ from maestro.config import RunConfig
 from maestro.execution.budgets import BudgetStore, BudgetExceeded
 from maestro.execution.grants import GrantAuthority, GrantError
 from maestro.execution.sandbox import RunReceipt
-from maestro.tasks.pace.runtime_failure import RuntimeFailure,RuntimePrecheckFailure,classify_runtime_failure
+from maestro.tasks.runtime_failure import RuntimeFailure,RuntimePrecheckFailure,classify_runtime_failure
 from maestro.types import AgentState,Plan,stable_hash
 
 

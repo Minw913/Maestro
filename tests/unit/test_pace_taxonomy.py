@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 
 from maestro.config import RunConfig
-from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES, TAXONOMY_VERSION, taxonomy_identity
+from maestro.tasks.taxonomy import TARGETS, MOD_TYPES, TAXONOMY_VERSION, taxonomy_identity
 
 
 def test_single_vocabulary_source():

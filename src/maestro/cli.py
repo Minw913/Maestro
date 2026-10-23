@@ -12,6 +12,7 @@ import urllib.request
 from dotenv import load_dotenv
 
 from maestro.config import RunConfig,load_config
+from maestro.tasks.base import BENCHMARKS,benchmark_for
 from maestro.types import canonical_json,MaestroError
 
 
@@ -77,7 +78,7 @@ def build_parser():
         item.add_argument('--config',help='Experiment manifest (bootstrap selects Warm; run selects Market), or flat debug config')
         item.add_argument('--seed',type=int)
         item.add_argument('--execution-mode', choices=['mock','real'], help='Simulated evaluation or real execution')
-        item.add_argument('--benchmark', choices=['pace'], help='Benchmark task (PACE only)')
+        item.add_argument('--benchmark', choices=sorted(BENCHMARKS), help='Benchmark task')
         if command=='run':
             item.add_argument('--bootstrap',required=True)
             item.add_argument('--policy',choices=['first_price','uniform','ucb'],default='first_price')
@@ -202,8 +203,7 @@ def _execute(args):
                 elif args.command=='resume':
                     result=engine.resume(args.episode)
                 elif args.command=='final-eval':
-                    from maestro.tasks.pace.heldout import evaluate_final
-                    result=evaluate_final(engine,args.episode,args.manifest)
+                    result=benchmark_for(config.benchmark).evaluate_final(engine,args.episode,args.manifest)
                 else:
                     warm=engine.bootstrap()
                     runs=[engine.run(warm['checkpoint'],policy) for policy in ('uniform','ucb','first_price')]
