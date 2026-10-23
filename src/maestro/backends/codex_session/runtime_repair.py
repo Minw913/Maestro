@@ -59,7 +59,7 @@ def source_files(root):
 
 class OneShotRuntimeRepairMixin:
     supports_runtime_only_repair = True
-    config: 'RunConfig'  # set by the backend this mixes into
+    config: 'RunConfig'  # pyright: ignore[reportUninitializedInstanceVariable]  # set by the host backend
     def remember_runtime_failure(self, candidate, outcome):
         # Identical code can belong to different agents. Bind evidence to the
         # calling invitation, never to a global candidate-hash slot alone.
