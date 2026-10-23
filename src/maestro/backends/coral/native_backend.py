@@ -234,7 +234,8 @@ class NativeCoralBackend(StrictCodexBackend):
                   'For a revised plan, evidence_run_ids MUST include EVERY experiment_id in '
                   'own_evidence_index whose target AND mod_type match the proposed plan, '
                   'including invalid, failed and zero-improvement outcomes. Never invent IDs '
-                  'or omit matching evidence. Other accessible own evidence may also be cited.\n'
+                  'or omit matching evidence. Other accessible own evidence may also be cited. '
+                  'reason states in one sentence why you chose the action; withdraw requires it.\n'
                   +json.dumps(assembled, ensure_ascii=False))
         with self._phase(account):
             proxy = self._proxy(account, deadline, self.config.planning_calls)

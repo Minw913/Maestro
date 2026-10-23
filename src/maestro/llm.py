@@ -202,7 +202,8 @@ class PlannerClient:
                 raise InferenceBudgetExceeded("persistent planning budget rejected request")
             self._used.add(scope)
         system = (
-            "Return one JSON object with action retain/revise/withdraw, optional plan, and lessons. "
+            "Return one JSON object with action retain/revise/withdraw, optional plan, lessons, and reason. "
+            "reason states in one sentence why you chose the action; a withdraw without a reason is rejected. "
             "Planning is read-only: propose changes before any candidate editing. "
             "A revise plan requires target, mod_type, diagnosis, change, expected_effect, evidence_run_ids. "
             "Use evidence_catalog to include all matching own formal IDs, including failures; "

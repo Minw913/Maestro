@@ -154,6 +154,15 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_plan_decision('{"action":"withdraw","action":"retain"}', s, 0)
 
+    def test_withdraw_must_state_its_reason(self):
+        s = state()
+        for raw in ('{"action":"withdraw"}', '{"action":"withdraw","reason":"  "}'):
+            with self.assertRaises(ValueError):
+                parse_plan_decision(raw, s, 0)
+        d = parse_plan_decision('{"action":"withdraw","plan":null,"reason":"parent has nothing to restart"}', s, 0)
+        self.assertIsNone(d.plan)
+        self.assertEqual(d.reason, "parent has nothing to restart")
+
     def test_eligibility_rejects_consumed_plan_and_held_balance(self):
         s = state()
         p = mock_plan(s, 0, 1)

@@ -14,6 +14,7 @@ from maestro.types import Plan
 
 from maestro.tasks.taxonomy import TARGETS, MOD_TYPES
 
+PLAN_TEXT_LIMIT = 16000  # characters in one free-text plan or decision field
 PLAN_FIELDS = {"plan_id", "version_id", "agent_id", "parent_hash", "target",
                "mod_type", "diagnosis", "change", "expected_effect",
                "evidence_run_ids", "category_detail"}
@@ -34,7 +35,7 @@ def validate_plan(plan, parent_hash, allowed_evidence_ids):
     for field in ("plan_id", "version_id", "agent_id", "parent_hash", "diagnosis",
                   "change", "expected_effect"):
         value = getattr(plan, field)
-        if not isinstance(value, str) or not value.strip() or len(value) > 16000:
+        if not isinstance(value, str) or not value.strip() or len(value) > PLAN_TEXT_LIMIT:
             raise ValueError(f"invalid {field}")
     if plan.parent_hash != parent_hash:
         raise ValueError("plan parent differs from the frozen parent")
@@ -156,12 +157,13 @@ class PlanDecision:
     plan: Plan | None
     lessons: tuple[dict, ...] = ()
     repaired: bool = False
+    reason: str = ""  # the agent's stated reason; required for withdraw
 
 
 def parse_plan_decision(raw, state, round_index, allowed_evidence_ids=None, *, namespace=""):
     """Parse one model answer. Caller records its one-call receipt separately."""
     payload, repaired = parse_json_object(raw)
-    if set(payload) - {"action", "plan", "lessons"}:
+    if set(payload) - {"action", "plan", "lessons", "reason"}:
         raise ValueError("unknown planning decision fields")
     action = payload.get("action")
     if action not in {"retain", "revise", "withdraw"}:
@@ -169,10 +171,15 @@ def parse_plan_decision(raw, state, round_index, allowed_evidence_ids=None, *, n
     lessons = payload.get("lessons", [])
     if not isinstance(lessons, list) or len(lessons) > 5 or any(not isinstance(x, dict) for x in lessons):
         raise ValueError("lessons must contain at most five objects")
+    reason = payload.get("reason", "")
+    if not isinstance(reason, str) or len(reason) > PLAN_TEXT_LIMIT:
+        raise ValueError("reason must be text within the plan text limit")
     if action == "withdraw":
         if payload.get("plan") is not None:
             raise ValueError("withdraw cannot contain a plan")
-        return PlanDecision(action, None, tuple(lessons), repaired)
+        if not reason.strip():
+            raise ValueError("withdraw requires a reason")
+        return PlanDecision(action, None, tuple(lessons), repaired, reason)
     if action == "retain":
         if state.pending_plan is None or state.pending_plan.parent_hash != state.parent_hash:
             raise ValueError("cannot retain a missing plan or rebind its parent")
@@ -181,7 +188,7 @@ def parse_plan_decision(raw, state, round_index, allowed_evidence_ids=None, *, n
         # and parent changes remove the pending plan entirely.
         if payload.get("plan") is not None:
             raise ValueError("retain references the existing version without editing it")
-        return PlanDecision(action, state.pending_plan, tuple(lessons), repaired)
+        return PlanDecision(action, state.pending_plan, tuple(lessons), repaired, reason)
     supplied = payload.get("plan")
     if not isinstance(supplied, dict) or set(supplied) - PLAN_FIELDS:
         raise ValueError("revise requires a plan object with known fields")
@@ -206,7 +213,7 @@ def parse_plan_decision(raw, state, round_index, allowed_evidence_ids=None, *, n
                if allowed_evidence_ids is None else allowed_evidence_ids)
     validate_plan(plan, state.parent_hash, allowed)
     validate_complete_evidence(plan, state.history)
-    return PlanDecision(action, plan, tuple(lessons), repaired)
+    return PlanDecision(action, plan, tuple(lessons), repaired, reason)
 
 
 def apply_decision(state, decision, round_index):

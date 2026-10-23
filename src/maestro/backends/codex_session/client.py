@@ -331,8 +331,9 @@ _PLAN_SCHEMA = {"type": "object", "additionalProperties": False,
                 if name == "evidence_run_ids" else {"type": "string"})
                 for name in ("target", "mod_type", "diagnosis", "change", "expected_effect", "evidence_run_ids")},
             "required": ["target", "mod_type", "diagnosis", "change", "expected_effect", "evidence_run_ids"]}]},
-        "lessons": {"type": "array", "maxItems": 0, "items": {"type": "string"}}},
-    "required": ["action", "plan", "lessons"]}
+        "lessons": {"type": "array", "maxItems": 0, "items": {"type": "string"}},
+        "reason": {"type": "string"}},
+    "required": ["action", "plan", "lessons", "reason"]}
 
 _FILES_SCHEMA = {"type": "object", "additionalProperties": False,
     "properties": {"files": {"type": "array", "maxItems": 32, "items": {"type": "object",

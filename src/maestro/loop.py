@@ -526,6 +526,7 @@ class ExperimentEngine:
             context_id = self.artifacts.put_json(context)
             with self.ledger.transaction() as db:
                 db.execute('INSERT OR IGNORE INTO context_manifests VALUES(?,?)',(context_id,canonical_json(context)))
+            withdraw_reason=None
             if refresh:
                 plan=None
                 if c.execution_mode == 'mock':
@@ -542,6 +543,8 @@ class ExperimentEngine:
                         if isinstance(decision,PlanDecision):
                             apply_decision(state,decision,r)
                             plan=decision.plan
+                            if decision.action=='withdraw':
+                                withdraw_reason=decision.reason
                         else:
                             plan=decision
                         if plan is not None:
@@ -563,7 +566,7 @@ class ExperimentEngine:
                 db.execute('INSERT INTO phase_transitions VALUES(?,?)',
                     (f'{e}:{r}:{a}:planning',canonical_json({'phase':'PLANNED','state':state})))
             if plan is None:
-                self.ledger.event('ABSTAIN',{'agent_id':a,'reason':'WITHDRAWN'},e,r)
+                self.ledger.event('ABSTAIN',{'agent_id':a,'reason':'WITHDRAWN','agent_reason':withdraw_reason},e,r)
                 continue
             validate_plan(plan,state.parent_hash,[h.experiment_id for h in state.history])
             if plan.agent_id != a:

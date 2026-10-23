@@ -149,7 +149,7 @@ def test_durable_turn_budget_survives_restart_and_unknown(tmp_path):
 
 
 def test_session_planning_receipt_is_not_a_one_inference_receipt(tmp_path):
-    fake = FakeCLI({"action": "withdraw", "plan": None, "lessons": []})
+    fake = FakeCLI({"action": "withdraw", "plan": None, "lessons": [], "reason": "no change can help this parent"})
     store = SessionTurnStore(tmp_path / "turns.sqlite")
     planner = CodexSessionPlanner(client(tmp_path, fake), store)
     state = AgentState("a", "frozen-parent", 0.2)
