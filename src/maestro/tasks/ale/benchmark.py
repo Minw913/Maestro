@@ -1,17 +1,21 @@
 """ALE-Bench (AtCoder Heuristic Contest) adapter; official judge via ALE's own interpreter."""
 from __future__ import annotations
 
-from contextlib import ExitStack
-from dataclasses import asdict, dataclass
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import threading
 import time
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from maestro.backends.base import BackendUnavailable
 from maestro.types import EvaluationResult, IntegrityError, MaestroError, stable_hash
+
+if TYPE_CHECKING:
+    from maestro.config import RunConfig
 
 WORKER = Path(__file__).with_name('worker.py')
 MANIFEST_FIELDS = {'schema_version', 'problem_id', 'lite_version', 'judge_version', 'code_language',
@@ -20,7 +24,7 @@ MANIFEST_FIELDS = {'schema_version', 'problem_id', 'lite_version', 'judge_versio
 _ACQUIRE = threading.Lock()  # takes an evaluation's CPU slots atomically so concurrent evaluations cannot deadlock
 
 
-def worker_call(python: str, request: dict, *, timeout: float) -> dict:
+def worker_call(python: str, request: dict[str, Any], *, timeout: float | None) -> dict[str, Any]:
     """The ALE worker's JSON reply; raises MaestroError with its stderr tail on failure."""
     process = subprocess.run([python, '-I', str(WORKER)], input=json.dumps(request), capture_output=True,
                              text=True, timeout=timeout, check=False)
@@ -64,11 +68,11 @@ class AleManifest:
     submission_file: str
     ale_revision: str
     reference_candidate_hash: str
-    cases: tuple  # ({input_sha256, reference_score}, ...) in public-case order
+    cases: tuple[dict[str, Any], ...]  # ({input_sha256, reference_score}, ...) in public-case order
     smoke_input: str  # file name next to the manifest; generated from a seed outside the public panel
 
     @classmethod
-    def load(cls, path: str | Path) -> 'AleManifest':
+    def load(cls, path: str | Path) -> AleManifest:
         raw = json.loads(Path(path).read_text(encoding='utf-8'))
         if not isinstance(raw, dict) or set(raw) != MANIFEST_FIELDS or raw['schema_version'] != 1:
             raise ValueError(f'ALE manifest needs exactly {sorted(MANIFEST_FIELDS)} with schema_version 1')
@@ -88,8 +92,8 @@ class AleManifest:
 @dataclass(frozen=True)
 class LiveAle:
     panel: AleManifest
-    contract: dict
-    config: object
+    contract: dict[str, Any]
+    config: RunConfig
 
     @property
     def panel_hash(self) -> str:
@@ -118,7 +122,7 @@ class AleEvaluator:
     def _width(self, ticket):
         return ticket.get('effective_instance_workers', self.live.config.instance_workers)
 
-    def evaluate(self, ticket: dict):
+    def evaluate(self, ticket: dict[str, Any]) -> EvaluationResult:
         from maestro.backends.coral.workspace import candidate_tree_hash
         from maestro.execution.authorization import require_execution_authority
 
@@ -199,10 +203,10 @@ class AleBenchmark:
          "Fit more useful search iterations into the fixed time limit."),
     )
 
-    def settings(self, config) -> dict:
+    def settings(self, config: RunConfig) -> dict[str, Any]:
         return config.task
 
-    def validate(self, config) -> None:
+    def validate(self, config: RunConfig) -> None:
         if config.pace:
             raise ValueError('benchmark=ale takes its settings from task:, not pace:')
         if config.execution_mode != 'real':
@@ -213,7 +217,7 @@ class AleBenchmark:
         if missing:
             raise ValueError('benchmark=ale with execution_mode=real requires ' + ', '.join(missing))
 
-    def live(self, config) -> LiveAle:
+    def live(self, config: RunConfig) -> LiveAle:
         manifest = AleManifest.load(config.task['paths']['manifest'])
         if config.evaluation_instance_count != len(manifest.cases):
             raise IntegrityError('evaluation_instance_count differs from the ALE panel size')
@@ -222,19 +226,19 @@ class AleBenchmark:
                     'worker_sha256': hashlib.sha256(WORKER.read_bytes()).hexdigest()}
         return LiveAle(manifest, contract, config)
 
-    def image(self, config) -> str:
+    def image(self, config: RunConfig) -> str:
         return config.task.get('contract', {}).get('image', '')
 
-    def seed_solver(self, config) -> str:
+    def seed_solver(self, config: RunConfig) -> str:
         return config.task.get('paths', {}).get('seed_solver', '')
 
-    def solver_argv(self, config) -> tuple[str, ...]:
+    def solver_argv(self, config: RunConfig) -> tuple[str, ...]:
         manifest = AleManifest.load(config.task['paths']['manifest'])
         # Compiler chatter goes to stderr so stdout carries only the answer.
         return ('/bin/bash', '--noprofile', '--norc', '-c',
                 f'cp /candidate/{manifest.submission_file} . && {manifest.compile_command} >&2 && {manifest.run_command}')
 
-    def smoke_check(self, config, *, require_file=False, missing_message='Configured ALE smoke input is missing'):
+    def smoke_check(self, config: RunConfig, *, require_file=False, missing_message='Configured ALE smoke input is missing'):
         from maestro.execution.sandbox import Mount, ResourceLimits, RunRequest
         manifest_path = Path(config.task['paths']['manifest'])
         manifest = AleManifest.load(manifest_path)

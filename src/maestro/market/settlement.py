@@ -1,7 +1,7 @@
 """Pure settlement calculation. Persistence and exactly-once writes are external."""
 from dataclasses import dataclass
 from decimal import Decimal
-from maestro.market.credit import DEFAULT_CREDIT, decimal, money, reward, score
+from maestro.market.credit import DEFAULT_CREDIT, money, reward, score
 
 
 @dataclass(frozen=True)

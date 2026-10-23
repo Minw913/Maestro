@@ -60,7 +60,7 @@ class NativeCoralBackend(StrictCodexBackend):
                 'physical_runtime_qualified': False}
 
     def _identity_context(self, state):
-        from maestro.tasks.taxonomy import TARGETS, MOD_TYPES
+        from maestro.tasks.taxonomy import MOD_TYPES, TARGETS
         return {'agent_id':state.agent_id,'parent_hash':state.parent_hash,
             'parent_score':state.parent_score,'taxonomy':{'targets':list(TARGETS),'mod_types':list(MOD_TYPES)},
             'direction':deepcopy(self._directions.get(state.agent_id,{})),

@@ -8,6 +8,7 @@ import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 from maestro.backends.coral.workspace import solver_files, candidate_tree_hash
 from maestro.execution.grants import GrantError, GrantAuthority
@@ -15,6 +16,9 @@ from maestro.execution.budgets import BudgetExceeded
 from maestro.llm import InferenceRequestUnknown
 from maestro.tasks.base import benchmark_for
 from maestro.tasks.runtime_failure import RuntimePrecheckFailure
+
+if TYPE_CHECKING:
+    from maestro.config import RunConfig
 
 
 def schema(name, properties):
@@ -55,6 +59,7 @@ def source_files(root):
 
 class OneShotRuntimeRepairMixin:
     supports_runtime_only_repair = True
+    config: 'RunConfig'  # set by the backend this mixes into
     def remember_runtime_failure(self, candidate, outcome):
         # Identical code can belong to different agents. Bind evidence to the
         # calling invitation, never to a global candidate-hash slot alone.

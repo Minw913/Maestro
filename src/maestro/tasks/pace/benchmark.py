@@ -3,16 +3,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from maestro.backends.base import BackendUnavailable
 from maestro.types import IntegrityError, MaestroError
 
+if TYPE_CHECKING:
+    from maestro.config import RunConfig
+    from maestro.tasks.pace.manifest import EvaluationContract, PanelManifest
+
 
 @dataclass(frozen=True)
 class LivePace:
-    panel: object
-    contract: object
-    config: object
+    panel: PanelManifest
+    contract: EvaluationContract
+    config: RunConfig
 
     @property
     def panel_hash(self) -> str:
@@ -46,14 +51,14 @@ class PaceBenchmark:
          "Perform more useful search within the fixed CPU contract."),
     )
 
-    def settings(self, config) -> dict:
+    def settings(self, config: RunConfig) -> dict[str, Any]:
         return config.pace
 
-    def validate(self, config) -> None:
+    def validate(self, config: RunConfig) -> None:
         if config.task:
             raise ValueError('benchmark=pace takes its settings from pace:, not task:')
 
-    def live(self, config) -> LivePace:
+    def live(self, config: RunConfig) -> LivePace:
         from maestro.tasks.pace.manifest import EvaluationContract, load_panel
         manifest = config.pace.get('panel_manifest')
         if not manifest:
@@ -70,16 +75,16 @@ class PaceBenchmark:
             raise IntegrityError('Config and PACE panel contract disagree')
         return LivePace(panel, contract, config)
 
-    def image(self, config) -> str:
+    def image(self, config: RunConfig) -> str:
         return config.pace.get('contract', {}).get('image', '')
 
-    def seed_solver(self, config) -> str:
+    def seed_solver(self, config: RunConfig) -> str:
         return config.pace.get('seed_solver', '')
 
-    def solver_argv(self, config) -> tuple[str, ...]:
+    def solver_argv(self, config: RunConfig) -> tuple[str, ...]:
         return tuple(config.pace.get('contract', {}).get('solver_argv', ('/candidate/run',)))
 
-    def smoke_check(self, config, *, require_file=False, missing_message='Configured fixed toy graph is missing'):
+    def smoke_check(self, config: RunConfig, *, require_file=False, missing_message='Configured fixed toy graph is missing'):
         from maestro.tasks.pace.manifest import assert_smoke_disjoint, load_panel
         from maestro.tasks.pace.runner import smoke_test
         from maestro.tasks.pace.sanity import default_sanity_graph_path

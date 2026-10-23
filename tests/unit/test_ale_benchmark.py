@@ -1,7 +1,6 @@
-from contextlib import contextmanager
 import hashlib
 import json
-from types import SimpleNamespace
+from contextlib import contextmanager
 
 import pytest
 

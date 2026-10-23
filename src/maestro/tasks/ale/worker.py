@@ -9,7 +9,7 @@ import sys
 
 
 def _session(request):
-    import ale_bench
+    import ale_bench  # pyright: ignore[reportMissingImports]  # resolved only in ALE's own venv
     return ale_bench.start(problem_id=request['problem_id'], lite_version=request['lite_version'],
                            num_workers=request.get('num_workers', 1), run_visualization_server=False)
 
@@ -23,9 +23,14 @@ def _cases(result):
 
 
 def describe(request):
-    import ale_bench.constants
-    from ale_bench.code_language import (CodeLanguage, JudgeVersion, get_compile_command,
-                                         get_run_command, get_submission_file_path)
+    import ale_bench.constants  # pyright: ignore[reportMissingImports]
+    from ale_bench.code_language import (  # pyright: ignore[reportMissingImports]
+        CodeLanguage,
+        JudgeVersion,
+        get_compile_command,
+        get_run_command,
+        get_submission_file_path,
+    )
     session = _session(request)
     try:
         language, judge = CodeLanguage(request['code_language']), JudgeVersion(request['judge_version'])

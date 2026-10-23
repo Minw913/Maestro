@@ -6,12 +6,18 @@ time-bounded heuristics score differently run to run.
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import statistics
+from pathlib import Path
 
 from maestro.backends.coral.workspace import candidate_tree_hash
-from maestro.tasks.ale.benchmark import AleManifest, ale_python, ale_revision, case_score, worker_call
+from maestro.tasks.ale.benchmark import (
+    AleManifest,
+    ale_python,
+    ale_revision,
+    case_score,
+    worker_call,
+)
 
 
 def main(args):

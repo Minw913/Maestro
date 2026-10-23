@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 
 QUANTUM = Decimal("0.000001")
-_ALPHA = Decimal("100")
+_ALPHA = Decimal(100)
 
 
 @dataclass(frozen=True)

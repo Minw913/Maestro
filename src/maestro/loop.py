@@ -176,6 +176,7 @@ class ExperimentEngine:
             seed_hash = self.artifacts.put_json({'execution_mode':'mock','benchmark':c.benchmark,'solver':'common-seed-v1','seed':c.seed})
             seed_candidate = {'candidate_hash':seed_hash,'kind':'mock','seed':True}
         else:
+            assert self.backend is not None  # _prepare_live installs one for every real run
             seed_candidate = self.backend.prepare_seed(benchmark_for(c.benchmark).seed_solver(c))
             seed_hash = seed_candidate['candidate_hash']
         states = {a:AgentState(a,seed_hash,0.0,c.initial_wealth) for a in agent_ids}
@@ -852,7 +853,6 @@ class ExperimentEngine:
         and no EvalTicket/evaluation budget is refunded or silently rerun.
         """
         from maestro.tasks.runtime_failure import RuntimePrecheckFailure
-        from maestro.execution.budgets import BudgetExceeded
         candidate=None
         failure=None
         last_reason='DEADLINE'

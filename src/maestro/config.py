@@ -7,14 +7,14 @@ from pathlib import Path
 import json
 import math
 import hashlib
+from typing import Any
 
-from maestro.types import to_jsonable, stable_hash, MaestroError
 from maestro.market.credit import DEFAULT_CREDIT
 from maestro.tasks.base import BENCHMARKS, benchmark_for
-
+from maestro.tasks.taxonomy import taxonomy_identity
+from maestro.types import MaestroError, stable_hash, to_jsonable
 
 CORAL_REVISION = '0123dfb939b35228cf2c1fde224cd0561e727408'
-from maestro.tasks.taxonomy import TARGETS, MOD_TYPES, taxonomy_identity
 
 
 
@@ -42,7 +42,7 @@ class RunConfig:
     reward_scale: Decimal = DEFAULT_CREDIT.reward_scale
     catchup_fraction: Decimal = DEFAULT_CREDIT.catchup_fraction
     bid_cap: Decimal = DEFAULT_CREDIT.bid_cap
-    initial_wealth: Decimal = Decimal('2000')
+    initial_wealth: Decimal = Decimal(2000)
     seed: int = 0
     execution_mode: str = 'mock'
     benchmark: str = 'pace'
@@ -67,7 +67,7 @@ class RunConfig:
     failures: dict = field(default_factory=dict)
     coral: dict = field(default_factory=dict)
     pace: dict = field(default_factory=dict)
-    task: dict = field(default_factory=dict)  # settings of a non-PACE benchmark
+    task: dict[str, Any] = field(default_factory=dict)  # settings of a non-PACE benchmark
     plan_taxonomy: dict = field(default_factory=taxonomy_identity)
     experiment_stage: str | None = None
     stage_configs: dict = field(default_factory=dict)

@@ -1,7 +1,18 @@
 """The evaluator boundary receives trusted, admitted ticket data only."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from importlib import import_module
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from maestro.config import RunConfig
+
+# (label, focus targets, exploration text, objective text) for one startup brief.
+Direction = tuple[str, tuple[str, ...], str, str]
+# (candidate_path, runner) -> (passed, reason), or a RuntimePrecheckFailure
+SmokeCheck = Callable[[Any, Any], Any]
 
 
 class Evaluator(Protocol):
@@ -10,46 +21,67 @@ class Evaluator(Protocol):
         ...
 
 
+class LiveTask(Protocol):
+    """A frozen panel and contract for real execution."""
+
+    @property
+    def panel(self) -> Any: ...
+
+    @property
+    def contract(self) -> Any: ...
+
+    @property
+    def panel_hash(self) -> str: ...
+
+    @property
+    def contract_hash(self) -> str: ...
+
+    def evaluator(self, *, runner: Any, artifact_store: Any, cpu_pool: Any) -> Evaluator:
+        """The formal evaluator bound to this panel and contract."""
+        ...
+
+
 class Benchmark(Protocol):
     """Everything the benchmark-neutral core needs from one task family."""
-    name: str
-    directions: tuple  # (label, focus targets, exploration text, objective text) per startup brief
 
-    def settings(self, config) -> dict:
+    name: str
+    directions: tuple[Direction, ...]
+
+    def settings(self, config: RunConfig) -> dict[str, Any]:
         """The benchmark's own config section."""
         ...
 
-    def validate(self, config) -> None:
+    def validate(self, config: RunConfig) -> None:
         """Raise ValueError when the benchmark's settings in `config` are malformed."""
         ...
 
-    def live(self, config):
-        """Frozen panel/contract for real execution, with `panel_hash`, `contract_hash` and
-        `evaluator(runner=, artifact_store=, cpu_pool=)`; raises when prerequisites are missing."""
+    def live(self, config: RunConfig) -> LiveTask:
+        """Frozen panel/contract for real execution; raises when prerequisites are missing."""
         ...
 
-    def image(self, config) -> str:
+    def image(self, config: RunConfig) -> str:
         """Pinned candidate container image."""
         ...
 
-    def seed_solver(self, config) -> str:
+    def seed_solver(self, config: RunConfig) -> str:
         """Path of the common seed candidate directory."""
         ...
 
-    def solver_argv(self, config) -> tuple[str, ...]:
+    def solver_argv(self, config: RunConfig) -> tuple[str, ...]:
         """Command that runs a candidate inside its container, reading the instance on stdin."""
         ...
 
-    def smoke_check(self, config) -> Callable:
+    def smoke_check(self, config: RunConfig, *, require_file: bool = False,
+                    missing_message: str = ...) -> SmokeCheck:
         """`check(candidate_path, runner)` for the fixed pre-evaluation toy run, input disjoint from the panel."""
         ...
 
-    def evaluate_final(self, engine, source_episode_id: str, manifest_path: str) -> dict:
+    def evaluate_final(self, engine: Any, source_episode_id: str, manifest_path: str) -> dict[str, Any]:
         """Held-out evaluation of a completed episode's champion."""
         ...
 
 
-BENCHMARKS = {
+BENCHMARKS: dict[str, str] = {
     'pace': 'maestro.tasks.pace.benchmark:PACE',
     'ale': 'maestro.tasks.ale.benchmark:ALE',
 }
