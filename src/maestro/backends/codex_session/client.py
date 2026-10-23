@@ -52,7 +52,9 @@ class CompletedProposalError(ValueError):
 
 def resolve_codex(executable: str | Path | None = None) -> Path:
     """Prefer a real executable; do not interpolate prompts through cmd.exe."""
-    found = str(executable) if executable else shutil.which("codex")
+    name = str(executable or "codex")
+    # A bare command name, as layered configs keep it, is looked up on PATH.
+    found = shutil.which(name) if Path(name).name == name else name
     if not found:
         raise BackendUnavailable("Codex CLI is missing; install Codex CLI and run codex login")
     path = Path(found).resolve()
