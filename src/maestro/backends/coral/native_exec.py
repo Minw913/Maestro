@@ -46,6 +46,8 @@ def main():
     permitted = {'HOME','USER','LOGNAME','PATH','CODEX_HOME','PYTHONPATH','LANG','LC_ALL',
                  'TMPDIR','SSL_CERT_FILE','SSL_CERT_DIR','HTTPS_PROXY','HTTP_PROXY','ALL_PROXY','NO_PROXY'}
     env = {key:value for key,value in env.items() if key in permitted}
+    # The prompt is in argv; an inherited open stdin makes `codex exec` wait for more input forever.
+    os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
     os.execvpe(argv[0], argv, env)
 
 
