@@ -6,14 +6,14 @@ native subprocess fallback exists on Windows or on an unsupported Linux host.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import json
 import os
-from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import time
-from typing import Protocol
+from dataclasses import asdict, dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any, Protocol
 
 
 class SandboxUnavailable(RuntimeError):
@@ -72,7 +72,7 @@ class RunReceipt:
     cpu_seconds: float
     wall_seconds: float
     timed_out: bool = False
-    diagnostics: dict = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class ContainmentRunner(Protocol):

@@ -97,7 +97,7 @@ class EvaluationResult:
     status: str = "COMPLETED"
     cpu_seconds: float = 0.0
     wall_seconds: float = 0.0
-    diagnostics: dict = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     instance_results: tuple[dict, ...] = ()
 
 

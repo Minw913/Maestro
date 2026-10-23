@@ -49,7 +49,8 @@ def classify_runtime_failure(candidate_hash: str, receipt: RunReceipt) -> Runtim
     kind = tail.split(':', 1)[0]
     if kind not in _RUNTIME_EXCEPTIONS:
         return None
-    locations = tuple((p, int(n)) for p,n in re.findall(r'File "/candidate/([^"\n]+)", line ([0-9]+)',error))
+    locations = tuple((m.group(1), int(m.group(2)))
+                      for m in re.finditer(r'File "/candidate/([^"\n]+)", line ([0-9]+)', error))
     if not locations:
         return None
     return RuntimeFailure(candidate_hash, kind, error, locations)
