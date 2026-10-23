@@ -1,6 +1,6 @@
 kind: experiment
 schema_version: 1
-runtime: ../runtimes/coral_codex.yaml
+runtime: ../runtimes/coral_codex_local.yaml
 deployment: ../deployments/local_ale.yaml
 benchmark: ../benchmarks/ale/benchmark.yaml
 stages:
