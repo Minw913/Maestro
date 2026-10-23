@@ -85,6 +85,7 @@ class Benchmark(Protocol):
 BENCHMARKS: dict[str, str] = {
     'pace': 'maestro.tasks.pace.benchmark:PACE',
     'ale': 'maestro.tasks.ale.benchmark:ALE',
+    'frontieror': 'maestro.tasks.frontieror.benchmark:FRONTIEROR',
 }
 
 

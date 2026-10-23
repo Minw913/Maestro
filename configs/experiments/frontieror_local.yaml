@@ -1,0 +1,11 @@
+kind: experiment
+schema_version: 1
+runtime: ../runtimes/coral_codex_local.yaml
+deployment: ../deployments/local_frontieror.yaml
+benchmark: ../benchmarks/frontieror/benchmark.yaml
+stages:
+  warm_start: ../benchmarks/frontieror/warm_start_pilot.yaml
+  market: ../benchmarks/frontieror/market_pilot.yaml
+execution_mode: real
+n_agents: 4
+seed: 0
