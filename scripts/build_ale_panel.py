@@ -8,8 +8,8 @@ import hashlib
 import json
 import shutil
 import statistics
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from maestro.backends.coral.workspace import candidate_tree_hash
 from maestro.tasks.ale.benchmark import (
