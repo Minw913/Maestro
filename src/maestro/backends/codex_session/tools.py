@@ -89,7 +89,7 @@ class StageToolBroker:
                  memory_mb: int = 512, pids: int = 32,
                  max_file_bytes: int = 128 * 1024, output_bytes: int | None = None,
                  max_snapshot_bytes: int = 8 * 1024 * 1024,
-                 max_snapshot_files: int = 512, max_calls: int = 128):
+                 max_snapshot_files: int = 512, max_calls: int = 128, scratch_exec: bool = False):
         if phase not in {"PREPARATION", "PLAN_RO", "GENERATION"}:
             raise ValueError("Only PREPARATION, PLAN_RO and GENERATION tool scopes are supported")
         for name, value in (("deadline", deadline), ("cpu_budget", cpu_budget)):
@@ -102,6 +102,7 @@ class StageToolBroker:
         if phase == "GENERATION" and not callable(grant_checker):
             raise PermissionError("GENERATION tools require the controller's EditGrant verifier")
         self.workspace, self.phase, self.deadline = workspace, phase, float(deadline)
+        self.scratch_exec = scratch_exec
         self.runner, self.image = runner or FailClosedRunner(), image
         self.cpu_budget, self.grant_checker, self.cpu_pool = float(cpu_budget), grant_checker, cpu_pool
         self.memory_mb, self.pids = memory_mb, pids
@@ -448,7 +449,7 @@ class StageToolBroker:
                 request = RunRequest(
                     argv=("sh", "-c", "mkdir -p /scratch/work && cp -R /candidate/. /scratch/work/ "
                           "&& chmod -R u+w /scratch/work && cd /scratch/work && " + command),
-                    workdir=snapshot / "solver", image=self.image,
+                    workdir=snapshot / "solver", image=self.image, scratch_exec=self.scratch_exec,
                     mounts=(Mount(snapshot / "solver", "/candidate"),
                             Mount(snapshot / "private", "/input/private"),
                             Mount(snapshot / "public", "/input/public")))

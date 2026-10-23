@@ -187,6 +187,7 @@ class AleEvaluator:
 
 class AleBenchmark:
     name = 'ale'
+    scratch_exec = True
     # Same shape as PACE's briefs; texts name AtCoder heuristic-contest routes.
     directions = (
         ("constructive_start", ("initialization", "reduction"),

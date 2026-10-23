@@ -36,6 +36,7 @@ class LivePace:
 
 class PaceBenchmark:
     name = 'pace'
+    scratch_exec = False
     directions = (
         ("structural_reduction", ("reduction", "initialization"),
          "Explore safe reduction rules and seed construction.",

@@ -124,7 +124,7 @@ class OneShotRuntimeRepairMixin:
             broker=self.broker_factory(workspace,phase='GENERATION',deadline=deadline,runner=self.candidate_runner,
                 image=self.image,cpu_budget=self.config.generation_cpu_seconds,grant_checker=verify,
                 cpu_pool=self.tool_cpu_pool,memory_mb=max(1,self.config.memory_bytes//1048576),pids=self.config.pids_max,
-                output_bytes=self.config.output_bytes)
+                output_bytes=self.config.output_bytes,scratch_exec=benchmark_for(self.config.benchmark).scratch_exec)
             self._brokers[initial_account]=broker
         else:broker.bind_grant(verify,deadline=deadline)
         if repair_index is None:

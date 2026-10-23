@@ -23,6 +23,7 @@ from maestro.execution.budgets import BudgetExceeded, BudgetStore
 from maestro.execution.cpu_pool import GlobalCpuPool
 from maestro.execution.grants import GrantAuthority, GrantError
 from maestro.llm import InferenceRequestUnknown, PlanningReceipt, PlanningResponseError
+from maestro.tasks.base import benchmark_for
 from maestro.types import stable_hash
 
 from .client import CodexSessionClient, _PLAN_SCHEMA
@@ -305,7 +306,8 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
                     runner=self.candidate_runner, image=self.image, cpu_budget=self.config.generation_cpu_seconds,
                     grant_checker=verify_grant, cpu_pool=self.tool_cpu_pool,
                     memory_mb=max(1,self.config.memory_bytes//(1024*1024)),pids=self.config.pids_max,
-                    output_bytes=self.config.output_bytes)
+                    output_bytes=self.config.output_bytes,
+                    scratch_exec=benchmark_for(self.config.benchmark).scratch_exec)
                 self._brokers[account] = broker
             else:
                 broker.bind_grant(verify_grant)

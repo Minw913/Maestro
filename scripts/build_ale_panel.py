@@ -8,6 +8,7 @@ import hashlib
 import json
 import shutil
 import statistics
+from typing import Any
 from pathlib import Path
 
 from maestro.backends.coral.workspace import candidate_tree_hash
@@ -18,6 +19,18 @@ from maestro.tasks.ale.benchmark import (
     case_score,
     worker_call,
 )
+
+
+def problem_brief(info: dict[str, Any], language: str) -> str:
+    """PROBLEM.md for the seed: the official statement plus the submission contract agents must meet."""
+    direction = 'higher is better' if info['score_type'] == 'maximize' else 'lower is better'
+    return (f"# {info['title']}\n\n"
+            f"Submission: `{info['submission_file']}` ({language}), compiled by the judge with\n\n"
+            f"    {info['compile_command']}\n\n"
+            f"and run as `{info['run_command']}`: the case arrives on stdin, the answer goes to stdout.\n"
+            f"Time limit {info['time_limit']} s and memory limit {info['memory_limit'] // 2**20} MiB per case; "
+            f"score is {info['score_type']}d ({direction}).\n\n"
+            f"{info['statement']}\n")
 
 
 def main(args):
@@ -46,6 +59,7 @@ def main(args):
     (out / 'smoke_input.txt').write_text(smoke, encoding='utf-8')
     for name, source in (('reference', args.reference), ('seed_solver', args.seed_solver)):
         shutil.copytree(source, out / name)
+    (out / 'seed_solver' / 'PROBLEM.md').write_text(problem_brief(info, args.language), encoding='utf-8')
     manifest = {'schema_version': 1, 'problem_id': args.problem, 'lite_version': args.lite,
                 'judge_version': args.judge_version, 'code_language': args.language,
                 'score_type': info['score_type'], 'time_limit': info['time_limit'],

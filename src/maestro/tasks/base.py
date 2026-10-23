@@ -46,6 +46,7 @@ class Benchmark(Protocol):
 
     name: str
     directions: tuple[Direction, ...]
+    scratch_exec: bool  # candidates compile binaries into /scratch and run them there
 
     def settings(self, config: RunConfig) -> dict[str, Any]:
         """The benchmark's own config section."""
