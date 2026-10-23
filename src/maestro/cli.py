@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 import urllib.request
 
+from dotenv import load_dotenv
+
 from maestro.config import RunConfig,load_config
 from maestro.types import canonical_json,MaestroError
 
@@ -108,6 +110,8 @@ def build_parser():
 
 def main(argv=None):
     args=build_parser().parse_args(argv)
+    if args.command not in ('agent','eval'):  # sandboxed commands take env only from their harness
+        load_dotenv(Path(__file__).resolve().parents[2]/'.env')
     if args.command in ('bootstrap','run','resume','smoke','final-eval'):
         from maestro.execution.local_logging import controller_logs
         with controller_logs(args.root,args.command) as receipt:
