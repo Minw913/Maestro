@@ -188,18 +188,18 @@ class AleEvaluator:
 class AleBenchmark:
     name = 'ale'
     scratch_exec = True
-    # Same shape as PACE's briefs; texts name AtCoder heuristic-contest routes.
+    # The shared seed solves nothing, so every route may also build its own initial solution first.
     directions = (
         ("constructive_start", ("initialization", "reduction"),
          "Explore greedy and constructive initial solutions.",
          "Raise the score of the first feasible answer before any search."),
-        ("local_improvement", ("local_search", "postprocess"),
+        ("local_improvement", ("local_search", "initialization"),
          "Explore neighbourhoods and annealing-style local moves.",
          "Improve the answer through accepted local changes."),
-        ("search_diversification", ("restart", "tie_break"),
+        ("search_diversification", ("restart", "initialization"),
          "Explore restarts, beam widths and tie handling.",
          "Escape plateaus that trap a single search trajectory."),
-        ("execution_efficiency", ("data_structure", "time_management"),
+        ("execution_efficiency", ("time_management", "initialization"),
          "Explore incremental evaluation and use of the time limit.",
          "Fit more useful search iterations into the fixed time limit."),
     )
