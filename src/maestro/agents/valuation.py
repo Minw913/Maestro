@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from decimal import Decimal, localcontext
-from maestro.market.credit import money, reward, score
+from maestro.market.credit import DEFAULT_CREDIT, money, reward, score
 from maestro.types import BootstrapIncomplete
 
 
 def estimate_value(history, target, mod_type, parent, champion,
-                   scale=Decimal("100"), catchup=Decimal("0.25")):
+                   scale=DEFAULT_CREDIT.reward_scale, catchup=DEFAULT_CREDIT.catchup_fraction):
     records = list(history)
     if not records:
         raise BootstrapIncomplete("history-only valuation requires a formal evaluation record")

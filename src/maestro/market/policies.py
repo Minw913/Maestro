@@ -10,11 +10,10 @@ def _tie(seed, *parts):
     return hashlib.sha256(repr((seed, *parts)).encode()).hexdigest()
 
 
-def rank(policy, submissions, states, round_index, seed, *, slots=2):
+def rank(policy, submissions, states, round_index, seed, *, slots):
     """Return every eligible agent once; callers may take successive backfills.
 
-    ``slots`` is optional for the standard N=4/K=2 contract. The root loop must
-    pass a nondefault K for other experiment configurations. UCB never mutates
+    ``slots`` is the configured K (``RunConfig.slots``). UCB never mutates
     counts here: only finalized formal outcomes at settlement update them.
     """
     if round_index < 0 or slots <= 0:

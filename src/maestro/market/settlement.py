@@ -1,7 +1,7 @@
 """Pure settlement calculation. Persistence and exactly-once writes are external."""
 from dataclasses import dataclass
 from decimal import Decimal
-from maestro.market.credit import decimal, money, reward, score
+from maestro.market.credit import DEFAULT_CREDIT, decimal, money, reward, score
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class AgentSettlement:
 
 def settle_agent(*, wealth, parent, champion, admitted, bid=Decimal(0),
                  result=None, policy="first_price", credited_duplicate=False,
-                 scale=Decimal("100"), catchup=Decimal("0.25")):
+                 scale=DEFAULT_CREDIT.reward_scale, catchup=DEFAULT_CREDIT.catchup_fraction):
     """Use pre-admission wealth and frozen baselines; never debit in storage here.
 
     Passing already-debited wealth would double charge and is caller error.

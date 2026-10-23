@@ -1,9 +1,26 @@
 """Versioned V1 credit arithmetic with decimal accounting boundaries."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 
 QUANTUM = Decimal("0.000001")
+_ALPHA = Decimal("100")
+
+
+@dataclass(frozen=True)
+class CreditSettings:
+    """Default phi scale alpha, catch-up fraction beta/alpha and bid cap; RunConfig and every function default read these."""
+    reward_scale: Decimal = _ALPHA
+    catchup_fraction: Decimal = Decimal("0.25")
+    bid_cap: Decimal = _ALPHA  # spec b_max = alpha
+
+    @property
+    def beta(self) -> Decimal:
+        return self.reward_scale * self.catchup_fraction
+
+
+DEFAULT_CREDIT = CreditSettings()
 
 
 def decimal(value: Decimal | int | float | str) -> Decimal:
@@ -31,9 +48,9 @@ def score(value: Decimal | int | float | str) -> Decimal:
 
 
 def reward(score_value=None, parent=None, champion=None,
-           scale=Decimal("100"), catchup=Decimal("0.25"), valid=True,
+           scale=DEFAULT_CREDIT.reward_scale, catchup=DEFAULT_CREDIT.catchup_fraction, valid=True,
            **kwargs) -> Decimal:
-    """100 * ([Y-C]+ + .25 * [min(Y,C)-P]+), or zero if invalid.
+    """scale * ([Y-C]+ + catchup * [min(Y,C)-P]+), or zero if invalid.
 
     ``score=`` is accepted as a keyword to match the external contract. Invalid
     formal outcomes have no usable score and receive exactly zero credit.

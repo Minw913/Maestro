@@ -1,11 +1,11 @@
 """Same-parent sibling accounting: per-plan reputation versus best-only wallet."""
 from dataclasses import dataclass
 from decimal import Decimal
-from maestro.market.credit import decimal, money, score
+from maestro.market.credit import DEFAULT_CREDIT, decimal, money, score
 from maestro.market.reputation import require_full_profile
 
 
-def phi(y, parent, champion, *, alpha=Decimal(100), beta=Decimal(25), valid=True, profile):
+def phi(y, parent, champion, *, alpha=DEFAULT_CREDIT.reward_scale, beta=DEFAULT_CREDIT.beta, valid=True, profile):
     require_full_profile(profile)
     a, b = decimal(alpha), decimal(beta)
     if not 0 <= b <= a:
@@ -37,7 +37,7 @@ class BatchReward:
 
 
 def best_sibling_reward(outcomes, *, parent_hash, parent_score, champion_score,
-                        credited_hashes=(), alpha=Decimal(100), beta=Decimal(25), profile):
+                        credited_hashes=(), alpha=DEFAULT_CREDIT.reward_scale, beta=DEFAULT_CREDIT.beta, profile):
     require_full_profile(profile)
     p = score(parent_score)
     scores, credits = [], {}

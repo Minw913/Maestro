@@ -9,6 +9,7 @@ import math
 import hashlib
 
 from maestro.types import to_jsonable, stable_hash, MaestroError
+from maestro.market.credit import DEFAULT_CREDIT
 
 
 CORAL_REVISION = '0123dfb939b35228cf2c1fde224cd0561e727408'
@@ -37,9 +38,9 @@ class RunConfig:
     cpu_workers: int = 4
     instance_workers: int = 1
     refresh_interval: int = 3
-    reward_scale: Decimal = Decimal('100')
-    catchup_fraction: Decimal = Decimal('0.25')
-    bid_cap: Decimal = Decimal('100')
+    reward_scale: Decimal = DEFAULT_CREDIT.reward_scale
+    catchup_fraction: Decimal = DEFAULT_CREDIT.catchup_fraction
+    bid_cap: Decimal = DEFAULT_CREDIT.bid_cap
     initial_wealth: Decimal = Decimal('2000')
     seed: int = 0
     execution_mode: str = 'mock'
