@@ -1,6 +1,12 @@
 """Conservative pre-admission runtime evidence; never authorizes a re-evaluation."""
-from dataclasses import dataclass
+from __future__ import annotations
+
 import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Self
+
+if TYPE_CHECKING:
+    from maestro.execution.sandbox import RunReceipt
 
 
 @dataclass(frozen=True)
@@ -11,8 +17,12 @@ class RuntimeFailure:
     locations: tuple[tuple[str, int], ...]
 
 
-class RuntimePrecheckFailure(tuple):
-    def __new__(cls, reason, evidence):
+class RuntimePrecheckFailure(tuple[bool, str]):
+    """A failed `(passed, reason)` precheck result that also carries repairable runtime evidence."""
+
+    evidence: RuntimeFailure
+
+    def __new__(cls, reason: str, evidence: RuntimeFailure) -> Self:
         obj = super().__new__(cls, (False, reason))
         obj.evidence = evidence
         return obj
@@ -23,7 +33,7 @@ _RUNTIME_EXCEPTIONS = frozenset({'NameError','UnboundLocalError','TypeError','Va
     'OverflowError','AssertionError','StopIteration'})
 
 
-def classify_runtime_failure(candidate_hash, receipt):
+def classify_runtime_failure(candidate_hash: str, receipt: RunReceipt) -> RuntimeFailure | None:
     # Missing commands/dependencies, syntax/format/solution errors, OOM/signals,
     # output/CPU/wall limits and executor failures all fail closed. This is a
     # diagnostic classifier, not a proof that untrusted stderr is honest.

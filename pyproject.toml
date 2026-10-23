@@ -29,3 +29,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
+
+[tool.basedpyright]
+pythonVersion = "3.12"  # requires-python's floor; editors otherwise guess an interpreter
