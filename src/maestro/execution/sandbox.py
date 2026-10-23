@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -192,7 +193,8 @@ class DockerRunner:
 
     def preflight(self, image: str | None = None) -> dict:
         image = image or self.image
-        if not image or "@sha256:" not in image:
+        # A registry digest or a local image ID: both name exactly one immutable image.
+        if not image or not ("@sha256:" in image or re.fullmatch(r"sha256:[0-9a-f]{64}", image)):
             raise SandboxUnavailable("A digest-pinned, locally installed candidate image is required")
         info = self._docker(["info", "--format", "{{json .}}"])
         if info.returncode:
