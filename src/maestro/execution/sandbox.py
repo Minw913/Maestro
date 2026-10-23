@@ -61,6 +61,7 @@ class RunRequest:
     mounts: tuple[Mount, ...] = ()
     image: str | None = None
     container_workdir: str = "/scratch"
+    scratch_exec: bool = False  # lets a candidate run a binary it compiled into /scratch
 
 
 @dataclass(frozen=True)
@@ -225,7 +226,7 @@ class DockerRunner:
                    f"--memory={limits.memory_mb}m", f"--memory-swap={limits.memory_mb}m",
                    f"--pids-limit={limits.pids}", f"--cpus={limits.cpus}",
                    "--ulimit", "core=0", "--ulimit", "nofile=64:64",
-                   "--tmpfs", f"/scratch:rw,nosuid,size={limits.memory_mb}m,mode=1777",
+                   "--tmpfs", f"/scratch:rw,nosuid,{'exec,' if request.scratch_exec else ''}size={limits.memory_mb}m,mode=1777",
                    "--workdir=/scratch", "--entrypoint=python3"]
         targets = set()
         for mount in request.mounts:

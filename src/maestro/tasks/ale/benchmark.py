@@ -252,8 +252,8 @@ class AleBenchmark:
 
         def check(candidate_path, runner):
             candidate = Path(candidate_path).resolve(strict=True)
-            receipt = runner.run(RunRequest(argv, candidate, data, (Mount(candidate, '/candidate', True),), image),
-                                 limits)
+            receipt = runner.run(RunRequest(argv, candidate, data, (Mount(candidate, '/candidate', True),), image,
+                                            scratch_exec=True), limits)
             if receipt.timed_out or receipt.returncode != 0:
                 return False, 'compile or toy run failed: ' + receipt.stderr[-500:]
             return (True, 'pass') if receipt.stdout.strip() else (False, 'toy run produced no output')
