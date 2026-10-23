@@ -1,0 +1,11 @@
+kind: experiment
+schema_version: 1
+runtime: ../runtimes/coral_codex.yaml
+deployment: ../deployments/local_ale.yaml
+benchmark: ../benchmarks/ale/benchmark.yaml
+stages:
+  warm_start: ../benchmarks/ale/warm_start.yaml
+  market: ../benchmarks/ale/market.yaml
+execution_mode: real
+n_agents: 4
+seed: 0

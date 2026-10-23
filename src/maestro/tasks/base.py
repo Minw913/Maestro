@@ -19,6 +19,10 @@ class Benchmark(Protocol):
         """The benchmark's own config section."""
         ...
 
+    def validate(self, config) -> None:
+        """Raise ValueError when the benchmark's settings in `config` are malformed."""
+        ...
+
     def live(self, config):
         """Frozen panel/contract for real execution, with `panel_hash`, `contract_hash` and
         `evaluator(runner=, artifact_store=, cpu_pool=)`; raises when prerequisites are missing."""

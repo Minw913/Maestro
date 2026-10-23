@@ -49,6 +49,10 @@ class PaceBenchmark:
     def settings(self, config) -> dict:
         return config.pace
 
+    def validate(self, config) -> None:
+        if config.task:
+            raise ValueError('benchmark=pace takes its settings from pace:, not task:')
+
     def live(self, config) -> LivePace:
         from maestro.tasks.pace.manifest import EvaluationContract, load_panel
         manifest = config.pace.get('panel_manifest')

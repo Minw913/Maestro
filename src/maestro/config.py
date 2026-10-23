@@ -1,7 +1,7 @@
 """Frozen, validated configuration. Real prerequisites are checked explicitly."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from decimal import Decimal
 from pathlib import Path
 import json
@@ -10,6 +10,7 @@ import hashlib
 
 from maestro.types import to_jsonable, stable_hash, MaestroError
 from maestro.market.credit import DEFAULT_CREDIT
+from maestro.tasks.base import BENCHMARKS, benchmark_for
 
 
 CORAL_REVISION = '0123dfb939b35228cf2c1fde224cd0561e727408'
@@ -66,6 +67,7 @@ class RunConfig:
     failures: dict = field(default_factory=dict)
     coral: dict = field(default_factory=dict)
     pace: dict = field(default_factory=dict)
+    task: dict = field(default_factory=dict)  # settings of a non-PACE benchmark
     plan_taxonomy: dict = field(default_factory=taxonomy_identity)
     experiment_stage: str | None = None
     stage_configs: dict = field(default_factory=dict)
@@ -88,11 +90,11 @@ class RunConfig:
             raise ValueError('slots exceeds agent population')
         if self.execution_mode not in ('mock', 'real'):
             raise ValueError('execution_mode must be explicitly mock or real')
-        if self.benchmark != 'pace':
-            raise ValueError('benchmark must be pace')
+        if self.benchmark not in BENCHMARKS:
+            raise ValueError(f'benchmark must be one of {sorted(BENCHMARKS)}')
         if type(self.seed) is not int:
             raise ValueError('seed must be an integer')
-        for name in ('failures','coral','pace'):
+        for name in ('failures','coral','pace','task'):
             if not isinstance(getattr(self,name),dict):
                 raise ValueError(f'{name} must be a mapping')
         if self.profile not in ('v1_cooperative', 'codex_session_pilot'):
@@ -116,6 +118,7 @@ class RunConfig:
                 raise ValueError(f'{name} must be an integer')
 
 
+        benchmark_for(self.benchmark).validate(self)
         if self.experiment_stage is not None and self.experiment_stage not in EXPERIMENT_STAGES:
             raise ValueError('experiment_stage must be warm_start or market')
         if not isinstance(self.stage_configs,dict) or not isinstance(self.config_sources,dict):
@@ -207,7 +210,11 @@ class RunConfig:
         return stable_hash(self.to_dict())
 
     def to_dict(self):
-        return to_jsonable(self)
+        value = to_jsonable(asdict(self))
+        # Omitted when empty so configs written before `task` existed keep their hash.
+        if not value['task']:
+            del value['task']
+        return value
 
     @classmethod
     def from_dict(cls, value):

@@ -103,7 +103,8 @@ class EvaluationResult:
 
 def to_jsonable(value: Any) -> Any:
     if is_dataclass(value):
-        return to_jsonable(asdict(value))
+        # A dataclass may own its serialized form (RunConfig omits empty optional sections).
+        return value.to_dict() if hasattr(value, 'to_dict') else to_jsonable(asdict(value))
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, (Path, Enum)):

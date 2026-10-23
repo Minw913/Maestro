@@ -1,0 +1,13 @@
+kind: deployment
+schema_version: 1
+# 16-core workstation; 8 cores for formal evaluation, 4 judge workers per candidate.
+cpu_workers: 8
+instance_workers: 4
+coral:
+  checkout_path: ../../vendor/coral
+  codex_executable: codex
+task:
+  paths:
+    manifest: ../../data/ale/ahc001/manifest.json
+    seed_solver: ../../data/ale/ahc001/seed_solver
+    ale_checkout: ../../repos/ALE-Bench

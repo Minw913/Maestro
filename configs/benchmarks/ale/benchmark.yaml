@@ -1,0 +1,12 @@
+kind: benchmark
+schema_version: 1
+benchmark: ale
+# AHC001 public panel: 50 cases, 5 s judge time limit each (frozen in data/ale/ahc001/manifest.json).
+evaluation_instance_count: 50
+cpu_seconds_per_instance: 5
+verification_cpu_seconds: 60  # the judge's one compile per candidate (ALE COMPILE_TIMEOUT)
+task:
+  contract:
+    image: yimjk/ale-bench@sha256:946af1b209a84160594e43262b5157aec933938c99e2585b53042cac9bc3f43c
+    # Cap on one public evaluation; measured 43 s at 8 workers plus about 13 s session start.
+    evaluation_wall_seconds: 600

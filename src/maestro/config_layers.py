@@ -10,6 +10,7 @@ from pathlib import Path
 
 from maestro.config import (RunConfig, read_config_document, EXPERIMENT_STAGES,
     STAGE_FIELDS, PHASE_BUDGET_FIELDS, WARM_FIELDS, MARKET_FIELDS)
+from maestro.tasks.base import BENCHMARKS
 
 RUNTIME_CORAL_FIELDS = frozenset({
     'backend_factory','revision','model','codex_cli_version','codex_reasoning_effort',
@@ -90,7 +91,7 @@ def _fragment(path, role, seen, sources):
                 if settings.get('runtime','codex')!='codex' or any(k.startswith('deepseek_') for k in settings):
                     raise ValueError('Codex runtime cannot inherit DeepSeek settings')
     elif role=='deployment':
-        _keys(payload,{'cpu_workers','instance_workers','coral','pace'},role)
+        _keys(payload,{'cpu_workers','instance_workers','coral','pace','task'},role)
         if 'coral' in payload:
             _keys(payload['coral'],DEPLOYMENT_CORAL_FIELDS,'deployment.coral')
             for name in ('checkout_path','codex_executable','deepseek_executable','smoke_graph'):
@@ -104,11 +105,20 @@ def _fragment(path, role, seen, sources):
                     payload['pace'][name]=_path(payload['pace'][name],path.parent,'deployment.pace.'+name)
             if 'contract' in payload['pace']:
                 _keys(payload['pace']['contract'],DEPLOYMENT_CONTRACT_FIELDS,'deployment.pace.contract')
+        if 'task' in payload:
+            # The deployment cannot know its benchmark; its adapter validates task contents.
+            if not isinstance(payload['task'],dict) or not isinstance(payload['task'].get('paths',{}),dict):
+                raise ValueError('deployment.task and deployment.task.paths must be mappings')
+            for name,value in payload['task'].get('paths',{}).items():
+                payload['task']['paths'][name]=_path(value,path.parent,'deployment.task.paths.'+name,
+                                                     executable=name.endswith('_executable'))
     elif role=='benchmark':
         _keys(payload,{'benchmark','evaluation_instance_count','cpu_seconds_per_instance',
-                       'verification_cpu_seconds','pace'},role)
-        if payload.get('benchmark') != 'pace':
-            raise ValueError('Only benchmark=pace is implemented')
+                       'verification_cpu_seconds','pace','task'},role)
+        if payload.get('benchmark') not in BENCHMARKS:
+            raise ValueError(f'benchmark must be one of {sorted(BENCHMARKS)}')
+        if payload['benchmark'] != 'pace' and 'pace' in payload:
+            raise ValueError('Only benchmark=pace takes a pace: section; use task:')
         if 'pace' in payload:
             _keys(payload['pace'],{'contract'},'benchmark.pace')
             if 'contract' in payload['pace']:
