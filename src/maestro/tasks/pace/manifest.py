@@ -72,8 +72,8 @@ class EvaluationContract:
             object.__setattr__(self, "verification_code_hash", verifier_source_digest())
 
     @classmethod
-    def standard(cls, **kwargs):
-        contract = cls(**kwargs)
+    def standard(cls, **kwargs: object) -> 'EvaluationContract':
+        contract = cls(**kwargs)  # pyright: ignore[reportArgumentType]  # __post_init__ validates every field
         if (contract.instances, contract.cpu_seconds_per_instance,
                 contract.verification_cpu_seconds) != (20, 30.0, 20.0):
             raise ManifestError("standard V1 contract is 20 instances x 30 CPU seconds + 20 reserve")

@@ -6,6 +6,7 @@ The context is process local and cannot be obtained through Coral Task metadata.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -23,7 +24,7 @@ def execution_scope(ledger, claimed_ticket):
         _active_claim.reset(token)
 
 
-def require_execution_authority(ticket, *, begin=False, launch=False):
+def require_execution_authority(ticket: Mapping[str, object], *, begin: bool = False, launch: bool = False) -> None:
     claim = _active_claim.get()
     if claim is None:
         raise AuthorizationError("Formal evaluation requires a live dispatcher ticket claim")

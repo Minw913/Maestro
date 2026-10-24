@@ -5,6 +5,7 @@ use separate CPU reservations or an external executor with a shared authority;
 this object does not coordinate unrelated processes on the same machine.
 """
 from collections import deque
+from collections.abc import Generator
 from contextlib import contextmanager
 import math
 from threading import Condition
@@ -32,7 +33,7 @@ class GlobalCpuPool:
             self._condition.notify_all()
 
     @contextmanager
-    def slot(self, *, deadline=None):
+    def slot(self, *, deadline: float | None = None) -> Generator[None]:
         if deadline is not None and (type(deadline) not in {int, float} or not math.isfinite(deadline)):
             raise ValueError("A finite monotonic CPU wait deadline is required")
         marker = object()

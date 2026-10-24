@@ -5,12 +5,17 @@ from decimal import Decimal
 import json
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from maestro.execution.dispatcher import Dispatcher
 from maestro.types import AgentState, IntegrityError, MaestroError, canonical_json, stable_hash
 
 from .manifest import load_panel, assert_smoke_disjoint
 from .runner import PaceEvaluator
 from .sanity import default_sanity_graph_path
+
+if TYPE_CHECKING:
+    from maestro.loop import ExperimentEngine
 
 
 def _summary(source_episode_id, heldout_episode_id, ticket, result, contract):
@@ -29,7 +34,7 @@ def _summary(source_episode_id, heldout_episode_id, ticket, result, contract):
     }
 
 
-def evaluate_final(engine, source_episode_id: str, manifest_path: str | Path) -> dict:
+def evaluate_final(engine: 'ExperimentEngine', source_episode_id: str, manifest_path: str | Path) -> dict[str, object]:
     """Evaluate only a completed episode's frozen champion with zero payment.
 
     This is a trusted operator function, not an agent tool. It creates a separate

@@ -98,7 +98,7 @@ class EvaluationResult:
     cpu_seconds: float = 0.0
     wall_seconds: float = 0.0
     diagnostics: dict[str, Any] = field(default_factory=dict)
-    instance_results: tuple[dict, ...] = ()
+    instance_results: tuple[dict[str, object], ...] = ()
 
 
 def to_jsonable(value: Any) -> Any:

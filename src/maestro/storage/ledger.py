@@ -119,7 +119,7 @@ class Ledger:
             else:
                 self.connection.commit()
 
-    def event(self, kind, payload, episode_id=None, round_index=None):
+    def event(self, kind: str, payload: object, episode_id: str | None = None, round_index: int | None = None) -> None:
         with self.transaction() as db:
             previous = db.execute('SELECT hash FROM events ORDER BY id DESC LIMIT 1').fetchone()
             previous = previous[0] if previous else '0' * 64

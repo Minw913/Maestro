@@ -14,9 +14,13 @@ import math
 from pathlib import Path
 from threading import Event
 import time
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .manifest import EvaluationContract, ManifestError, PanelManifest
+
+if TYPE_CHECKING:
+    from maestro.execution.cpu_pool import GlobalCpuPool
+    from maestro.execution.sandbox import ContainmentRunner
 from .parser import parse_graph
 from .scoring import aggregate_score
 from .verifier import verify_solution
@@ -42,12 +46,12 @@ class InstanceResult:
 
 
 class PaceEvaluator:
-    def __init__(self, panel: PanelManifest, contract: EvaluationContract, runner=None,
+    def __init__(self, panel: PanelManifest, contract: EvaluationContract, runner: 'ContainmentRunner | None' = None,
                  candidate_resolver: Callable[[dict], Path] | None = None,
                  artifact_store: Callable[[bytes], str] | None = None,
                  *, simulate_containment: bool = False, verification_worker=None,
                  instance_workers: int | None = None, cpu_workers: int | None = None,
-                 cpu_pool=None, concurrent_candidates: int = 1):
+                 cpu_pool: 'GlobalCpuPool | None' = None, concurrent_candidates: int = 1):
         from maestro.execution.cpu_pool import GlobalCpuPool
         from maestro.execution.sandbox import FailClosedRunner
 
@@ -301,7 +305,7 @@ class PaceEvaluator:
             diagnostics=diagnostics, instance_results=tuple(asdict(x) for x in instance_results))
 
 
-def smoke_test(candidate_path: str | Path, graph_path: str | Path, runner, *, image: str,
+def smoke_test(candidate_path: str | Path, graph_path: str | Path, runner: 'ContainmentRunner', *, image: str,
                solver_argv: tuple[str, ...] = ("/candidate/run",)) -> tuple[bool, str]:
     """A fixed toy graph produces pass/fail only, never a training score."""
     from maestro.execution.sandbox import Mount, ResourceLimits, RunRequest

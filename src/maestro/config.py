@@ -65,8 +65,8 @@ class RunConfig:
     max_candidate_revisions: int = 3
     runtime_repair_calls: int = 3
     failures: dict = field(default_factory=dict)
-    coral: dict = field(default_factory=dict)
-    pace: dict = field(default_factory=dict)
+    coral: dict[str, Any] = field(default_factory=dict)
+    pace: dict[str, Any] = field(default_factory=dict)
     task: dict[str, Any] = field(default_factory=dict)  # settings of a non-PACE benchmark
     plan_taxonomy: dict = field(default_factory=taxonomy_identity)
     experiment_stage: str | None = None
