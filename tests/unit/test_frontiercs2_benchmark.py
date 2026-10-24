@@ -128,3 +128,24 @@ def test_config_cpu_budget_must_match_the_task(tmp_path: Path) -> None:
                              'contract': {'pids': 64}})
     with pytest.raises(IntegrityError, match='cpus x timeout_seconds'):
         _ = fcs.FRONTIERCS2.live(config)
+
+
+def test_a_new_file_in_an_allowed_directory_is_submitted(tmp_path: Path) -> None:
+    m = manifest(tmp_path, allow_paths=['pkg/'], max_changed_files=2)
+    cand = candidate(tmp_path, 'def rewrite(plan):\n    return helper(plan)\n', {'pkg/helper.py': 'def helper(p):\n    return p\n'})
+    patch = fcs.make_patch(tmp_path / 'base', cand, m)
+    assert 'b/pkg/helper.py' in patch and fcs.patch_problems(tmp_path / 'base', cand, m, patch) == []
+    target = tmp_path / 'applied'
+    _ = subprocess.run(['cp', '-r', str(tmp_path / 'base'), str(target)], check=True)
+    _ = subprocess.run(['git', 'apply', '-'], input=patch, text=True, cwd=target, check=True)
+    assert (target / 'pkg' / 'helper.py').read_text() == 'def helper(p):\n    return p\n'
+
+
+def test_a_task_needing_more_cores_than_available_is_refused(tmp_path: Path) -> None:
+    _ = manifest(tmp_path, cpus=8.0)
+    config = RunConfig(benchmark='frontiercs2', execution_mode='real', evaluation_instance_count=1,
+                       cpu_workers=4, cpu_seconds_per_instance=7200,
+                       task={'paths': {'manifest': str(tmp_path / 'manifest.json'), 'seed_solver': str(tmp_path)},
+                             'contract': {'pids': 64}})
+    with pytest.raises(IntegrityError, match='needs 8 cores'):
+        _ = fcs.FRONTIERCS2.live(config)

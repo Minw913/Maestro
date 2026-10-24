@@ -4,9 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-import threading
 import time
-from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,7 +24,6 @@ WORKER = Path(__file__).with_name('worker.py')
 MANIFEST_FIELDS = {'schema_version', 'problem_id', 'lite_version', 'judge_version', 'code_language',
                    'score_type', 'time_limit', 'memory_limit', 'compile_timeout', 'compile_command', 'run_command',
                    'submission_file', 'ale_revision', 'reference_candidate_hash', 'cases', 'smoke_input'}
-_ACQUIRE = threading.Lock()  # takes an evaluation's CPU slots atomically so concurrent evaluations cannot deadlock
 
 
 def worker_call(python: str, request: dict[str, object], *, timeout: float | None) -> dict[str, object]:
@@ -167,6 +164,7 @@ class AleEvaluator:
     def evaluate(self, ticket: Ticket) -> EvaluationResult:
         from maestro.backends.coral.workspace import candidate_tree_hash
         from maestro.execution.authorization import require_execution_authority
+        from maestro.tasks.slots import held
 
         require_execution_authority(ticket, begin=True)
         for key in ('job_id', 'candidate_hash', 'panel_hash', 'contract_hash', 'purpose', 'candidate_path'):
@@ -190,10 +188,7 @@ class AleEvaluator:
         width = (fields.integer(ticket, 'effective_instance_workers') if 'effective_instance_workers' in ticket
                  else self.live.config.instance_workers)
         started = time.monotonic()
-        with ExitStack() as held:
-            with _ACQUIRE:
-                for _ in range(width):
-                    held.enter_context(self.cpu_pool.slot())
+        with held(self.cpu_pool, width):
             require_execution_authority(ticket, launch=True)
             reply = worker_call(self.python, {
                 'operation': 'public_eval', 'problem_id': manifest.problem_id,

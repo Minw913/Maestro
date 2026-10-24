@@ -87,6 +87,10 @@ def _data_dir(config: RunConfig) -> Path:
     return Path(fields.text(_paths(config), 'manifest')).parent
 
 
+def _cores(manifest: FrontierCSManifest) -> int:
+    return max(1, round(manifest.cpus))
+
+
 def _allowed(relative: Path, allow_paths: tuple[str, ...]) -> bool:
     text = relative.as_posix()
     return any(text == p.rstrip('/') or text.startswith(p.rstrip('/') + '/') for p in allow_paths)
@@ -113,7 +117,9 @@ def make_patch(base: Path, candidate: Path, manifest: FrontierCSManifest) -> str
         for relative in _files(base):
             if _allowed(relative, manifest.allow_paths) and not (candidate / relative).is_file():
                 (work / relative).unlink()
-        return subprocess.run([*git, 'diff', '--no-ext-diff', '--no-color', 'HEAD', '--'], capture_output=True,
+        # Staging first makes new files under an allowed directory part of the patch, not silently dropped.
+        _ = subprocess.run([*git, 'add', '-A'], check=True)
+        return subprocess.run([*git, 'diff', '--no-ext-diff', '--no-color', '--cached', '--'], capture_output=True,
                               text=True, check=True).stdout
 
 
@@ -121,8 +127,9 @@ def patch_problems(base: Path, candidate: Path, manifest: FrontierCSManifest, pa
     """Contract violations a verifier would reject, checked before spending an evaluation."""
     problems: list[str] = []
     ignored = {Path('PROBLEM.md')}
-    changed = {r for r, c in _files(candidate).items() if _files(base).get(r) != c and r not in ignored}
-    changed |= {r for r in _files(base) if not (candidate / r).is_file()}
+    pristine, current = _files(base), _files(candidate)
+    changed = {r for r, c in current.items() if pristine.get(r) != c and r not in ignored}
+    changed |= {r for r in pristine if r not in current}
     outside = sorted(r.as_posix() for r in changed if not _allowed(r, manifest.allow_paths))
     if outside:
         problems.append('only ' + ', '.join(manifest.allow_paths) + ' may change; also changed: ' + ', '.join(outside))
@@ -228,10 +235,9 @@ class FrontierCSEvaluator:
         return {'panel_hash': self.live.panel_hash, 'contract_hash': self.live.contract_hash}
 
     def evaluate(self, ticket: Ticket) -> EvaluationResult:
-        from contextlib import ExitStack
-
         from maestro.backends.coral.workspace import candidate_tree_hash
         from maestro.execution.authorization import require_execution_authority
+        from maestro.tasks.slots import held
 
         require_execution_authority(ticket, begin=True)
         for key in ('job_id', 'candidate_hash', 'panel_hash', 'contract_hash', 'purpose', 'candidate_path'):
@@ -246,9 +252,7 @@ class FrontierCSEvaluator:
         if candidate_tree_hash(candidate) != ticket['candidate_hash']:
             raise ValueError('candidate content differs from ticket-bound immutable hash')
         manifest, started = self.live.panel, time.monotonic()
-        with ExitStack() as held:
-            for _ in range(max(1, round(manifest.cpus))):  # the verifier runs on the task's own core count
-                held.enter_context(self.cpu_pool.slot())
+        with held(self.cpu_pool, _cores(manifest)):  # the verifier runs on the task's own core count
             require_execution_authority(ticket, launch=True)
             verdict = verify(candidate, 'train', data_dir=self.data_dir, manifest=manifest, runner=self.runner,
                              pids=fields.integer(self.live.contract, 'pids'))
@@ -303,6 +307,8 @@ class FrontierCSBenchmark:
         manifest = FrontierCSManifest.load(fields.text(_paths(config), 'manifest'))
         if config.evaluation_instance_count != 1:
             raise IntegrityError('a FrontierCS-2 evaluation is one verifier run: evaluation_instance_count must be 1')
+        if _cores(manifest) > config.cpu_workers:
+            raise IntegrityError(f'the task needs {_cores(manifest)} cores but cpu_workers is {config.cpu_workers}')
         if config.cpu_seconds_per_instance != manifest.cpus * manifest.timeout_seconds:
             raise IntegrityError('cpu_seconds_per_instance must equal the task cpus x timeout_seconds')
         contract: dict[str, object] = {'benchmark': 'frontiercs2', 'panel_hash': manifest.panel_hash,
