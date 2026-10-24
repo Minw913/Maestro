@@ -12,6 +12,14 @@ import threading
 from maestro.types import (AuthorizationError, IntegrityError, MaestroError,
     canonical_json, stable_hash, to_jsonable, result_from_dict)
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from maestro.config import RunConfig
+    from maestro.types import AgentState
+
 SCHEMA_VERSION = '2'
 
 
@@ -128,7 +136,8 @@ class Ledger:
             db.execute('INSERT INTO events(episode_id,round_index,kind,payload,previous_hash,hash) VALUES(?,?,?,?,?,?)',
                        (episode_id, round_index, kind, text, previous, digest))
 
-    def create_episode(self, episode_id, policy, config, states, bootstrap_id=None):
+    def create_episode(self, episode_id: str, policy: str, config: RunConfig, states: Mapping[str, AgentState],
+                       bootstrap_id: str | None = None) -> None:
         with self.transaction() as db:
             if db.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
                 raise IntegrityError(f'Episode already exists: {episode_id}')
@@ -206,7 +215,7 @@ class Ledger:
             db.execute("UPDATE invitations SET status='FAILED' WHERE episode_id=? AND round_index=? AND agent_id=?",(episode_id,round_index,agent_id))
             self.event('HOLD_RELEASED',{'agent_id':agent_id,'reason':reason},episode_id,round_index)
 
-    def record_candidate(self, candidate_hash, payload):
+    def record_candidate(self, candidate_hash: str, payload: object) -> None:
         with self.transaction() as db:
             text = canonical_json(payload)
             old = db.execute('SELECT payload FROM candidates WHERE hash=?',(candidate_hash,)).fetchone()

@@ -11,6 +11,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from collections import Counter
+from collections.abc import Mapping
 import importlib
 import json
 import time
@@ -243,7 +244,7 @@ class ExperimentEngine:
             'warm_waves':len(schedule),'opportunities':dict(opportunities),
             'seed_fallback_agents':fallback_agents}
 
-    def _evaluate_seed(self, episode_id, states, candidate):
+    def _evaluate_seed(self, episode_id: str, states: dict[str, AgentState], candidate: Mapping[str, object]) -> float:
         self._check_pause()
         """Setup is a real authorized evaluation, separate from gain history."""
         a = next(iter(states))

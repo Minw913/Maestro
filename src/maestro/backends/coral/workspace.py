@@ -103,7 +103,7 @@ class WorkspaceStore:
             (root / name).mkdir(mode=0o700)
         return AgentWorkspace(agent_id, root, solver, root / "private", root / "public", root / "outbox")
 
-    def freeze(self, solver: str | Path) -> dict:
+    def freeze(self, solver: str | Path) -> dict[str, str]:
         """Call only after the supervisor proves the complete old scope stopped."""
         solver = Path(solver)
         key = candidate_tree_hash(solver)
