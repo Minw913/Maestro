@@ -4,19 +4,26 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from maestro.config import RunConfig
+    from maestro.execution.cpu_pool import GlobalCpuPool
+    from maestro.execution.sandbox import ContainmentRunner
+    from maestro.loop import ExperimentEngine
+    from maestro.types import EvaluationResult
 
 # (label, focus targets, exploration text, objective text) for one startup brief.
 Direction = tuple[str, tuple[str, ...], str, str]
-# (candidate_path, runner) -> (passed, reason), or a RuntimePrecheckFailure
-SmokeCheck = Callable[[Any, Any], Any]
+Ticket = dict[str, object]
+ArtifactStore = Callable[[bytes], str]
+# (candidate_path, runner) -> (passed, reason); a RuntimePrecheckFailure is such a tuple too
+SmokeCheck = Callable[['str | Path', 'ContainmentRunner'], tuple[bool, str]]
 
 
 class Evaluator(Protocol):
-    def evaluate(self, ticket: dict[str, Any]) -> Any:
+    def evaluate(self, ticket: Ticket) -> EvaluationResult:
         """Evaluate one immutable candidate under its bound task contract."""
         ...
 
@@ -25,10 +32,10 @@ class LiveTask(Protocol):
     """A frozen panel and contract for real execution."""
 
     @property
-    def panel(self) -> Any: ...
+    def panel(self) -> object: ...
 
     @property
-    def contract(self) -> Any: ...
+    def contract(self) -> object: ...
 
     @property
     def panel_hash(self) -> str: ...
@@ -36,7 +43,8 @@ class LiveTask(Protocol):
     @property
     def contract_hash(self) -> str: ...
 
-    def evaluator(self, *, runner: Any, artifact_store: Any, cpu_pool: Any) -> Evaluator:
+    def evaluator(self, *, runner: ContainmentRunner | None, artifact_store: ArtifactStore | None,
+                  cpu_pool: GlobalCpuPool) -> Evaluator:
         """The formal evaluator bound to this panel and contract."""
         ...
 
@@ -48,7 +56,7 @@ class Benchmark(Protocol):
     directions: tuple[Direction, ...]
     scratch_exec: bool  # candidates compile binaries into /scratch and run them there
 
-    def settings(self, config: RunConfig) -> dict[str, Any]:
+    def settings(self, config: RunConfig) -> dict[str, object]:
         """The benchmark's own config section."""
         ...
 
@@ -77,7 +85,8 @@ class Benchmark(Protocol):
         """`check(candidate_path, runner)` for the fixed pre-evaluation toy run, input disjoint from the panel."""
         ...
 
-    def evaluate_final(self, engine: Any, source_episode_id: str, manifest_path: str) -> dict[str, Any]:
+    def evaluate_final(self, engine: ExperimentEngine, source_episode_id: str,
+                       manifest_path: str) -> dict[str, object]:
         """Held-out evaluation of a completed episode's champion."""
         ...
 
@@ -94,4 +103,4 @@ def benchmark_for(name: str) -> Benchmark:
     if name not in BENCHMARKS:
         raise ValueError(f'unknown benchmark {name!r}; registered: {sorted(BENCHMARKS)}')
     module, attribute = BENCHMARKS[name].split(':')
-    return getattr(import_module(module), attribute)
+    return cast('Benchmark', getattr(import_module(module), attribute))

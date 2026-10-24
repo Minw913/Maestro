@@ -3,14 +3,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 from maestro.backends.base import BackendUnavailable
+from maestro.tasks import fields
 from maestro.types import IntegrityError, MaestroError
 
 if TYPE_CHECKING:
     from maestro.config import RunConfig
+    from maestro.execution.cpu_pool import GlobalCpuPool
+    from maestro.execution.sandbox import ContainmentRunner
+    from maestro.loop import ExperimentEngine
+    from maestro.tasks.base import ArtifactStore, SmokeCheck
     from maestro.tasks.pace.manifest import EvaluationContract, PanelManifest
+    from maestro.tasks.pace.runner import PaceEvaluator
+
+
+def _contract(config: RunConfig) -> dict[str, object]:
+    return fields.section(config.pace, 'contract')
 
 
 @dataclass(frozen=True)
@@ -27,7 +37,8 @@ class LivePace:
     def contract_hash(self) -> str:
         return self.contract.contract_hash
 
-    def evaluator(self, *, runner, artifact_store, cpu_pool):
+    def evaluator(self, *, runner: ContainmentRunner | None, artifact_store: ArtifactStore | None,
+                  cpu_pool: GlobalCpuPool) -> PaceEvaluator:
         from maestro.tasks.pace.runner import PaceEvaluator
         return PaceEvaluator(self.panel, self.contract, runner=runner, artifact_store=artifact_store,
                              cpu_workers=self.config.cpu_workers,
@@ -35,9 +46,9 @@ class LivePace:
 
 
 class PaceBenchmark:
-    name = 'pace'
-    scratch_exec = False
-    directions = (
+    name: str = 'pace'
+    scratch_exec: bool = False
+    directions: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
         ("structural_reduction", ("reduction", "initialization"),
          "Explore safe reduction rules and seed construction.",
          "Improve the initial dominating set without changing validity."),
@@ -52,8 +63,8 @@ class PaceBenchmark:
          "Perform more useful search within the fixed CPU contract."),
     )
 
-    def settings(self, config: RunConfig) -> dict[str, Any]:
-        return config.pace
+    def settings(self, config: RunConfig) -> dict[str, object]:
+        return fields.mapping(config.pace, 'pace')
 
     def validate(self, config: RunConfig) -> None:
         if config.task:
@@ -61,13 +72,12 @@ class PaceBenchmark:
 
     def live(self, config: RunConfig) -> LivePace:
         from maestro.tasks.pace.manifest import EvaluationContract, load_panel
-        manifest = config.pace.get('panel_manifest')
-        if not manifest:
+        manifest = self.settings(config).get('panel_manifest')
+        if not isinstance(manifest, str) or not manifest:
             raise MaestroError('execution_mode=real with benchmark=pace requires pace.panel_manifest, seed_solver, pinned runner and Coral backend')
         panel = load_panel(manifest, expected_split='training')
-        contract_settings = dict(config.pace.get('contract', {}))
-        for name in ('cpu_workers', 'instance_workers'):
-            value = getattr(config, name)
+        contract_settings = dict(_contract(config))
+        for name, value in (('cpu_workers', config.cpu_workers), ('instance_workers', config.instance_workers)):
             if name in contract_settings and contract_settings[name] != value:
                 raise IntegrityError(f'Top-level {name} and PACE contract disagree')
             contract_settings[name] = value
@@ -77,28 +87,37 @@ class PaceBenchmark:
         return LivePace(panel, contract, config)
 
     def image(self, config: RunConfig) -> str:
-        return config.pace.get('contract', {}).get('image', '')
+        image = _contract(config).get('image', '')
+        return image if isinstance(image, str) else ''
 
     def seed_solver(self, config: RunConfig) -> str:
-        return config.pace.get('seed_solver', '')
+        seed = self.settings(config).get('seed_solver', '')
+        return seed if isinstance(seed, str) else ''
 
     def solver_argv(self, config: RunConfig) -> tuple[str, ...]:
-        return tuple(config.pace.get('contract', {}).get('solver_argv', ('/candidate/run',)))
+        argv = _contract(config).get('solver_argv', ('/candidate/run',))
+        if not isinstance(argv, list | tuple):
+            raise fields.FieldError('pace.contract.solver_argv must be a list of strings')
+        return tuple(str(part) for part in cast(list[object] | tuple[object, ...], argv))
 
-    def smoke_check(self, config: RunConfig, *, require_file=False, missing_message='Configured fixed toy graph is missing'):
+    def smoke_check(self, config: RunConfig, *, require_file: bool = False,
+                    missing_message: str = 'Configured fixed toy graph is missing') -> SmokeCheck:
         from maestro.tasks.pace.manifest import assert_smoke_disjoint, load_panel
         from maestro.tasks.pace.runner import smoke_test
         from maestro.tasks.pace.sanity import default_sanity_graph_path
-        toy = Path(config.coral.get('smoke_graph', default_sanity_graph_path()))
+        toy_setting = fields.mapping(config.coral, 'coral').get('smoke_graph')
+        toy = Path(toy_setting) if isinstance(toy_setting, str) else default_sanity_graph_path()
         if require_file and not toy.is_file():
             raise BackendUnavailable(missing_message)
-        assert_smoke_disjoint(load_panel(config.pace['panel_manifest'], expected_split='training'), toy)
-        image = self.image(config)
-        solver_argv = self.solver_argv(config)
-        return lambda candidate_path, runner: smoke_test(candidate_path, toy, runner,
-                                                         image=image, solver_argv=solver_argv)
+        assert_smoke_disjoint(load_panel(fields.text(config.pace, 'panel_manifest'), expected_split='training'), toy)
+        image, solver_argv = self.image(config), self.solver_argv(config)
 
-    def evaluate_final(self, engine, source_episode_id, manifest_path):
+        def check(candidate_path: str | Path, runner: ContainmentRunner) -> tuple[bool, str]:
+            return smoke_test(candidate_path, toy, runner, image=image, solver_argv=solver_argv)
+        return check
+
+    def evaluate_final(self, engine: ExperimentEngine, source_episode_id: str,
+                       manifest_path: str) -> dict[str, object]:
         from maestro.tasks.pace.heldout import evaluate_final
         return evaluate_final(engine, source_episode_id, manifest_path)
 
