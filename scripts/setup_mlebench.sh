@@ -7,24 +7,25 @@
 # Needs Kaggle credentials (~/.kaggle) and the competition's rules accepted on kaggle.com.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-competition=$1 workers=$2 timeout=$3 cpus=$4 memory=$5 runtime=${6:-configs/runtimes/coral_codex.yaml}
+competition=$1 workers=$2 timeout=$3 cpus=$4 memory=$5 runtime=${6:-configs/runtimes/coral_codex_local.yaml}
 revision=507f92e1138bb6e40dac5c6ee7a6758e6424bf97  # MLE-bench commit this adapter was verified against
-kaggle_version=2.2.5  # first client verified with Kaggle's access_token credentials
+kaggle_version=2.2.5  # verified with Kaggle's access_token credentials; mlebench pins <1.7, which cannot read them
 # A training run may use many worker processes; a generous cap still stops a fork bomb.
 candidate_pids=1024
 # Seconds an LFS download may stall before setup fails instead of hanging.
 lfs_timeout=300
 repo=repos/mle-bench cache=data/mlebench/cache out=data/mlebench/$competition
 [ -d "$repo/.git" ] || git clone -q https://github.com/openai/mle-bench.git "$repo"
-git -C "$repo" checkout -q "$revision" -- . 2>/dev/null || { git -C "$repo" fetch -q origin "$revision"; git -C "$repo" checkout -q "$revision" -- .; }
+# --force drops the previous run's patch and fetched LFS files, so every setup starts from the pinned commit.
+git -C "$repo" checkout -q --force "$revision" 2>/dev/null || { git -C "$repo" fetch -q origin "$revision"; git -C "$repo" checkout -q --force "$revision"; }
 # kaggle>=1.8 removed kaggle.rest; its HTTP errors are requests.HTTPError.
 sed -i 's/^\(\s*\)from kaggle.rest import ApiException$/\1from requests import HTTPError as ApiException/' "$repo/mlebench/data.py"
 [ -x "$repo/.venv/bin/python" ] || uv --no-config venv -q --python 3.11 "$repo/.venv"
 uv --no-config pip install -q --python "$repo/.venv/bin/python" -e "$repo"
-# A separate install, because mlebench pins kaggle<1.7, which cannot read access_token credentials.
+# A separate install overrides that pin.
 uv --no-config pip install -q --python "$repo/.venv/bin/python" "kaggle==$kaggle_version"
 uv run --no-sync python scripts/fetch_lfs.py --repo "$repo" --slug openai/mle-bench \
-  --path "mlebench/competitions/$competition" --timeout "$lfs_timeout"
+  --path "mlebench/competitions/$competition" --revision "$revision" --timeout "$lfs_timeout"
 # MLE-bench opens a disk cache in its working directory, so run it from its own clone.
 (cd "$repo" && .venv/bin/mlebench prepare -c "$competition" --data-dir "$OLDPWD/$cache")
 # Rebuilding gives a new image ID even from cache, so the panel would change; build once per Dockerfile.

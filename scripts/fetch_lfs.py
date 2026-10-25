@@ -10,7 +10,6 @@ import http.client
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
@@ -43,11 +42,8 @@ def fetch_one(url: str, target: Path, oid: str, size: int, timeout: float) -> No
             os.unlink(partial)
 
 
-def fetch(repo: Path, slug: str, root: Path, timeout: float) -> int:
-    """Number of pointer files under `root` replaced with verified content."""
-    # Local patch commits are not on GitHub; their pointers are still checked against each object's sha256.
-    revision = subprocess.run(['git', '-C', str(repo), 'merge-base', 'HEAD', 'refs/remotes/origin/HEAD'],
-                              capture_output=True, text=True, check=True).stdout.strip()
+def fetch(repo: Path, slug: str, root: Path, revision: str, timeout: float) -> int:
+    """Number of pointer files under `root` replaced with verified content from upstream `revision`."""
     replaced = 0
     for path in sorted(p for p in root.rglob('*') if p.is_file() and p.stat().st_size < 1024):
         text = path.read_text(encoding='utf-8', errors='replace')
@@ -68,8 +64,9 @@ if __name__ == '__main__':
     _ = parser.add_argument('--repo', required=True, help='local clone')
     _ = parser.add_argument('--slug', required=True, help='GitHub owner/name of that clone')
     _ = parser.add_argument('--path', required=True, help='directory inside the clone whose pointers to resolve')
+    _ = parser.add_argument('--revision', required=True, help='upstream commit the pointers come from')
     _ = parser.add_argument('--timeout', type=float, required=True, help='seconds a stalled connection may idle')
     options = fields.mapping(vars(parser.parse_args()), 'arguments')
     repo = Path(fields.text(options, 'repo')).absolute()
-    print(fetch(repo, fields.text(options, 'slug'), repo / fields.text(options, 'path'),
+    print(fetch(repo, fields.text(options, 'slug'), repo / fields.text(options, 'path'), fields.text(options, 'revision'),
                 fields.number(options, 'timeout')), 'LFS objects fetched and verified')

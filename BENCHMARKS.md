@@ -4,12 +4,13 @@ Setup once per benchmark, then one line per experiment (Warm Start, then `unifor
 
 ## Prerequisites
 
-Linux, Docker with cgroup v2, `uv`, `git`, and Codex CLI logged in (`codex login`).
+Linux, **rootless** Docker with cgroup v2 (the sandbox refuses rootful), `uv`, `git`, Node.js.
 
 ```sh
 git clone --recurse-submodules https://github.com/Minw913/Maestro.git && cd Maestro
 git checkout feat/benchmark-adapters
-uv sync
+uv sync && uv pip install -e vendor/coral
+npm install -g @openai/codex@0.163.0 && codex login   # must equal codex_cli_version in the runtime yaml
 ```
 
 ## ALE-Bench (AHC001)

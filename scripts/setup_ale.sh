@@ -5,7 +5,7 @@
 #   INSTANCE_WORKERS  judge cases one evaluation runs in parallel
 set -euo pipefail
 cd "$(dirname "$0")/.."
-workers=$1 instance_workers=$2 runtime=${3:-configs/runtimes/coral_codex.yaml}
+workers=$1 instance_workers=$2 runtime=${3:-configs/runtimes/coral_codex_local.yaml}
 revision=8ba16e6baf743aa8736516c45d1c52afdbd4de99  # ALE-Bench commit the rootless patch applies to
 patched=c05ff4e8c9b155237db8d6e4097a3c5d8dda36cd  # that patch as a commit; fixed identity and dates reproduce it
 problem=ahc001 language=cpp20 judge=202301
@@ -22,7 +22,10 @@ fi
 (cd "$repo" && uv --no-config sync -q --frozen)  # its lockfile; --no-config skips its uv version pin
 # Judge containers run as the host user, which is root inside the container under rootless Docker.
 if docker info --format '{{.SecurityOptions}}' | grep -q rootless; then uid=0 gid=0; else uid=$(id -u) gid=$(id -g); fi
-docker pull -q "yimjk/ale-bench:$language-$judge" > /dev/null
+# The candidate image the benchmark config pins is also the judge image's base, which names it by tag.
+image=$(uv run --no-sync python -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["task"]["contract"]["image"])' configs/benchmarks/ale/benchmark.yaml)
+docker pull -q "$image" > /dev/null
+docker tag "$image" "yimjk/ale-bench:$language-$judge"
 docker build -q "$repo/dockerfiles" -t "ale-bench:$language-$judge" -f "$repo/dockerfiles/Dockerfile_${language}_$judge" \
   --build-arg UID=$uid --build-arg GID=$gid > /dev/null
 reference=$(mktemp -d)  # ALE's own accepted solution, under the submission name the builder reads

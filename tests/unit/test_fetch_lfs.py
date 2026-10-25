@@ -1,5 +1,4 @@
 import hashlib
-import subprocess
 from pathlib import Path
 
 import fetch_lfs
@@ -34,14 +33,8 @@ def test_mismatched_content_leaves_the_pointer_for_the_next_run(tmp_path: Path) 
     assert target.read_text() == before and leftovers(tmp_path) == []
 
 
-def test_an_unreadable_pointer_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_unreadable_pointer_is_refused(tmp_path: Path) -> None:
     (tmp_path / 'repo' / 'sub').mkdir(parents=True)
     _ = (tmp_path / 'repo' / 'sub' / 'x').write_text('version https://git-lfs.github.com/spec/v1\next-0-foo sha256:ab\n')
-
-    def git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del args, kwargs
-        return subprocess.CompletedProcess([], 0, stdout='rev\n')
-
-    monkeypatch.setattr(subprocess, 'run', git)  # fetch_lfs calls subprocess.run for the revision
     with pytest.raises(SystemExit, match='cannot read'):
-        _ = fetch_lfs.fetch(tmp_path / 'repo', 'o/r', tmp_path / 'repo' / 'sub', 10.0)
+        _ = fetch_lfs.fetch(tmp_path / 'repo', 'o/r', tmp_path / 'repo' / 'sub', 'rev', 10.0)
