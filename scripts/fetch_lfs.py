@@ -45,8 +45,9 @@ def fetch_one(url: str, target: Path, oid: str, size: int, timeout: float) -> No
 
 def fetch(repo: Path, slug: str, root: Path, timeout: float) -> int:
     """Number of pointer files under `root` replaced with verified content."""
-    revision = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], capture_output=True, text=True,
-                              check=True).stdout.strip()
+    # Local patch commits are not on GitHub; their pointers are still checked against each object's sha256.
+    revision = subprocess.run(['git', '-C', str(repo), 'merge-base', 'HEAD', 'refs/remotes/origin/HEAD'],
+                              capture_output=True, text=True, check=True).stdout.strip()
     replaced = 0
     for path in sorted(p for p in root.rglob('*') if p.is_file() and p.stat().st_size < 1024):
         text = path.read_text(encoding='utf-8', errors='replace')
