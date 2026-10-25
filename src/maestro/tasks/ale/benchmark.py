@@ -104,8 +104,10 @@ class AleManifest:
         score_type = fields.text(raw, 'score_type')
         if score_type not in ('maximize', 'minimize'):
             raise ValueError('score_type must be maximize or minimize')
-        cases = tuple(AleCase(fields.text(c, 'input_sha256'), fields.integer(c, 'reference_score'))
-                      for c in fields.objects(raw, 'cases'))
+        raw_cases = fields.objects(raw, 'cases')
+        if any(set(c) != {'input_sha256', 'reference_score'} for c in raw_cases):
+            raise ValueError('every case needs exactly input_sha256 and reference_score')
+        cases = tuple(AleCase(fields.text(c, 'input_sha256'), fields.integer(c, 'reference_score')) for c in raw_cases)
         if not cases or any(case.reference_score <= 0 for case in cases):
             raise ValueError('every case needs input_sha256 and a positive reference_score')
         return cls(fields.integer(raw, 'schema_version'), fields.text(raw, 'problem_id'),

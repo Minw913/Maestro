@@ -27,9 +27,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "scripts"]
 addopts = "-ra"
 
 [tool.basedpyright]
 pythonVersion = "3.12"  # requires-python's floor; editors otherwise guess an interpreter
-extraPaths = ["src"]  # src layout: resolve maestro from source even without the installed package
+extraPaths = ["src", "scripts"]  # src layout, plus scripts so tests can import them typed

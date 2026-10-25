@@ -28,3 +28,10 @@ def test_empty_task_section_is_omitted_from_identity() -> None:
     stored = fields.parse_object(canonical_json(config), "stored config")
     assert "task" not in stored and "task" not in config.to_dict()
     assert stable_hash(stored) == config.hash
+
+
+def test_pace_refuses_a_smoke_graph_that_is_not_a_path() -> None:
+    from maestro.tasks.pace.benchmark import PACE
+    config = RunConfig(coral={"smoke_graph": 5}, pace={"panel_manifest": "unused.json"})
+    with pytest.raises(fields.FieldError, match="smoke_graph must be a path"):
+        _ = PACE.smoke_check(config)

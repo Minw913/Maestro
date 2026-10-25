@@ -106,7 +106,9 @@ class PaceBenchmark:
         from maestro.tasks.pace.runner import smoke_test
         from maestro.tasks.pace.sanity import default_sanity_graph_path
         toy_setting = fields.mapping(config.coral, 'coral').get('smoke_graph')
-        toy = Path(toy_setting) if isinstance(toy_setting, str) else default_sanity_graph_path()
+        if toy_setting is not None and not isinstance(toy_setting, str | Path):
+            raise fields.FieldError('coral.smoke_graph must be a path')
+        toy = Path(toy_setting) if toy_setting is not None else default_sanity_graph_path()
         if require_file and not toy.is_file():
             raise BackendUnavailable(missing_message)
         assert_smoke_disjoint(load_panel(fields.text(config.pace, 'panel_manifest'), expected_split='training'), toy)

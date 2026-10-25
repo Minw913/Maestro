@@ -115,3 +115,8 @@ def test_real_ale_config_names_its_prerequisites() -> None:
         _ = RunConfig(benchmark='ale', execution_mode='real')
     with pytest.raises(ValueError, match='task:'):
         _ = RunConfig(benchmark='ale', pace={'panel_manifest': 'x'})
+
+
+def test_manifest_rejects_unexpected_case_keys(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match='exactly input_sha256 and reference_score'):
+        _ = ale.AleManifest.load(manifest(tmp_path, cases=[{'input_sha256': 'x', 'reference_score': 1, 'extra': 0}]))

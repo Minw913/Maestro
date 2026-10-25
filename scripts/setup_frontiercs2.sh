@@ -9,12 +9,14 @@ task=$1 workers=$2 runtime=${3:-configs/runtimes/coral_codex.yaml}
 revision=e989e8c6826585a336fb999db1b87fa327073c2d  # FrontierCS-2 commit this adapter was verified against
 # FrontierCS-2 sets no process limit; a generous cap still stops a fork bomb in the verifier.
 verifier_pids=1024
+# Seconds an LFS download may stall before setup fails instead of hanging.
+lfs_timeout=300
 repo=repos/FrontierCS-2 problem=${task##*/} out=data/frontiercs2/${task##*/}
 source=$repo/tasks/frontier-cs-2.0-demo/problems/$task
 [ -d "$repo/.git" ] || git clone -q --depth 1 https://github.com/FrontierCS/FrontierCS-2.git "$repo"
 git -C "$repo" checkout -q "$revision" 2>/dev/null || { git -C "$repo" fetch -q --depth 1 origin "$revision"; git -C "$repo" checkout -q "$revision"; }
 [ -f "$source/judge/baseline_naive.patch" ] || { echo "$task ships no baseline_naive.patch to seed from" >&2; exit 2; }
-uv run --no-sync python scripts/fetch_lfs.py --repo "$repo" --slug FrontierCS/FrontierCS-2 --path "${source#"$repo"/}"
+uv run --no-sync python scripts/fetch_lfs.py --repo "$repo" --slug FrontierCS/FrontierCS-2 --path "${source#"$repo"/}" --timeout "$lfs_timeout"
 docker build -q -f "$source/verifier/Dockerfile" -t "fcs2-$problem:${revision:0:8}" "$source" > /dev/null
 docker build -q -f "$source/agent-base/Dockerfile" -t "fcs2-$problem-agent:${revision:0:8}" "$source" > /dev/null
 verifier=$(docker image inspect "fcs2-$problem:${revision:0:8}" --format '{{.Id}}')
