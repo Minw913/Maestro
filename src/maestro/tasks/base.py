@@ -95,6 +95,7 @@ BENCHMARKS: dict[str, str] = {
     'pace': 'maestro.tasks.pace.benchmark:PACE',
     'ale': 'maestro.tasks.ale.benchmark:ALE',
     'frontiercs2': 'maestro.tasks.frontiercs2.benchmark:FRONTIERCS2',
+    'mlebench': 'maestro.tasks.mlebench.benchmark:MLEBENCH',
 }
 
 

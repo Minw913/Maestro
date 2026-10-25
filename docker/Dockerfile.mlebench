@@ -1,0 +1,7 @@
+# syntax=docker/dockerfile:1
+# MLE-bench candidate image: agents' tools and formal evaluations both run here. It holds no competition data;
+# inputs are mounted read-only at /input. Library pins match the MLE-bench grader's own venv.
+FROM python:3.11.16-slim-bookworm@sha256:4b4c524dc3dce996864e030c7bd9c6b0e517597189fee48f48e05b499442444b
+RUN pip install --no-cache-dir numpy==2.4.6 pandas==3.1.0 scikit-learn==1.9.1 scipy==1.17.1 \
+    && mkdir -p /candidate /input /scratch
+WORKDIR /scratch
