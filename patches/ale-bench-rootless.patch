@@ -1,0 +1,272 @@
+From c05ff4e8c9b155237db8d6e4097a3c5d8dda36cd Mon Sep 17 00:00:00 2001
+From: Javi Alfaro <javi@rastaa.ai>
+Date: Fri, 23 Oct 2026 11:20:01 -0600
+Subject: [PATCH] Run judge containers as root under rootless Docker
+
+---
+ src/ale_bench/data.py                         |  5 +++--
+ src/ale_bench/tool_wrappers/case_runner.py    | 21 ++++++++++---------
+ src/ale_bench/tool_wrappers/code_runner.py    |  9 ++++----
+ .../tool_wrappers/input_generation.py         |  5 +++--
+ .../tool_wrappers/reusable_container_pool.py  | 13 ++++++------
+ src/ale_bench/utils.py                        | 18 ++++++++++++++++
+ 6 files changed, 47 insertions(+), 24 deletions(-)
+
+diff --git a/src/ale_bench/data.py b/src/ale_bench/data.py
+index 93bb8dc..c05bdca 100644
+--- a/src/ale_bench/data.py
++++ b/src/ale_bench/data.py
+@@ -17,6 +17,7 @@ from PIL import Image
+ from huggingface_hub import hf_hub_download
+ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+ 
++from ale_bench.utils import container_gid, container_uid
+ import ale_bench.constants
+ from ale_bench.result import JudgeResult, Result
+ from ale_bench.utils import docker_client, get_cache_dir, get_local_data_dir, read_svg
+@@ -691,8 +692,8 @@ def build_rust_tools(tool_cache_dir: Path) -> None:
+             auto_remove=False,
+             detach=True,
+             environment={"RUSTFLAGS": "-Awarnings"},
+-            group_add=[os.getgid()],
+-            user=os.getuid(),
++            group_add=[container_gid()],
++            user=container_uid(),
+             volumes={str(tool_cache_dir): {"bind": ale_bench.constants.WORK_DIR, "mode": "rw"}},
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+diff --git a/src/ale_bench/tool_wrappers/case_runner.py b/src/ale_bench/tool_wrappers/case_runner.py
+index 972114c..e277321 100644
+--- a/src/ale_bench/tool_wrappers/case_runner.py
++++ b/src/ale_bench/tool_wrappers/case_runner.py
+@@ -14,6 +14,7 @@ from pathlib import Path
+ from pydantic import BaseModel, ConfigDict, Field
+ from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
+ 
++from ale_bench.utils import container_gid, container_uid
+ import ale_bench.constants
+ from ale_bench.code_language import (
+     CodeLanguage,
+@@ -532,10 +533,10 @@ def run_compile_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=compile_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+@@ -630,10 +631,10 @@ def run_batch_run_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=run_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+@@ -734,10 +735,10 @@ def run_batch_judge_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=judge_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+@@ -871,10 +872,10 @@ def run_reactive_judge_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=judge_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+@@ -991,10 +992,10 @@ def run_vis_container(vis_command: str, vis_volumes: dict[str, dict[str, str]])
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=vis_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+diff --git a/src/ale_bench/tool_wrappers/code_runner.py b/src/ale_bench/tool_wrappers/code_runner.py
+index 7ea5970..6009a3d 100644
+--- a/src/ale_bench/tool_wrappers/code_runner.py
++++ b/src/ale_bench/tool_wrappers/code_runner.py
+@@ -9,6 +9,7 @@ from pathlib import Path
+ 
+ from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout
+ 
++from ale_bench.utils import container_gid, container_uid
+ import ale_bench.constants
+ from ale_bench.code_language import (
+     CodeLanguage,
+@@ -67,10 +68,10 @@ def run_compile_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=compile_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+@@ -156,10 +157,10 @@ def run_run_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=run_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+diff --git a/src/ale_bench/tool_wrappers/input_generation.py b/src/ale_bench/tool_wrappers/input_generation.py
+index f4d96d1..592ae96 100644
+--- a/src/ale_bench/tool_wrappers/input_generation.py
++++ b/src/ale_bench/tool_wrappers/input_generation.py
+@@ -8,6 +8,7 @@ from typing import Any
+ 
+ from pydantic import BaseModel, ConfigDict, Field
+ 
++from ale_bench.utils import container_gid, container_uid
+ import ale_bench.constants
+ from ale_bench.error import AleBenchError
+ from ale_bench.utils import docker_client
+@@ -103,10 +104,10 @@ def run_gen_container(
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=gen_volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+diff --git a/src/ale_bench/tool_wrappers/reusable_container_pool.py b/src/ale_bench/tool_wrappers/reusable_container_pool.py
+index 20eb239..55e3e39 100644
+--- a/src/ale_bench/tool_wrappers/reusable_container_pool.py
++++ b/src/ale_bench/tool_wrappers/reusable_container_pool.py
+@@ -8,6 +8,7 @@ from contextlib import suppress
+ from queue import Queue
+ from typing import TYPE_CHECKING
+ 
++from ale_bench.utils import container_gid, container_uid
+ import ale_bench.constants
+ from ale_bench.code_language import CodeLanguage, JudgeVersion, get_docker_image_name
+ from ale_bench.data import ProblemType
+@@ -126,7 +127,7 @@ class ReusableSubmissionContainerPool:
+                 demux=True,
+                 stderr=True,
+                 stdout=True,
+-                user=str(os.getuid()),
++                user=str(container_uid()),
+                 workdir=ale_bench.constants.WORK_DIR,
+             )
+             end_at = time.perf_counter()
+@@ -157,10 +158,10 @@ class ReusableSubmissionContainerPool:
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=volumes,
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+@@ -247,7 +248,7 @@ class ReusableToolContainerPool:
+                 demux=True,
+                 stderr=True,
+                 stdout=True,
+-                user=str(os.getuid()),
++                user=str(container_uid()),
+                 workdir=workdir,
+             )
+             end_at = time.perf_counter()
+@@ -272,10 +273,10 @@ class ReusableToolContainerPool:
+             cpu_period=100000,
+             cpu_quota=100000,  # 1 CPU
+             detach=True,
+-            group_add=[os.getgid()],
++            group_add=[container_gid()],
+             mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+             network_disabled=True,
+-            user=os.getuid(),
++            user=container_uid(),
+             volumes=get_reusable_tool_volumes(self.scratch_dir, self.tool_dir),
+             working_dir=ale_bench.constants.WORK_DIR,
+         )
+diff --git a/src/ale_bench/utils.py b/src/ale_bench/utils.py
+index eb2a282..6a4f0c9 100644
+--- a/src/ale_bench/utils.py
++++ b/src/ale_bench/utils.py
+@@ -1,6 +1,7 @@
+ """General utility helpers for filesystem, docker, and parsing."""
+ 
+ import base64
++import functools
+ import io
+ import logging
+ import os
+@@ -38,6 +39,23 @@ def docker_client() -> Generator[docker.DockerClient, None, None]:
+         client.close()
+ 
+ 
++@functools.cache
++def _rootless_docker() -> bool:
++    with docker_client() as client:
++        return any("rootless" in option for option in client.info().get("SecurityOptions", []))
++
++
++def container_uid() -> int:
++    """Host uid to run judge containers as; 0 under rootless Docker, where container root maps to the invoking user."""
++    return 0 if _rootless_docker() else os.getuid()
++
++
++def container_gid() -> int:
++    """Host gid counterpart of `container_uid`."""
++    return 0 if _rootless_docker() else os.getgid()
++
++
++
+ # Cache
+ def get_cache_dir() -> Path:
+     """Get the cache directory for ALE-Bench.
+-- 
+2.56.0
+
