@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 workers=$1 instance_workers=$2 runtime=${3:-configs/runtimes/coral_codex_local.yaml}
 revision=8ba16e6baf743aa8736516c45d1c52afdbd4de99  # ALE-Bench commit the rootless patch applies to
-patched=c05ff4e8c9b155237db8d6e4097a3c5d8dda36cd  # that patch as a commit; fixed identity and dates reproduce it
+patched=fc9e010759d31f3d04019fdfca26b21b9dc4f5d1  # that patch as a commit; fixed identity and dates reproduce it
 problem=ahc001 language=cpp20 judge=202301
 repeats=3  # reference score per case is the median of this many public runs; measured CV is 0.02%
 smoke_seed=1000003  # generator seed outside the 50-case public panel
@@ -15,7 +15,7 @@ repo=repos/ALE-Bench out=data/ale/$problem
 [ -d "$repo/.git" ] || git clone -q https://github.com/SakanaAI/ALE-Bench.git "$repo"
 if [ "$(git -C "$repo" rev-parse HEAD)" != "$patched" ]; then
   git -C "$repo" checkout -q "$revision"
-  GIT_COMMITTER_NAME="Javi Alfaro" GIT_COMMITTER_EMAIL=javi@rastaa.ai GIT_COMMITTER_DATE="Fri, 23 Oct 2026 14:47:39 -0600" \
+  GIT_COMMITTER_NAME="Javi Alfaro" GIT_COMMITTER_EMAIL=javi.alfaro94@gmail.com GIT_COMMITTER_DATE="Fri, 23 Oct 2026 14:47:39 -0600" \
     git -C "$repo" -c user.name=maestro -c user.email=maestro@localhost am -q "$PWD/patches/ale-bench-rootless.patch"
   [ "$(git -C "$repo" rev-parse HEAD)" = "$patched" ] || { echo "patched ALE-Bench is not $patched" >&2; exit 2; }
 fi

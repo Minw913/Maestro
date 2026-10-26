@@ -1,5 +1,5 @@
 From c05ff4e8c9b155237db8d6e4097a3c5d8dda36cd Mon Sep 17 00:00:00 2001
-From: Javi Alfaro <javi@rastaa.ai>
+From: Javi Alfaro <javi.alfaro94@gmail.com>
 Date: Fri, 23 Oct 2026 11:20:01 -0600
 Subject: [PATCH] Run judge containers as root under rootless Docker
 
