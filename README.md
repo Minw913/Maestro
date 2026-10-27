@@ -2,7 +2,7 @@
 
 MAESTRO is a local, transactional compute scheduler for bounded autonomous research agents. Coral supplies the coding-agent runtime, sessions and grader interfaces; MAESTRO owns plan-first permissions, auctions, formal-evaluation tickets and settlement.
 
-Coral is cloned as `vendor/coral` and pinned to `0123dfb939b35228cf2c1fde224cd0561e727408`. The detailed design is [maestro_plan_V1.md](maestro_plan_V1.md). Existing `old_docs/` research materials and `artifacts/` validation evidence are preserved locally and are not published to GitHub. Runtime data and credentials also remain local.
+Coral is cloned as `vendor/coral` and pinned to `0123dfb939b35228cf2c1fde224cd0561e727408`. Detailed design notes, development reports, runtime data and credentials are kept locally. The reviewed three-regime result bundle is available under `artifacts/exports/legacy-three-regimes-20261022T035531Z/`.
 
 ## Clone with the Coral backend
 
@@ -36,7 +36,7 @@ The default smoke configuration gives each of four agents five warm opportunitie
 example, `cpu_workers: 8` and `instance_workers: 2` allow four warm candidates
 to each run two instances at once. Solver and verifier share one engine-wide
 pool. Each instance remains single-core and the 620 CPU-second candidate
-reservation stays unchanged. See [concurrency settings](docs/operations.md#cpu-and-instance-concurrency).
+reservation stays unchanged. See the concurrency settings in local `docs/operations.md`.
 
 ## Individual commands
 
@@ -84,11 +84,11 @@ Coral backend: upstream CodexRuntime owns the native coding-agent loop. Each
 round has read-only preparation (four actual requests), one structured planning
 request, and up to three generation requests across continuations and repairs. Every upstream request
 is gated before dispatch. Read the current qualification and UNKNOWN status in
-[IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) before launching.
+local `IMPLEMENTATION_REPORT.md` before launching.
 
 `--probe` is the older tool-free JSON proposal probe. Its historical success with
 Codex CLI 0.156.1 does not qualify the strict native connection. The older proposal backend counts turns rather than actual requests; its
-runnable preset has been removed and it remains excluded from strict V1 comparisons. See [docs/codex_session.md](docs/codex_session.md).
+runnable preset has been removed and it remains excluded from strict V1 comparisons. See local `docs/codex_session.md`.
 
 The obsolete API-backed PACE preset has been removed; `configs/experiments/pace_remote.yaml`
 composes reusable runtime, deployment and PACE benchmark files with separate Warm Start
@@ -109,7 +109,7 @@ The Coral/MCP path requires its own live and physical qualification; historical
 app-server connection results do not qualify it. Runtime/library contract tests use injected fakes
 and are distinct from an authenticated live-model run.
 
-Read [docs/operations.md](docs/operations.md), [docs/PACE_ADAPTER.md](docs/PACE_ADAPTER.md), [docs/coral_contract.md](docs/coral_contract.md) and [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) for setup, validation evidence, issues and next actions. Richer strategic/disclosure algorithms are separate extension APIs and do not silently modify V1.
+Read local `docs/operations.md`, `docs/PACE_ADAPTER.md`, `docs/coral_contract.md` and `IMPLEMENTATION_REPORT.md` for setup, validation evidence, issues and next actions. Richer strategic/disclosure algorithms are separate extension APIs and do not silently modify V1.
 
 ## Validated local delivery
 
@@ -119,8 +119,7 @@ took **26.344 seconds**: one planning, three generation, and one restored-memory
 read request, with **five terminal usage receipts and zero unresolved requests**.
 Actual model-origin batches read memory and wrote code/private notes. Missing
 grants, public-memory writes, and a fourth generation dispatch were denied.
-See the [sanitized evidence](docs/validation/codex-live-20261020.json) and
-[implementation report](IMPLEMENTATION_REPORT.md).
+See local `docs/validation/codex-live-20261020.json` and `IMPLEMENTATION_REPORT.md`.
 
 The full no-model regression passed **581 tests, zero failures or skips, in
 171.18 seconds**, including the installed native binary against fake credentials
@@ -137,11 +136,11 @@ Older validation records remain in `artifacts/review-validation/`,
 `artifacts/review-smoke-final/` and `artifacts/strict-codex-validation/`.
 
 Configuration uses `execution_mode: mock | real` and `benchmark: pace`.
-See [execution configuration](docs/operations.md#execution-configuration) for
+See the execution configuration in local `docs/operations.md` for
 instance counts, CPU limits, CLI overrides, and incompatible historical records.
 
 
-An optional [Coral DeepSeek runtime](docs/deepseek_runtime.md) is available through
+An optional Coral DeepSeek runtime documented in local `docs/deepseek_runtime.md` is available through
 `configs/experiments/pace_remote_deepseek.yaml`. The original Codex adapter and
 default entry remain in place. The DeepSeek path requires its own installed CLI,
 API credential and live/physical qualification before real use.
@@ -150,5 +149,6 @@ API credential and live/physical qualification before real use.
 Standard outputs now live under `artifacts/runs/<run>/`; local model/controller
 logs, mutable workspaces and operational state belong under Git-ignored
 `runtime/`. Use `export-artifacts --output artifacts/exports/<snapshot>` to
-prepare standard outputs with standalone SQLite backups for GitHub publication.
-See [the output directory contract](artifacts/README.md).
+prepare standard outputs with standalone SQLite backups for local review.
+Only the reviewed three-regime result bundle is currently allowed into Git.
+See its README for scope and source identity.

@@ -1,11 +1,17 @@
 /runtime/
 /docs/
 /Overleaf/
-# Historical mixed records stay local; new standard outputs are shareable.
+# Local development notes and implementation reading material.
+/IMPLEMENTATION_REPORT.md
+/INTERFACE_CONTRACT.md
+/maestro_plan_V1.md
+# Execution and test logs stay local, including logs under shareable outputs.
+*.log
+# Keep experiment records local; publish only the reviewed three-regime results.
 /artifacts/*
-!/artifacts/README.md
-!/artifacts/runs/
 !/artifacts/exports/
+/artifacts/exports/*
+!/artifacts/exports/legacy-three-regimes-20261022T035531Z/
 data/
 __pycache__/
 *.py[cod]
