@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+'''Deterministic weighted greedy dominating set with safe reductions.'''
+import sys
+import heapq
+from bisect import bisect_left
+
+
+class _BudgetExceeded(Exception):
+    pass
+
+
+def dominates(adjacency, n, chosen):
+    covered = bytearray(n + 1)
+    for v in chosen:
+        if v < 1 or v > n:
+            return False
+        covered[v] = 1
+        for u in adjacency[v]:
+            covered[u] = 1
+    for v in range(1, n + 1):
+        if not covered[v]:
+            return False
+    return True
+
+
+def greedy_select(adjacency, n, weights=None):
+    if weights is None:
+        weights = [1] * (n + 1)
+    gain = [0] * (n + 1)
+    heap = []
+    max_deg = 0
+    for v in range(1, n + 1):
+        d = len(adjacency[v])
+        if d > max_deg:
+            max_deg = d
+        g = weights[v]
+        for u in adjacency[v]:
+            g += weights[u]
+        gain[v] = g
+        heap.append((-g, -d, v))
+    heapq.heapify(heap)
+
+    dominated = bytearray(n + 1)
+    selected = bytearray(n + 1)
+    remaining = n
+    answer = []
+
+    while remaining > 0:
+        if not heap:
+            break
+        neg_g, neg_deg, v = heapq.heappop(heap)
+        g = -neg_g
+        if selected[v]:
+            continue
+        if g != gain[v]:
+            if gain[v] > 0:
+                heapq.heappush(heap, (-gain[v], -len(adjacency[v]), v))
+            continue
+        if g <= 0:
+            continue
+
+        selected[v] = 1
+        answer.append(v)
+
+        wv = weights[v]
+        if not dominated[v]:
+            dominated[v] = 1
+            remaining -= 1
+            gain[v] -= wv
+            for w in adjacency[v]:
+                gain[w] -= wv
+
+        for u in adjacency[v]:
+            if dominated[u]:
+                continue
+            dominated[u] = 1
+            remaining -= 1
+            wu = weights[u]
+            gain[u] -= wu
+            for w in adjacency[u]:
+                gain[w] -= wu
+
+    return selected, answer, max_deg
+
+
+def prune_solution(adjacency, n, selected, answer, max_deg):
+    coverage = [0] * (n + 1)
+    for v in answer:
+        coverage[v] += 1
+        for u in adjacency[v]:
+            coverage[u] += 1
+
+    sel_asc = bytearray(selected)
+    cov_asc = coverage[:]
+    count_asc = len(answer)
+
+    for v in sorted(answer):
+        if not sel_asc[v] or cov_asc[v] < 2:
+            continue
+        removable = True
+        for u in adjacency[v]:
+            if cov_asc[u] < 2:
+                removable = False
+                break
+        if removable:
+            sel_asc[v] = 0
+            cov_asc[v] -= 1
+            for u in adjacency[v]:
+                cov_asc[u] -= 1
+            count_asc -= 1
+
+    sel_pri = bytearray(selected)
+    cov_pri = coverage[:]
+    count_pri = len(answer)
+
+    max_cov = 0
+    for v in range(1, n + 1):
+        if cov_pri[v] > max_cov:
+            max_cov = cov_pri[v]
+
+    base = max(n, max_deg) + 1
+    maxc = max_cov + 1
+
+    def compute_key(v):
+        if not sel_pri[v] or cov_pri[v] < 2:
+            return 0
+        mn = maxc
+        for u in adjacency[v]:
+            cu = cov_pri[u]
+            if cu < 2:
+                return 0
+            if cu < mn:
+                mn = cu
+        if mn == maxc:
+            mn = cov_pri[v]
+        return (((maxc - mn) * base + len(adjacency[v])) * base + v)
+
+    pheap = []
+    for v in answer:
+        k = compute_key(v)
+        if k:
+            pheap.append(k)
+    heapq.heapify(pheap)
+
+    while pheap:
+        k = heapq.heappop(pheap)
+        v = k % base
+        ck = compute_key(v)
+        if ck == 0:
+            continue
+        if ck != k:
+            heapq.heappush(pheap, ck)
+            continue
+        sel_pri[v] = 0
+        cov_pri[v] -= 1
+        for u in adjacency[v]:
+            cov_pri[u] -= 1
+        count_pri -= 1
+
+    if count_pri < count_asc:
+        return sel_pri
+    return sel_asc
+
+
+def degree_aware_reduce(adjacency, n, max_ops=4000000):
+    spent = [0]
+
+    def tick():
+        spent[0] += 1
+        if spent[0] > max_ops:
+            raise _BudgetExceeded
+
+    try:
+        forced = bytearray(n + 1)
+        blocked = bytearray(n + 1)
+        covered = bytearray(n + 1)
+        processed = bytearray(n + 1)
+        size = [0] * (n + 1)
+        cand_count = [0] * (n + 1)
+        heap = []
+        for v in range(1, n + 1):
+            s = len(adjacency[v]) + 1
+            size[v] = s
+            cand_count[v] = s
+            heap.append((-s, v))
+        heapq.heapify(heap)
+
+        def force(u):
+            tick()
+            if forced[u]:
+                return
+            forced[u] = 1
+            if not covered[u]:
+                covered[u] = 1
+                size[u] -= 1
+                if not processed[u]:
+                    heapq.heappush(heap, (-size[u], u))
+                for x in adjacency[u]:
+                    size[x] -= 1
+                    if not processed[x]:
+                        heapq.heappush(heap, (-size[x], x))
+            for w in adjacency[u]:
+                if covered[w]:
+                    continue
+                covered[w] = 1
+                size[w] -= 1
+                if not processed[w]:
+                    heapq.heappush(heap, (-size[w], w))
+                for x in adjacency[w]:
+                    size[x] -= 1
+                    if not processed[x]:
+                        heapq.heappush(heap, (-size[x], x))
+
+        def unique_candidate(w):
+            if not blocked[w] and not forced[w]:
+                return w
+            for u in adjacency[w]:
+                if not blocked[u] and not forced[u]:
+                    return u
+            return 0
+
+        def block_vertex(v):
+            tick()
+            blocked[v] = 1
+            if not covered[v]:
+                cand_count[v] -= 1
+                if cand_count[v] == 1:
+                    u = unique_candidate(v)
+                    if u == 0:
+                        return False
+                    force(u)
+                elif cand_count[v] == 0:
+                    return False
+            for w in adjacency[v]:
+                if covered[w]:
+                    continue
+                cand_count[w] -= 1
+                if cand_count[w] == 1:
+                    u = unique_candidate(w)
+                    if u == 0:
+                        return False
+                    force(u)
+                elif cand_count[w] == 0:
+                    return False
+            return True
+
+        def ux_subset_y(ux, y):
+            tick()
+            ny = adjacency[y]
+            for u in ux:
+                if u == y:
+                    continue
+                j = bisect_left(ny, u)
+                if j >= len(ny) or ny[j] != u:
+                    return False
+            return True
+
+        while heap:
+            tick()
+            neg_s, v = heapq.heappop(heap)
+            if processed[v] or forced[v] or blocked[v]:
+                continue
+            s = -neg_s
+            if s != size[v]:
+                heapq.heappush(heap, (-size[v], v))
+                continue
+            processed[v] = 1
+
+            if not covered[v]:
+                if cand_count[v] == 0:
+                    return None
+                if cand_count[v] == 1:
+                    u = unique_candidate(v)
+                    if u == 0:
+                        return None
+                    force(u)
+                    if forced[v]:
+                        continue
+
+            ux = []
+            if not covered[v]:
+                ux.append(v)
+            for u in adjacency[v]:
+                if not covered[u]:
+                    ux.append(u)
+
+            if not ux:
+                blocked[v] = 1
+                continue
+
+            is_dom = False
+            for y in adjacency[v]:
+                if not processed[y] or blocked[y]:
+                    continue
+                if ux_subset_y(ux, y):
+                    is_dom = True
+                    break
+
+            if is_dom:
+                if not block_vertex(v):
+                    return None
+                continue
+
+        return forced, blocked, covered
+    except _BudgetExceeded:
+        return None
+
+
+def greedy_allowed(adjacency, n, allowed, target, weights=None):
+    if weights is None:
+        weights = [1] * (n + 1)
+    gain = [0] * (n + 1)
+    heap = []
+    remaining = 0
+    for v in range(1, n + 1):
+        if target[v]:
+            remaining += 1
+        if not allowed[v]:
+            continue
+        g = weights[v] if target[v] else 0
+        for u in adjacency[v]:
+            if target[u]:
+                g += weights[u]
+        gain[v] = g
+        if g > 0:
+            heap.append((-g, -len(adjacency[v]), v))
+    heapq.heapify(heap)
+
+    selected = bytearray(n + 1)
+    dominated = bytearray(n + 1)
+    answer = []
+
+    while remaining > 0:
+        if not heap:
+            return None
+        neg_g, neg_deg, v = heapq.heappop(heap)
+        g = -neg_g
+        if selected[v] or not allowed[v]:
+            continue
+        if g != gain[v]:
+            if gain[v] > 0:
+                heapq.heappush(heap, (-gain[v], -len(adjacency[v]), v))
+            continue
+        if g <= 0:
+            continue
+
+        selected[v] = 1
+        answer.append(v)
+
+        if target[v] and not dominated[v]:
+            dominated[v] = 1
+            remaining -= 1
+            wv = weights[v]
+            if allowed[v]:
+                gain[v] -= wv
+            for w in adjacency[v]:
+                if allowed[w]:
+                    gain[w] -= wv
+
+        for u in adjacency[v]:
+            if not target[u] or dominated[u]:
+                continue
+            dominated[u] = 1
+            remaining -= 1
+            wu = weights[u]
+            if allowed[u]:
+                gain[u] -= wu
+            for w in adjacency[u]:
+                if allowed[w]:
+                    gain[w] -= wu
+
+    return selected, answer
+
+
+def main():
+    stream = sys.stdin.buffer
+    n = 0
+    for line in stream:
+        parts = line.split()
+        if not parts:
+            continue
+        first = parts[0]
+        if first.startswith(b'c') or first.startswith(b'#'):
+            continue
+        if first == b'p':
+            if len(parts) >= 3 and parts[1] in (b'edge', b'col', b'ds'):
+                n = int(parts[2])
+            elif len(parts) >= 2:
+                n = int(parts[1])
+            break
+
+    if n <= 0:
+        sys.stdout.write('0' + chr(10))
+        return
+
+    adjacency = [[] for _ in range(n + 1)]
+    for line in stream:
+        parts = line.split()
+        if not parts:
+            continue
+        first = parts[0]
+        if first.startswith(b'c') or first.startswith(b'#'):
+            continue
+        if first in (b'e', b'a'):
+            if len(parts) < 3:
+                continue
+            try:
+                u = int(parts[1])
+                v = int(parts[2])
+            except ValueError:
+                continue
+        else:
+            if len(parts) < 2:
+                continue
+            try:
+                u = int(parts[0])
+                v = int(parts[1])
+            except ValueError:
+                continue
+        if u == v or u < 1 or v < 1 or u > n or v > n:
+            continue
+        adjacency[u].append(v)
+        adjacency[v].append(u)
+
+    edge_count = 0
+    max_deg = 0
+    for v in range(1, n + 1):
+        lst = adjacency[v]
+        if len(lst) > 1:
+            lst.sort()
+            w = 1
+            for i in range(1, len(lst)):
+                if lst[i] != lst[w - 1]:
+                    lst[w] = lst[i]
+                    w += 1
+            del lst[w:]
+        d = len(lst)
+        edge_count += d
+        if d > max_deg:
+            max_deg = d
+    edge_count //= 2
+
+    weights_inv = [0] * (n + 1)
+    weights_freq = [0] * (n + 1)
+    for v in range(1, n + 1):
+        d = len(adjacency[v])
+        w = 1000000 // (d + 1)
+        if w < 1:
+            w = 1
+        weights_inv[v] = w
+        weights_freq[v] = d + 1
+
+    sel, ans, _ = greedy_select(adjacency, n)
+    sel = prune_solution(adjacency, n, sel, ans, max_deg)
+    best = [v for v in range(1, n + 1) if sel[v]]
+    baseline = best
+
+    run_extra = edge_count <= 5000000 and n <= 500000
+
+    if run_extra:
+        for weights in (weights_inv, weights_freq):
+            sel, ans, _ = greedy_select(adjacency, n, weights)
+            sel = prune_solution(adjacency, n, sel, ans, max_deg)
+            cand = [v for v in range(1, n + 1) if sel[v]]
+            if len(cand) < len(best) and dominates(adjacency, n, cand):
+                best = cand
+
+    state = degree_aware_reduce(adjacency, n)
+    if state is not None:
+        forced, blocked, covered = state
+        allowed = bytearray(n + 1)
+        target = bytearray(n + 1)
+        for v in range(1, n + 1):
+            if not forced[v] and not blocked[v]:
+                allowed[v] = 1
+            if not covered[v]:
+                target[v] = 1
+
+        seeds = [None]
+        if run_extra:
+            seeds.append(weights_inv)
+            seeds.append(weights_freq)
+
+        for weights in seeds:
+            seed = greedy_allowed(adjacency, n, allowed, target, weights)
+            if seed is None:
+                continue
+            selected, ans = seed
+            for v in range(1, n + 1):
+                if forced[v]:
+                    selected[v] = 1
+            ans = [v for v in range(1, n + 1) if selected[v]]
+            if not ans:
+                continue
+            final_sel = prune_solution(adjacency, n, selected, ans, max_deg)
+            cand = [v for v in range(1, n + 1) if final_sel[v]]
+            if len(cand) < len(best) and dominates(adjacency, n, cand):
+                best = cand
+
+    if not dominates(adjacency, n, best):
+        if dominates(adjacency, n, baseline):
+            best = baseline
+        else:
+            best = list(range(1, n + 1))
+
+    nl = chr(10)
+    out = [str(len(best))]
+    out.extend(str(v) for v in best)
+    sys.stdout.write(nl.join(out) + nl)
+
+
+if __name__ == '__main__':
+    main()

@@ -7,11 +7,11 @@
 /maestro_plan_V1.md
 # Execution and test logs stay local, including logs under shareable outputs.
 *.log
-# Keep experiment records local; publish only the reviewed three-regime results.
+# Keep experiment records local; publish only the reviewed six-run Warm comparison.
 /artifacts/*
 !/artifacts/exports/
 /artifacts/exports/*
-!/artifacts/exports/legacy-three-regimes-20261022T035531Z/
+!/artifacts/exports/warm-start-comparison-six-runs-20261029/
 data/
 __pycache__/
 *.py[cod]

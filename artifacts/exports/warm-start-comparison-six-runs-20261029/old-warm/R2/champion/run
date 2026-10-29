@@ -1,0 +1,1030 @@
+#!/usr/bin/env python3
+'''Deterministic hybrid minimum dominating set heuristic with incremental local-search bookkeeping.'''
+import sys
+import heapq
+import os
+import time
+from array import array
+
+NL = chr(10)
+_START = time.monotonic()
+
+
+def _read_time_limit():
+    for _name in ('MDS_TIME_LIMIT', 'MDS_TIME_BUDGET', 'SOLVER_TIME_LIMIT', 'TIME_LIMIT'):
+        raw = os.environ.get(_name)
+        if not raw:
+            continue
+        s = raw.strip().lower()
+        if s.endswith('s'):
+            s = s[:-1]
+        try:
+            val = float(s)
+        except Exception:
+            continue
+        if val > 0.0:
+            return val
+    return 9.0
+
+
+class _BudgetManager:
+    __slots__ = ('start', 'limit', 'output_reserve', 'deadline')
+
+    def __init__(self, limit):
+        try:
+            limit = float(limit)
+        except Exception:
+            limit = 9.0
+        if limit <= 0.0 or limit != limit:
+            limit = 9.0
+        self.start = _START
+        self.limit = limit
+        self.output_reserve = min(1.0, max(0.30, limit * 0.06))
+        self.deadline = self.start + max(0.10, limit - self.output_reserve - 0.20)
+
+    def remaining(self):
+        return self.deadline - time.monotonic()
+
+    def expired(self, need=0.0):
+        return time.monotonic() + need >= self.deadline
+
+    def phase_deadline(self, share):
+        now = time.monotonic()
+        rem = self.deadline - now
+        if rem <= 0.0:
+            return now
+        if share < 0.0:
+            share = 0.0
+        elif share > 1.0:
+            share = 1.0
+        return now + rem * share
+
+
+_TIME_LIMIT = _read_time_limit()
+_BUDGET = _BudgetManager(_TIME_LIMIT)
+_SEARCH_DEADLINE = _BUDGET.deadline
+
+
+def core_solve(n, deg, offsets, neighbors):
+    budget = _BUDGET
+    deadline = budget.deadline
+
+    hash_offset = array('I', [0]) * (n + 2)
+    hash_mask = array('I', [0]) * (n + 1)
+    slot_count = 0
+    for v in range(1, n + 1):
+        d = deg[v]
+        if d == 0:
+            continue
+        size = 1
+        while size < d:
+            size <<= 1
+        size <<= 1
+        hash_offset[v] = slot_count
+        hash_mask[v] = size - 1
+        slot_count += size
+    hash_offset[n + 1] = slot_count
+    adj_table = array('I', [0]) * slot_count
+    for v in range(1, n + 1):
+        if deg[v] == 0:
+            continue
+        start = hash_offset[v]
+        mask = hash_mask[v]
+        for j in range(offsets[v], offsets[v + 1]):
+            y = neighbors[j]
+            h = y & mask
+            while True:
+                k = adj_table[start + h]
+                if k == 0:
+                    adj_table[start + h] = y
+                    break
+                if k == y:
+                    break
+                h = (h + 1) & mask
+
+    def has_edge(x, y):
+        if x == y or deg[x] == 0:
+            return False
+        start = hash_offset[x]
+        mask = hash_mask[x]
+        h = y & mask
+        while True:
+            k = adj_table[start + h]
+            if k == y:
+                return True
+            if k == 0:
+                return False
+            h = (h + 1) & mask
+
+    def make_state(sol):
+        cover = array('I', [0]) * (n + 1)
+        selected = bytearray(n + 1)
+        for v in sol:
+            selected[v] = 1
+        for v in sol:
+            cover[v] += 1
+            for j in range(offsets[v], offsets[v + 1]):
+                cover[neighbors[j]] += 1
+        return cover, selected
+
+    def remove_from_state(v, cover, selected):
+        selected[v] = 0
+        cover[v] -= 1
+        for j in range(offsets[v], offsets[v + 1]):
+            cover[neighbors[j]] -= 1
+
+    def add_to_state(v, cover, selected):
+        selected[v] = 1
+        cover[v] += 1
+        for j in range(offsets[v], offsets[v + 1]):
+            cover[neighbors[j]] += 1
+
+    def can_remove(v, cover):
+        if cover[v] < 2:
+            return False
+        for j in range(offsets[v], offsets[v + 1]):
+            if cover[neighbors[j]] < 2:
+                return False
+        return True
+
+    def sort_key(v):
+        return (deg[v], v)
+
+    def incremental_reduce(sol, cover, selected, work, op_limit, order, deadline=None, removed_log=None):
+        kept = []
+        i = 0
+        L = len(order)
+        while i < L:
+            v = order[i]
+            if work > op_limit:
+                for k in range(i, L):
+                    x = order[k]
+                    if selected[x]:
+                        kept.append(x)
+                return kept, work
+            if deadline is not None and (i & 1023) == 0 and time.monotonic() > deadline:
+                for k in range(i, L):
+                    x = order[k]
+                    if selected[x]:
+                        kept.append(x)
+                return kept, work
+            work += 1 + deg[v]
+            if selected[v] and can_remove(v, cover):
+                remove_from_state(v, cover, selected)
+                if removed_log is not None:
+                    removed_log.append(v)
+            else:
+                kept.append(v)
+            i += 1
+        return kept, work
+
+    def build_and_reduce(sol):
+        sol = sorted(set(sol), key=sort_key)
+        cover, selected = make_state(sol)
+        sol, _ = incremental_reduce(sol, cover, selected, 0, 1 << 60, sol)
+        return sol
+
+    def insert_sorted(lst, w):
+        kw = (deg[w], w)
+        lo = 0
+        hi = len(lst)
+        while lo < hi:
+            mid = (lo + hi) >> 1
+            x = lst[mid]
+            if (deg[x], x) < kw:
+                lo = mid + 1
+            else:
+                hi = mid
+        lst.insert(lo, w)
+
+    forced = bytearray(n + 1)
+    for v in range(1, n + 1):
+        d = deg[v]
+        if d == 0:
+            forced[v] = 1
+        elif d == 1:
+            u = neighbors[offsets[v]]
+            if u == v:
+                forced[v] = 1
+            else:
+                forced[u] = 1
+
+    forbidden = bytearray(n + 1)
+    for u in range(1, n + 1):
+        du = deg[u]
+        if du == 0 or du > 4 or forced[u]:
+            continue
+        su = offsets[u]
+        eu = offsets[u + 1]
+        for j in range(su, eu):
+            v = neighbors[j]
+            if v == u:
+                continue
+            dv = deg[v]
+            if dv < du:
+                continue
+            if dv == du and v > u:
+                continue
+            if du == 1:
+                forbidden[u] = 1
+                break
+            ok = True
+            for k in range(su, eu):
+                x = neighbors[k]
+                if x == v:
+                    continue
+                if not has_edge(v, x):
+                    ok = False
+                    break
+            if ok:
+                forbidden[u] = 1
+                break
+
+    base_selected = bytearray(n + 1)
+    for v in range(1, n + 1):
+        if forced[v]:
+            base_selected[v] = 1
+
+    base_dominated = bytearray(n + 1)
+    base_remaining = n
+    for v in range(1, n + 1):
+        if forced[v]:
+            if not base_dominated[v]:
+                base_dominated[v] = 1
+                base_remaining -= 1
+            for j in range(offsets[v], offsets[v + 1]):
+                u = neighbors[j]
+                if not base_dominated[u]:
+                    base_dominated[u] = 1
+                    base_remaining -= 1
+
+    base_n = n + 1
+
+    def construct(use_pre, mode):
+        if use_pre:
+            selected = bytearray(base_selected)
+            dominated = bytearray(base_dominated)
+            remaining = base_remaining
+        else:
+            selected = bytearray(n + 1)
+            dominated = bytearray(n + 1)
+            remaining = n
+
+        gain = array('i', [0]) * (n + 1)
+        for v in range(1, n + 1):
+            if selected[v]:
+                continue
+            g = 0
+            if not dominated[v]:
+                g += 1
+            for j in range(offsets[v], offsets[v + 1]):
+                if not dominated[neighbors[j]]:
+                    g += 1
+            gain[v] = g
+
+        if mode == 0:
+            def key_of(v):
+                return v * base_n + v
+        elif mode == 1:
+            def key_of(v):
+                return (n + 1 - v) * base_n + v
+        else:
+            def key_of(v):
+                pr = (v * 11400714819323198485 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+                return pr * base_n + v
+
+        buckets = {}
+        maxg = 0
+        heappush = heapq.heappush
+        heappop = heapq.heappop
+
+        for v in range(1, n + 1):
+            if selected[v]:
+                continue
+            if use_pre and forbidden[v]:
+                continue
+            g = gain[v]
+            if g > 0:
+                b = buckets.get(g)
+                if b is None:
+                    buckets[g] = [key_of(v)]
+                else:
+                    heappush(b, key_of(v))
+                if g > maxg:
+                    maxg = g
+
+        answer = []
+        if use_pre:
+            for v in range(1, n + 1):
+                if selected[v]:
+                    answer.append(v)
+
+        def choose(v):
+            nonlocal remaining
+            answer.append(v)
+            selected[v] = 1
+            if not dominated[v]:
+                dominated[v] = 1
+                remaining -= 1
+                gain[v] -= 1
+                for j in range(offsets[v], offsets[v + 1]):
+                    gain[neighbors[j]] -= 1
+            sv = offsets[v]
+            ev = offsets[v + 1]
+            for j in range(sv, ev):
+                u = neighbors[j]
+                if not dominated[u]:
+                    dominated[u] = 1
+                    remaining -= 1
+                    gain[u] -= 1
+                    for k in range(offsets[u], offsets[u + 1]):
+                        gain[neighbors[k]] -= 1
+
+        while remaining > 0:
+            g = maxg
+            chosen = 0
+            while g >= 1:
+                b = buckets.get(g)
+                if not b:
+                    g -= 1
+                    continue
+                key = heappop(b)
+                v = key % base_n
+                if selected[v]:
+                    continue
+                if gain[v] != g:
+                    ng = gain[v]
+                    if ng > 0:
+                        nb = buckets.get(ng)
+                        if nb is None:
+                            buckets[ng] = [key_of(v)]
+                        else:
+                            heappush(nb, key_of(v))
+                    continue
+                chosen = v
+                break
+            if chosen == 0:
+                break
+            maxg = g
+            choose(chosen)
+
+        if remaining > 0:
+            scan = 1
+            while remaining > 0:
+                while scan <= n and dominated[scan]:
+                    scan += 1
+                if scan > n:
+                    break
+                u = scan
+                best = u
+                bg = gain[u]
+                for j in range(offsets[u], offsets[u + 1]):
+                    x = neighbors[j]
+                    if selected[x]:
+                        continue
+                    gx = gain[x]
+                    if gx > bg or (gx == bg and x < best):
+                        best = x
+                        bg = gx
+                choose(best)
+
+        return answer
+
+    def better(a, b):
+        if len(a) != len(b):
+            return len(a) < len(b)
+        return sorted(a) < sorted(b)
+
+    def improve(sol, op_limit, deadline):
+        sol = sorted(sol, key=sort_key)
+        cover, selected = make_state(sol)
+        if len(sol) <= 1:
+            return sol, cover, selected
+        if time.monotonic() > deadline:
+            return sol, cover, selected
+
+        seen = array('I', [0]) * (n + 1)
+        token = 0
+        work = 0
+
+        def swap_valid(v, u, w):
+            nonlocal token
+            token += 1
+            t = token
+            val = cover[v] - 1
+            if u == v or has_edge(u, v):
+                val -= 1
+            if v == w or has_edge(w, v):
+                val += 1
+            if val < 1:
+                return False
+            seen[v] = t
+            for j in range(offsets[v], offsets[v + 1]):
+                x = neighbors[j]
+                if seen[x] == t:
+                    continue
+                seen[x] = t
+                val = cover[x] - 1
+                if x == u or has_edge(x, u):
+                    val -= 1
+                if x == w or has_edge(x, w):
+                    val += 1
+                if val < 1:
+                    return False
+            if seen[u] != t:
+                seen[u] = t
+                val = cover[u] - 1
+                if u == v or has_edge(u, v):
+                    val -= 1
+                if u == w or has_edge(u, w):
+                    val += 1
+                if val < 1:
+                    return False
+            for j in range(offsets[u], offsets[u + 1]):
+                x = neighbors[j]
+                if seen[x] == t:
+                    continue
+                seen[x] = t
+                val = cover[x] - 1
+                if x == v or has_edge(x, v):
+                    val -= 1
+                if x == w or has_edge(x, w):
+                    val += 1
+                if val < 1:
+                    return False
+            return True
+
+        while work < op_limit:
+            if time.monotonic() > deadline:
+                break
+            found_direct = 0
+            found = None
+            cand = {}
+            timed_out = False
+
+            for v in sol:
+                if work > op_limit:
+                    break
+                if (work & 0x3FF) == 0 and time.monotonic() > deadline:
+                    timed_out = True
+                    break
+                if not selected[v]:
+                    continue
+                crit = []
+                if cover[v] == 1:
+                    crit.append(v)
+                sv = offsets[v]
+                ev = offsets[v + 1]
+                for j in range(sv, ev):
+                    x = neighbors[j]
+                    if cover[x] == 1:
+                        crit.append(x)
+                work += 1 + (ev - sv)
+                if work > op_limit:
+                    break
+                if not crit:
+                    found_direct = v
+                    break
+                if len(crit) > 8:
+                    continue
+
+                x0 = crit[0]
+                d0 = deg[x0]
+                for x in crit[1:]:
+                    if deg[x] < d0:
+                        x0 = x
+                        d0 = deg[x]
+
+                candidates = [x0]
+                for j in range(offsets[x0], offsets[x0 + 1]):
+                    candidates.append(neighbors[j])
+                work += 1 + len(candidates)
+
+                bad = False
+                for x in crit:
+                    if x == x0:
+                        continue
+                    new_c = []
+                    for y in candidates:
+                        if y == x or has_edge(x, y):
+                            new_c.append(y)
+                    candidates = new_c
+                    work += len(candidates) + 1
+                    if not candidates:
+                        bad = True
+                        break
+                    if work > op_limit:
+                        bad = True
+                        break
+                if bad:
+                    if work > op_limit:
+                        break
+                    continue
+
+                stop = False
+                for w in candidates:
+                    if selected[w] or w == v:
+                        continue
+                    lst = cand.get(w)
+                    if lst is None:
+                        cand[w] = [v]
+                        continue
+                    for u in lst:
+                        work += 3 + deg[v] + deg[u]
+                        if work > op_limit:
+                            stop = True
+                            break
+                        if swap_valid(v, u, w):
+                            found = (v, u, w)
+                            stop = True
+                            break
+                    if stop:
+                        break
+                    if len(lst) < 4:
+                        lst.append(v)
+                if found:
+                    break
+                if work > op_limit:
+                    break
+
+            if timed_out:
+                break
+            if found_direct:
+                remove_from_state(found_direct, cover, selected)
+                sol = [x for x in sol if x != found_direct]
+                sol, work = incremental_reduce(sol, cover, selected, work, op_limit, sol, deadline)
+                continue
+
+            if not found:
+                break
+
+            v, u, w = found
+            remove_from_state(v, cover, selected)
+            remove_from_state(u, cover, selected)
+            add_to_state(w, cover, selected)
+            new_sol = [x for x in sol if x != v and x != u]
+            insert_sorted(new_sol, w)
+            sol = new_sol
+            sol, work = incremental_reduce(sol, cover, selected, work, op_limit, sol, deadline)
+
+        return sol, cover, selected
+
+    def ruin_pass(sol, cover, selected, op_limit, deadline):
+        sol = sorted(sol, key=sort_key)
+        if len(sol) <= 1:
+            return sol, cover, selected
+        work = 0
+        order = sol
+        timed_out = False
+        for v in order:
+            if work > op_limit or len(sol) <= 1:
+                break
+            if (work & 0x3FF) == 0 and time.monotonic() > deadline:
+                break
+            if not selected[v]:
+                continue
+            uncovered = []
+            if cover[v] == 1:
+                uncovered.append(v)
+            for j in range(offsets[v], offsets[v + 1]):
+                u = neighbors[j]
+                if u != v and cover[u] == 1 and u not in uncovered:
+                    uncovered.append(u)
+            work += 1 + deg[v]
+
+            if not uncovered:
+                remove_from_state(v, cover, selected)
+                kw = (deg[v], v)
+                lo = 0
+                hi = len(sol)
+                while lo < hi:
+                    mid = (lo + hi) >> 1
+                    x = sol[mid]
+                    if (deg[x], x) < kw:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+                if lo < len(sol) and sol[lo] == v:
+                    del sol[lo]
+                sol, work = incremental_reduce(sol, cover, selected, work, op_limit, sol, deadline)
+                return sol, cover, selected
+
+            added = []
+            added_set = set()
+            unc = uncovered[:]
+            ok = True
+            while unc and len(added) < 3:
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    break
+                counts = {}
+                for u in unc:
+                    if not selected[u] and u not in added_set:
+                        counts[u] = counts.get(u, 0) + 1
+                    su = offsets[u]
+                    eu = offsets[u + 1]
+                    for j in range(su, eu):
+                        x = neighbors[j]
+                        if not selected[x] and x not in added_set:
+                            counts[x] = counts.get(x, 0) + 1
+                    work += 1 + (eu - su)
+                if not counts:
+                    ok = False
+                    break
+                bestx = -1
+                bestc = -1
+                for x, c in counts.items():
+                    if c > bestc or (c == bestc and (bestx < 0 or x < bestx)):
+                        bestx = x
+                        bestc = c
+                if bestx <= 0:
+                    ok = False
+                    break
+                added.append(bestx)
+                added_set.add(bestx)
+                new_unc = []
+                for u in unc:
+                    if u == bestx or has_edge(bestx, u):
+                        continue
+                    new_unc.append(u)
+                unc = new_unc
+                work += len(unc) + 1
+                if work > op_limit:
+                    break
+            if timed_out:
+                break
+            if not ok or unc:
+                continue
+            if work > op_limit:
+                break
+
+            orig_len = len(sol)
+            added_sorted = sorted(added, key=sort_key)
+            added_keys = [(deg[w], w) for w in added_sorted]
+
+            remove_from_state(v, cover, selected)
+            for w in added:
+                add_to_state(w, cover, selected)
+
+            trial = []
+            ai = 0
+            A = len(added_sorted)
+            for x in sol:
+                if x == v:
+                    continue
+                kx = (deg[x], x)
+                while ai < A and added_keys[ai] < kx:
+                    trial.append(added_sorted[ai])
+                    ai += 1
+                trial.append(x)
+            while ai < A:
+                trial.append(added_sorted[ai])
+                ai += 1
+
+            removed_log = []
+            reduced, _ = incremental_reduce(trial, cover, selected, 0, 1 << 60, trial, deadline, removed_log)
+            work += len(trial) * 3 + 1
+
+            if len(reduced) < orig_len:
+                return reduced, cover, selected
+
+            for w in added:
+                if selected[w]:
+                    remove_from_state(w, cover, selected)
+            if not selected[v]:
+                add_to_state(v, cover, selected)
+            for r in removed_log:
+                if r != v and r not in added_set and not selected[r]:
+                    add_to_state(r, cover, selected)
+
+        return sol, cover, selected
+
+    best = []
+    size_est = n + len(neighbors)
+    construct_start = time.monotonic()
+    construct_deadline = budget.phase_deadline(0.34)
+    construct_alloc = construct_deadline - construct_start
+    if construct_alloc < 0.0:
+        construct_alloc = 0.0
+    construct_attempts = 0
+    construct_improved_after_first = False
+
+    def note_construct(cand):
+        nonlocal best, construct_attempts, construct_improved_after_first
+        construct_attempts += 1
+        if not best:
+            best = cand
+        elif better(cand, best):
+            best = cand
+            construct_improved_after_first = True
+
+    if time.monotonic() < construct_deadline:
+        sol1 = construct(True, 0)
+        sol1 = build_and_reduce(sol1)
+        note_construct(sol1)
+
+    if time.monotonic() < construct_deadline:
+        sol2 = construct(False, 0)
+        sol2 = build_and_reduce(sol2)
+        note_construct(sol2)
+
+    if time.monotonic() < construct_deadline and size_est <= 1500000:
+        sol3 = construct(False, 1)
+        sol3 = build_and_reduce(sol3)
+        note_construct(sol3)
+
+    if time.monotonic() < construct_deadline and size_est <= 300000:
+        sol4 = construct(True, 1)
+        sol4 = build_and_reduce(sol4)
+        note_construct(sol4)
+
+    construct_stalled = ((construct_attempts == 0) or
+                         (construct_attempts >= 2 and not construct_improved_after_first))
+
+    base = 12 * size_est + 80000
+    if size_est <= 5000:
+        cap = 1500000
+    elif size_est <= 50000:
+        cap = 2500000
+    elif size_est <= 250000:
+        cap = 3500000
+    else:
+        cap = 4000000
+    op_limit = base if base < cap else cap
+    if op_limit < 250000:
+        op_limit = 250000
+
+    remaining = budget.remaining()
+    if remaining < 0.30:
+        op_limit = min(op_limit, 250000)
+    elif remaining < 1.0:
+        lim = op_limit // 3
+        if lim < 250000:
+            lim = 250000
+        op_limit = min(op_limit, lim)
+    elif remaining < 2.5:
+        lim = (op_limit * 2) // 3
+        if lim < 250000:
+            lim = 250000
+        op_limit = min(op_limit, lim)
+
+    reclaim_ops = 0
+    if (construct_stalled and best and size_est > 5000 and
+            construct_alloc > 0.0 and budget.remaining() > 0.05):
+        reclaim_ops = op_limit // 10
+        if reclaim_ops > 500000:
+            reclaim_ops = 500000
+        if reclaim_ops < 1:
+            reclaim_ops = 1
+
+    cover = array('I', [0]) * (n + 1)
+    selected = bytearray(n + 1)
+
+    if best:
+        if budget.remaining() > 0.12:
+            first_share = 0.60 if budget.remaining() > 0.75 else 1.0
+            improve_deadline = budget.phase_deadline(first_share)
+            improved, cover, selected = improve(best, op_limit, improve_deadline)
+            if better(improved, best):
+                best = improved
+        else:
+            cover, selected = make_state(best)
+    else:
+        cover, selected = make_state(best)
+
+    improve_reserve = op_limit // 2
+    if improve_reserve < 1:
+        improve_reserve = 1
+    if reclaim_ops:
+        improve_reserve += reclaim_ops
+        if improve_reserve > op_limit:
+            improve_reserve = op_limit
+    ruin_limit = op_limit // 2
+    max_ruin = op_limit - improve_reserve
+    if max_ruin < 0:
+        max_ruin = 0
+    if ruin_limit > max_ruin:
+        ruin_limit = max_ruin
+
+    if budget.remaining() > 0.10 and ruin_limit > 0:
+        ruin_deadline = budget.phase_deadline(0.75)
+        ruin_sol, ruin_cover, ruin_selected = ruin_pass(best, cover, selected, ruin_limit, ruin_deadline)
+        if len(ruin_sol) < len(best):
+            best = ruin_sol
+            cover = ruin_cover
+            selected = ruin_selected
+
+    if budget.remaining() > 0.05:
+        best, cover, selected = improve(best, improve_reserve, deadline)
+
+    def final_repair(sol):
+        selected2 = bytearray(n + 1)
+        for v in sol:
+            if 1 <= v <= n:
+                selected2[v] = 1
+        dominated = bytearray(n + 1)
+        for v in sol:
+            dominated[v] = 1
+            for j in range(offsets[v], offsets[v + 1]):
+                dominated[neighbors[j]] = 1
+        added = []
+        scan = 1
+        while scan <= n:
+            while scan <= n and dominated[scan]:
+                scan += 1
+            if scan > n:
+                break
+            u = scan
+            candidates = [u]
+            for j in range(offsets[u], offsets[u + 1]):
+                candidates.append(neighbors[j])
+            bestx = -1
+            bestg = -1
+            for x in candidates:
+                if selected2[x]:
+                    continue
+                g = 0
+                if not dominated[x]:
+                    g += 1
+                for j in range(offsets[x], offsets[x + 1]):
+                    if not dominated[neighbors[j]]:
+                        g += 1
+                if g > bestg or (g == bestg and (bestx < 0 or x < bestx)):
+                    bestx = x
+                    bestg = g
+            if bestx < 0:
+                bestx = u
+            selected2[bestx] = 1
+            added.append(bestx)
+            dominated[bestx] = 1
+            for j in range(offsets[bestx], offsets[bestx + 1]):
+                dominated[neighbors[j]] = 1
+        if added:
+            sol = sorted(set(sol + added))
+        else:
+            sol = sorted(set(sol))
+        return sol
+
+    def ensure_cover(sol):
+        valid_sol = [v for v in sol if 1 <= v <= n]
+        selected2 = bytearray(n + 1)
+        for v in valid_sol:
+            selected2[v] = 1
+        dominated = bytearray(n + 1)
+        for v in range(1, n + 1):
+            if selected2[v]:
+                dominated[v] = 1
+                for j in range(offsets[v], offsets[v + 1]):
+                    dominated[neighbors[j]] = 1
+        added = []
+        for v in range(1, n + 1):
+            if not dominated[v]:
+                selected2[v] = 1
+                added.append(v)
+                dominated[v] = 1
+                for j in range(offsets[v], offsets[v + 1]):
+                    dominated[neighbors[j]] = 1
+        if added:
+            return sorted(set(valid_sol + added))
+        return sorted(set(valid_sol))
+
+    best = [v for v in best if 1 <= v <= n]
+    best = final_repair(best)
+    best = build_and_reduce(best)
+    best = ensure_cover(best)
+    return best
+
+
+def main():
+    data = sys.stdin.buffer.read()
+    lines = data.splitlines()
+
+    header_n = 0
+    for raw in lines:
+        s = raw.strip()
+        if s.startswith(b'p'):
+            parts = s.split()
+            nums = []
+            for tok in parts[1:]:
+                try:
+                    nums.append(int(tok))
+                except Exception:
+                    pass
+            if nums:
+                header_n = nums[0]
+            break
+
+    edges = array('I')
+    maxv = 0
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith((b'c', b'#', b'%', b'p')):
+            continue
+        parts = s.split()
+        if not parts:
+            continue
+        try:
+            if parts[0] == b'e' or parts[0] == b'a':
+                if len(parts) < 3:
+                    continue
+                u = int(parts[1])
+                v = int(parts[2])
+            else:
+                if len(parts) < 2:
+                    continue
+                u = int(parts[0])
+                v = int(parts[1])
+        except Exception:
+            continue
+        if u < 1 or v < 1:
+            continue
+        edges.append(u)
+        edges.append(v)
+        if u > maxv:
+            maxv = u
+        if v > maxv:
+            maxv = v
+
+    n = header_n if header_n > maxv else maxv
+    if n <= 0:
+        sys.stdout.write('0' + NL + NL)
+        return
+
+    if not edges:
+        out = list(range(1, n + 1))
+        sys.stdout.write(str(len(out)) + NL + NL.join(map(str, out)) + NL)
+        return
+
+    deg = array('I', [0]) * (n + 1)
+    for i in range(0, len(edges), 2):
+        u = edges[i]
+        v = edges[i + 1]
+        deg[u] += 1
+        deg[v] += 1
+
+    offsets = array('I', [0]) * (n + 2)
+    total = 0
+    for v in range(1, n + 1):
+        offsets[v] = total
+        total += deg[v]
+    offsets[n + 1] = total
+
+    neighbors = array('I', [0]) * total
+    cursor = array('I', offsets)
+    for i in range(0, len(edges), 2):
+        u = edges[i]
+        v = edges[i + 1]
+        j = cursor[u]
+        neighbors[j] = v
+        cursor[u] = j + 1
+        j = cursor[v]
+        neighbors[j] = u
+        cursor[v] = j + 1
+    del edges, cursor
+
+    def greedy_fallback():
+        selected = bytearray(n + 1)
+        dominated = bytearray(n + 1)
+        sol = []
+        for v in range(1, n + 1):
+            if dominated[v]:
+                continue
+            best = v
+            for j in range(offsets[v], offsets[v + 1]):
+                u = neighbors[j]
+                if deg[u] > deg[best] or (deg[u] == deg[best] and u < best):
+                    best = u
+            selected[best] = 1
+            sol.append(best)
+            dominated[best] = 1
+            for j in range(offsets[best], offsets[best + 1]):
+                dominated[neighbors[j]] = 1
+        for v in range(1, n + 1):
+            if dominated[v]:
+                continue
+            selected[v] = 1
+            sol.append(v)
+            dominated[v] = 1
+            for j in range(offsets[v], offsets[v + 1]):
+                dominated[neighbors[j]] = 1
+        return sorted(set(sol))
+
+    try:
+        best = core_solve(n, deg, offsets, neighbors)
+    except Exception:
+        try:
+            best = greedy_fallback()
+        except Exception:
+            best = list(range(1, n + 1))
+
+    best = sorted(set(best))
+    if best:
+        sys.stdout.write(str(len(best)) + NL + NL.join(map(str, best)) + NL)
+    else:
+        sys.stdout.write('0' + NL + NL)
+
+
+if __name__ == '__main__':
+    main()

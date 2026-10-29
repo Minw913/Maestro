@@ -1,0 +1,169 @@
+{
+  "n_agents": 4,
+  "slots": 2,
+  "rounds": 20,
+  "warm_opportunities_per_agent": 5,
+  "warm_concurrency": 4,
+  "cpu_workers": 20,
+  "instance_workers": 10,
+  "refresh_interval": 3,
+  "ucb_exploration_coefficient": 0.0,
+  "valuation_discount_factor": 0.8,
+  "reward_scale": "100",
+  "catchup_fraction": "0.25",
+  "initial_wealth": "0",
+  "seed": 0,
+  "execution_mode": "real",
+  "benchmark": "pace",
+  "profile": "v1_cooperative",
+  "preparation_calls": 4,
+  "preparation_window_seconds": 300,
+  "valuation_calls": 4,
+  "valuation_window_seconds": 300,
+  "generation_calls": 1,
+  "planning_calls": 1,
+  "planning_window_seconds": 120,
+  "generation_window_seconds": 360,
+  "generation_cpu_seconds": 30,
+  "memory_bytes": 1073741824,
+  "pids_max": 32,
+  "output_bytes": 1048576,
+  "evaluation_instance_count": 20,
+  "cpu_seconds_per_instance": 30,
+  "verification_cpu_seconds": 20,
+  "max_candidate_revisions": 3,
+  "runtime_repair_calls": 3,
+  "failures": {},
+  "coral": {
+    "candidate_pipeline": "prebid_v2",
+    "backend_factory": "maestro.backends.coral.deepseek_backend:native_factory",
+    "checkout_path": "/home/zijianzhou/Maestro/vendor/coral",
+    "codex_executable": "/home/zijianzhou/.local/lib/node_modules/@openai/codex/bin/codex.js",
+    "deepseek_api_base": "https://api.deepseek.com/anthropic",
+    "deepseek_api_key_env": "DEEPSEEK_API_KEY",
+    "deepseek_cli_sha256": "5cc35f6234183ab7725a1a6ab4c9bd8cea2c7b02b7b8e05030657332950eee61",
+    "deepseek_cli_version": "0.2.1-rc.2",
+    "deepseek_executable": "/home/zijianzhou/.local/bin/maestro-dsh",
+    "deepseek_max_output_tokens": 96000,
+    "deepseek_reasoning_effort": "low",
+    "deepseek_transport_retry": {
+      "backoff_seconds": 10.0,
+      "continue_after_network_failure": true,
+      "max_extra_requests": 20,
+      "max_retries_per_request": 1,
+      "warm_seed_fallback": true
+    },
+    "director_mode": "predeclared",
+    "model": "deepseek-flash",
+    "revision": "0123dfb939b35228cf2c1fde224cd0561e727408",
+    "runtime": "dsh"
+  },
+  "pace": {
+    "contract": {
+      "cpu_seconds_per_instance": 30,
+      "hardware_id": "instance-20260923-033000:c6c10461b86cfe765acc",
+      "image": "python@sha256:a1165e272e578941b84abc79e4ab38a0305cd12803a5c4247979ac7655f4d641",
+      "output_bytes": 4194304,
+      "toolchain_digest": "f05796acba272e7d29c2e7a1a323a0dabb38d9c79cf4924502592a7606321496",
+      "verification_cpu_seconds": 20,
+      "verification_wall_seconds": 30,
+      "wall_seconds_per_instance": 45
+    },
+    "panel_manifest": "/home/zijianzhou/Maestro/data/training/panel.json",
+    "seed_solver": "/home/zijianzhou/Maestro/data/seed_solver"
+  },
+  "plan_taxonomy": {
+    "mod_types": [
+      "parameter_change",
+      "rule_replacement",
+      "new_component",
+      "removal",
+      "reimplementation",
+      "other"
+    ],
+    "targets": [
+      "reduction",
+      "initialization",
+      "local_search",
+      "tie_break",
+      "restart",
+      "postprocess",
+      "data_structure",
+      "time_management",
+      "other"
+    ],
+    "version": "maestro-v1-target-modtype-1"
+  },
+  "experiment_stage": "market",
+  "stage_configs": {
+    "market": {
+      "catchup_fraction": "0.25",
+      "generation_calls": 1,
+      "generation_cpu_seconds": 30,
+      "generation_window_seconds": 360,
+      "initial_wealth": "0",
+      "max_candidate_revisions": 3,
+      "memory_bytes": 1073741824,
+      "output_bytes": 1048576,
+      "pids_max": 32,
+      "planning_calls": 1,
+      "planning_window_seconds": 120,
+      "preparation_calls": 4,
+      "preparation_window_seconds": 300,
+      "refresh_interval": 3,
+      "reward_scale": "100",
+      "rounds": 20,
+      "runtime_repair_calls": 3,
+      "slots": 2,
+      "valuation_calls": 4,
+      "valuation_window_seconds": 300,
+      "warm_concurrency": 4,
+      "warm_opportunities_per_agent": 5
+    },
+    "warm_start": {
+      "catchup_fraction": "0.25",
+      "generation_calls": 1,
+      "generation_cpu_seconds": 30,
+      "generation_window_seconds": 360,
+      "max_candidate_revisions": 3,
+      "memory_bytes": 1073741824,
+      "output_bytes": 1048576,
+      "pids_max": 32,
+      "planning_calls": 1,
+      "planning_window_seconds": 120,
+      "preparation_calls": 4,
+      "preparation_window_seconds": 300,
+      "refresh_interval": 3,
+      "reward_scale": "100",
+      "rounds": 20,
+      "runtime_repair_calls": 3,
+      "slots": 2,
+      "valuation_calls": 4,
+      "valuation_window_seconds": 300,
+      "warm_concurrency": 4,
+      "warm_opportunities_per_agent": 5
+    }
+  },
+  "config_sources": {
+    "benchmark": {
+      "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/benchmarks/pace/benchmark.yaml",
+      "sha256": "ce282208f3e5f1a6186525470792c313fa1641161c99a6223b3ca3c8b31db78c"
+    },
+    "deployment": {
+      "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/deployments/remote.yaml",
+      "sha256": "45211c82c180a41e370c1df2d034a9db1c18d11d3c79e39e86013f691a512a75"
+    },
+    "experiment": {
+      "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/experiments/pace_remote_deepseek_prebid.yaml",
+      "sha256": "14d7d35e302e863a06b6af5b7ff2c9aeafbfa63366de77d6e2ca77bcd8e2bf00"
+    },
+    "runtime": {
+      "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/runtimes/coral_deepseek_prebid.yaml",
+      "sha256": "e7d4f1e1703ef32c0bacaff21762932dbfd4042fa25bbb8071bb0b5a6da097b3"
+    },
+    "warm_start": {
+      "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/benchmarks/pace/warm_start.yaml",
+      "sha256": "979864cbfebbe25838258c39b10c2e6ee25c75d8cab40c4c81fd6e8f2e4ad72d"
+    }
+  }
+}

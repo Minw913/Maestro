@@ -1,0 +1,863 @@
+#!/usr/bin/env python3
+'''Deterministic coverage-first seeding with residual reductions.'''
+import sys
+import heapq
+from array import array
+from bisect import bisect_left
+
+
+def greedy_select(adjacency, n, order=0):
+    gain = array('i', [0]) * (n + 1)
+    heap = []
+    max_deg = 0
+    for v in range(1, n + 1):
+        d = len(adjacency[v])
+        if d > max_deg:
+            max_deg = d
+        g = d + 1
+        gain[v] = g
+        if order == 0:
+            heap.append((-g, -d, v))
+        else:
+            heap.append((-d, -g, v))
+    heapq.heapify(heap)
+
+    dominated = bytearray(n + 1)
+    selected = bytearray(n + 1)
+    remaining = n
+    answer = []
+
+    while remaining:
+        if not heap:
+            break
+        item = heapq.heappop(heap)
+        if order == 0:
+            neg_g, neg_deg, v = item
+            g = -neg_g
+            if selected[v] or g != gain[v]:
+                if not selected[v] and gain[v] > 0:
+                    heapq.heappush(heap, (-gain[v], -len(adjacency[v]), v))
+                continue
+        else:
+            neg_d, neg_g, v = item
+            g = -neg_g
+            d = len(adjacency[v])
+            if selected[v] or -neg_d != d or g != gain[v]:
+                if not selected[v] and gain[v] > 0:
+                    heapq.heappush(heap, (-d, -gain[v], v))
+                continue
+        if g <= 0:
+            continue
+
+        selected[v] = 1
+        answer.append(v)
+
+        if not dominated[v]:
+            dominated[v] = 1
+            remaining -= 1
+            gain[v] -= 1
+            for w in adjacency[v]:
+                gain[w] -= 1
+
+        for u in adjacency[v]:
+            if dominated[u]:
+                continue
+            dominated[u] = 1
+            remaining -= 1
+            gain[u] -= 1
+            for w in adjacency[u]:
+                gain[w] -= 1
+
+    return selected, answer, max_deg
+
+
+def reversed_adjacency(adjacency, n):
+    rev = [None] * (n + 1)
+    for v in range(1, n + 1):
+        rv = n + 1 - v
+        lst = adjacency[v]
+        if len(lst) <= 1:
+            rev[rv] = array('I', (n + 1 - u for u in lst))
+        else:
+            rev[rv] = array('I', sorted(n + 1 - u for u in lst))
+    return rev
+
+
+def map_seed_back(selected, answer, n):
+    mapped_sel = bytearray(n + 1)
+    mapped_ans = []
+    for rv in answer:
+        v = n + 1 - rv
+        mapped_sel[v] = 1
+        mapped_ans.append(v)
+    mapped_ans.sort()
+    return mapped_sel, mapped_ans
+
+
+def prune_solution(adjacency, n, selected, answer, max_deg):
+    coverage = array('i', [0]) * (n + 1)
+    for v in answer:
+        coverage[v] += 1
+        for u in adjacency[v]:
+            coverage[u] += 1
+
+    sel_asc = bytearray(selected)
+    cov_asc = array('i', coverage)
+    count_asc = len(answer)
+
+    for v in sorted(answer):
+        if not sel_asc[v] or cov_asc[v] < 2:
+            continue
+        removable = True
+        for u in adjacency[v]:
+            if cov_asc[u] < 2:
+                removable = False
+                break
+        if removable:
+            sel_asc[v] = 0
+            cov_asc[v] -= 1
+            for u in adjacency[v]:
+                cov_asc[u] -= 1
+            count_asc -= 1
+
+    sel_pri = bytearray(selected)
+    cov_pri = array('i', coverage)
+    count_pri = len(answer)
+
+    max_cov = 0
+    for v in range(1, n + 1):
+        if cov_pri[v] > max_cov:
+            max_cov = cov_pri[v]
+
+    base = max(n, max_deg) + 1
+    maxc = max_cov + 1
+
+    def compute_key(v):
+        if not sel_pri[v]:
+            return 0
+        if cov_pri[v] < 2:
+            return 0
+        mn = maxc
+        for u in adjacency[v]:
+            cu = cov_pri[u]
+            if cu < 2:
+                return 0
+            if cu < mn:
+                mn = cu
+        if mn == maxc:
+            mn = cov_pri[v]
+        return (((maxc - mn) * base + len(adjacency[v])) * base + v)
+
+    pheap = []
+    for v in answer:
+        k = compute_key(v)
+        if k:
+            pheap.append(k)
+    heapq.heapify(pheap)
+
+    while pheap:
+        k = heapq.heappop(pheap)
+        v = k % base
+        ck = compute_key(v)
+        if ck == 0:
+            continue
+        if ck != k:
+            heapq.heappush(pheap, ck)
+            continue
+
+        sel_pri[v] = 0
+        cov_pri[v] -= 1
+        for u in adjacency[v]:
+            cov_pri[u] -= 1
+        count_pri -= 1
+
+    if count_pri < count_asc:
+        return sel_pri
+    return sel_asc
+
+
+def cleanup_seed(adjacency, n, selected):
+    coverage = array('i', [0]) * (n + 1)
+    chosen = []
+    for v in range(1, n + 1):
+        if not selected[v]:
+            continue
+        chosen.append(v)
+        coverage[v] += 1
+        for u in adjacency[v]:
+            coverage[u] += 1
+
+    order = sorted(chosen, key=lambda v: (-len(adjacency[v]), v))
+    sel = bytearray(selected)
+    cov = array('i', coverage)
+
+    for v in order:
+        if not sel[v] or cov[v] < 2:
+            continue
+        removable = True
+        for u in adjacency[v]:
+            if cov[u] < 2:
+                removable = False
+                break
+        if removable:
+            sel[v] = 0
+            cov[v] -= 1
+            for u in adjacency[v]:
+                cov[u] -= 1
+
+    return sel
+
+
+def best_seed(adjacency, n, max_deg):
+    variants = [(adjacency, 0), (adjacency, 1)]
+    if n > 1:
+        rev = reversed_adjacency(adjacency, n)
+        variants.append((rev, 0))
+        if n <= 200000:
+            variants.append((rev, 1))
+
+    seen = set()
+    best_sel = None
+    best_count = n + 1
+
+    for graph, order in variants:
+        selected, answer, _ = greedy_select(graph, n, order)
+        if graph is not adjacency:
+            selected, answer = map_seed_back(selected, answer, n)
+
+        cleaned = cleanup_seed(adjacency, n, selected)
+        pruned = prune_solution(adjacency, n, selected, answer, max_deg)
+
+        for cand in (pruned, cleaned):
+            key = bytes(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            cnt = 0
+            for v in range(1, n + 1):
+                if cand[v]:
+                    cnt += 1
+            if cnt < best_count or (cnt == best_count and (best_sel is None or cand < best_sel)):
+                best_sel = cand
+                best_count = cnt
+
+    if best_sel is None:
+        selected, answer, _ = greedy_select(adjacency, n, 0)
+        best_sel = prune_solution(adjacency, n, selected, answer, max_deg)
+        best_count = 0
+        for v in range(1, n + 1):
+            if best_sel[v]:
+                best_count += 1
+
+    return best_sel
+
+
+def unique_adjacency(adjacency, n):
+    result = [None] * (n + 1)
+    for v in range(1, n + 1):
+        lst = adjacency[v]
+        if len(lst) <= 1:
+            result[v] = list(lst)
+        else:
+            result[v] = sorted(set(lst))
+    return result
+
+
+def dominates(adjacency, n, chosen):
+    covered = bytearray(n + 1)
+    for v in chosen:
+        covered[v] = 1
+        for u in adjacency[v]:
+            covered[u] = 1
+    for v in range(1, n + 1):
+        if not covered[v]:
+            return False
+    return True
+
+
+def closed_has(q_adj, x, g):
+    if x == g:
+        return True
+    lst = q_adj[x]
+    i = bisect_left(lst, g)
+    return i < len(lst) and lst[i] == g
+
+
+def closed_min_coverage(q_adj, cov, v):
+    mn = cov[v]
+    for u in q_adj[v]:
+        if cov[u] < mn:
+            mn = cov[u]
+    return mn
+
+
+def local_improve_residual(q_adj, k, qsel):
+    if k <= 1:
+        return qsel
+    sel = bytearray(qsel)
+    rounds = 5 if k <= 20000 else 3
+
+    for _ in range(rounds):
+        cov = array('i', [0]) * (k + 1)
+        owner = [0] * (k + 1)
+        sel_list = []
+
+        for v in range(1, k + 1):
+            if not sel[v]:
+                continue
+            sel_list.append(v)
+            if cov[v] == 0:
+                owner[v] = v
+            else:
+                owner[v] = 0
+            cov[v] += 1
+            for u in q_adj[v]:
+                if cov[u] == 0:
+                    owner[u] = v
+                else:
+                    owner[u] = 0
+                cov[u] += 1
+
+        if len(sel_list) <= 1:
+            break
+
+        removed_any = False
+        for v in sel_list:
+            if not sel[v] or cov[v] < 2:
+                continue
+            removable = True
+            for u in q_adj[v]:
+                if cov[u] < 2:
+                    removable = False
+                    break
+            if removable:
+                sel[v] = 0
+                cov[v] -= 1
+                for u in q_adj[v]:
+                    cov[u] -= 1
+                removed_any = True
+
+        if removed_any:
+            continue
+
+        priv = [[] for _ in range(k + 1)]
+        for g in range(1, k + 1):
+            if cov[g] == 1:
+                o = owner[g]
+                if o:
+                    priv[o].append(g)
+
+        anchors = [v for v in sel_list if priv[v]]
+        if not anchors:
+            break
+
+        def anchor_key(v):
+            mn = cov[v]
+            for u in q_adj[v]:
+                if cov[u] < mn:
+                    mn = cov[u]
+            return (mn, len(priv[v]), v)
+
+        anchors.sort(key=anchor_key)
+
+        if k > 5000:
+            anchor_limit = 12
+            cand_limit = 6
+            trial_limit = 24
+            cand_scan_limit = 48
+        else:
+            anchor_limit = 36
+            cand_limit = 18
+            trial_limit = 96
+            cand_scan_limit = 180
+
+        trials = 0
+        improved = False
+
+        for a in anchors[:anchor_limit]:
+            p = priv[a]
+            if not p:
+                continue
+
+            g0 = min(p, key=lambda g: (len(q_adj[g]), g))
+            cand = [g0]
+            cand.extend(q_adj[g0])
+            if len(cand) > cand_scan_limit:
+                cand = cand[:cand_scan_limit]
+
+            good = []
+            for x in cand:
+                if sel[x]:
+                    continue
+                ok = True
+                for g in p:
+                    if not closed_has(q_adj, x, g):
+                        ok = False
+                        break
+                if ok:
+                    good.append(x)
+
+            if not good:
+                continue
+
+            good.sort(key=lambda x: (closed_min_coverage(q_adj, cov, x), x))
+
+            for x in good[:cand_limit]:
+                for b in sel_list:
+                    if b == a or not sel[b]:
+                        continue
+
+                    ok = True
+                    for g in priv[b]:
+                        if not closed_has(q_adj, x, g):
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+
+                    trials += 1
+                    if trials > trial_limit:
+                        break
+
+                    test = bytearray(sel)
+                    test[a] = 0
+                    test[b] = 0
+                    test[x] = 1
+                    chosen = [v for v in range(1, k + 1) if test[v]]
+
+                    if len(chosen) < len(sel_list) and dominates(q_adj, k, chosen):
+                        sel = test
+                        improved = True
+                        break
+
+                if improved or trials > trial_limit:
+                    break
+            if improved or trials > trial_limit:
+                break
+
+        if not improved:
+            break
+
+    return sel
+
+
+def is_subset_active(nbr, active, u, v):
+    nv = nbr[v]
+    lv = len(nv)
+    for x in nbr[u]:
+        if not active[x] or x == v:
+            continue
+        i = bisect_left(nv, x)
+        if i >= lv or nv[i] != x:
+            return False
+    return True
+
+
+def cycle_reduction(nbr, active, deg, n):
+    visited = bytearray(n + 1)
+    chosen = []
+    for s in range(1, n + 1):
+        if not active[s] or visited[s] or deg[s] != 2:
+            continue
+        comp = []
+        stack = [s]
+        visited[s] = 1
+        ok = True
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            if deg[v] != 2:
+                ok = False
+                continue
+            for u in nbr[v]:
+                if not active[u]:
+                    continue
+                if deg[u] != 2:
+                    ok = False
+                elif not visited[u]:
+                    visited[u] = 1
+                    stack.append(u)
+        if not ok or len(comp) < 3:
+            continue
+
+        start = comp[0]
+        order = [start]
+        prev = start
+        cur = 0
+        for u in nbr[start]:
+            if active[u] and deg[u] == 2:
+                cur = u
+                break
+        if cur == 0:
+            continue
+        while cur != start:
+            order.append(cur)
+            nxt = 0
+            for u in nbr[cur]:
+                if active[u] and deg[u] == 2 and u != prev:
+                    nxt = u
+                    break
+            prev = cur
+            cur = nxt
+            if cur == 0:
+                break
+        if cur != start or len(order) != len(comp):
+            continue
+
+        m = len(order)
+        indices = list(range(1, m, 3))
+        if m % 3 == 1:
+            indices.append(m - 1)
+        for idx in indices:
+            chosen.append(order[idx])
+    return chosen
+
+
+def reduced_candidate(adjacency, nbr, n, max_deg):
+    mandatory = bytearray(n + 1)
+    active = bytearray([1]) * (n + 1)
+    active[0] = 0
+    deg = [0] * (n + 1)
+    for v in range(1, n + 1):
+        deg[v] = len(nbr[v])
+
+    use_masks = n <= 10000
+    masks = None
+    active_mask = 0
+    if use_masks:
+        masks = [0] * (n + 1)
+        for v in range(1, n + 1):
+            m = 1 << v
+            for u in nbr[v]:
+                m |= 1 << u
+            masks[v] = m
+        active_mask = (1 << (n + 1)) - 2
+
+    sel_stamp = [0] * (n + 1)
+    cov_stamp = [0] * (n + 1)
+    rem_stamp = [0] * (n + 1)
+    gen = 0
+
+    while True:
+        gen += 1
+        selected_now = []
+
+        for v in range(1, n + 1):
+            if not active[v]:
+                continue
+            d = deg[v]
+            if d == 0:
+                if sel_stamp[v] != gen:
+                    sel_stamp[v] = gen
+                    selected_now.append(v)
+                cov_stamp[v] = gen
+            elif d == 1:
+                u = 0
+                for x in nbr[v]:
+                    if active[x]:
+                        u = x
+                        break
+                if u == 0:
+                    continue
+                if deg[u] == 1:
+                    w = v if v < u else u
+                else:
+                    w = u
+                if sel_stamp[w] != gen:
+                    sel_stamp[w] = gen
+                    selected_now.append(w)
+                cov_stamp[w] = gen
+                for x in nbr[w]:
+                    if active[x]:
+                        cov_stamp[x] = gen
+
+        res_gain = [0] * (n + 1)
+        for v in range(1, n + 1):
+            if not active[v]:
+                continue
+            g = 0
+            if cov_stamp[v] != gen:
+                g += 1
+            for x in nbr[v]:
+                if active[x] and cov_stamp[x] != gen:
+                    g += 1
+            res_gain[v] = g
+
+        for u in range(1, n + 1):
+            if not active[u] or cov_stamp[u] == gen:
+                continue
+            du = deg[u]
+            mu = 0
+            if use_masks:
+                mu = masks[u] & active_mask
+            cands = []
+            for v in nbr[u]:
+                if not active[v]:
+                    continue
+                dv = deg[v]
+                if dv > du:
+                    cands.append(v)
+                elif dv == du and use_masks and mu == (masks[v] & active_mask):
+                    cands.append(v)
+            if not cands:
+                continue
+            cands.sort(key=lambda x: (-res_gain[x], -deg[x], x))
+            chosen = 0
+            if use_masks:
+                for v in cands:
+                    if (mu & ~masks[v]) == 0:
+                        chosen = v
+                        break
+            else:
+                for v in cands:
+                    if is_subset_active(nbr, active, u, v):
+                        chosen = v
+                        break
+            if not chosen:
+                continue
+            if sel_stamp[chosen] != gen:
+                sel_stamp[chosen] = gen
+                selected_now.append(chosen)
+
+            newly = []
+            if cov_stamp[chosen] != gen:
+                cov_stamp[chosen] = gen
+                newly.append(chosen)
+            for x in nbr[chosen]:
+                if active[x] and cov_stamp[x] != gen:
+                    cov_stamp[x] = gen
+                    newly.append(x)
+            for x in newly:
+                res_gain[x] -= 1
+                for y in nbr[x]:
+                    if active[y]:
+                        res_gain[y] -= 1
+
+        if not selected_now:
+            cycle_choices = cycle_reduction(nbr, active, deg, n)
+            if cycle_choices:
+                selected_now.extend(cycle_choices)
+
+        if not selected_now:
+            break
+
+        for v in selected_now:
+            mandatory[v] = 1
+
+        removed = []
+        remove_mask = 0
+        for v in selected_now:
+            if active[v] and rem_stamp[v] != gen:
+                rem_stamp[v] = gen
+                removed.append(v)
+                if use_masks:
+                    remove_mask |= 1 << v
+            for x in nbr[v]:
+                if active[x] and rem_stamp[x] != gen:
+                    rem_stamp[x] = gen
+                    removed.append(x)
+                    if use_masks:
+                        remove_mask |= 1 << x
+
+        for x in removed:
+            if active[x]:
+                active[x] = 0
+                for y in nbr[x]:
+                    if active[y]:
+                        deg[y] -= 1
+
+        if use_masks:
+            active_mask &= ~remove_mask
+
+    residual = []
+    for v in range(1, n + 1):
+        if active[v]:
+            residual.append(v)
+
+    if not residual:
+        return [v for v in range(1, n + 1) if mandatory[v]]
+
+    res_adj = [None] * (n + 1)
+    for v in residual:
+        res_adj[v] = [u for u in nbr[v] if active[u]]
+
+    rep_of = [0] * (n + 1)
+    sig_to_rep = {}
+    reps = []
+
+    for v in residual:
+        seq = res_adj[v] + [v]
+        seq.sort()
+        h1 = len(seq)
+        h2 = len(seq)
+        total = 0
+        total2 = 0
+        for x in seq:
+            total += x
+            total2 += x * x
+            h1 = (h1 * 1000003 + x) % 1000000007
+            h2 = (h2 * 1000003 + x) % 1000000009
+        sig = (len(seq), total, total2, h1, h2)
+        r = sig_to_rep.get(sig)
+        if r is None:
+            sig_to_rep[sig] = v
+            rep_of[v] = v
+            reps.append(v)
+        else:
+            rep_of[v] = r
+
+    k = len(reps)
+    if k == 0:
+        return None
+
+    q_index = {}
+    for i, r in enumerate(reps, 1):
+        q_index[r] = i
+
+    q_adj = [array('I') for _ in range(k + 1)]
+    for i, r in enumerate(reps, 1):
+        seen = set()
+        for u in res_adj[r]:
+            ru = rep_of[u]
+            if ru == 0:
+                return None
+            if ru != r:
+                seen.add(ru)
+        for ru in sorted(seen):
+            qi = q_index.get(ru)
+            if qi is None:
+                return None
+            q_adj[i].append(qi)
+
+    q_selected, _, _ = greedy_select(q_adj, k, 0)
+    q_selected2, _, _ = greedy_select(q_adj, k, 1)
+
+    raw_variants = [q_selected]
+    if bytes(q_selected2) != bytes(q_selected):
+        raw_variants.append(q_selected2)
+
+    if 1 < k <= 20000:
+        q_rev = reversed_adjacency(q_adj, k)
+        q_rev_selected, q_rev_answer, _ = greedy_select(q_rev, k, 0)
+        q_selected3, _ = map_seed_back(q_rev_selected, q_rev_answer, k)
+        b3 = bytes(q_selected3)
+        if b3 != bytes(q_selected) and b3 != bytes(q_selected2):
+            raw_variants.append(q_selected3)
+
+    q_solutions = []
+    seen_q = set()
+    for qsel in raw_variants:
+        improved_q = local_improve_residual(q_adj, k, qsel)
+        key = bytes(improved_q)
+        if key not in seen_q:
+            seen_q.add(key)
+            q_solutions.append(improved_q)
+
+    def expand_and_prune(qsel):
+        cand_sel = bytearray(n + 1)
+        for v in range(1, n + 1):
+            if mandatory[v]:
+                cand_sel[v] = 1
+        for i, r in enumerate(reps, 1):
+            if qsel[i]:
+                cand_sel[r] = 1
+        cand_answer = [v for v in range(1, n + 1) if cand_sel[v]]
+        if not cand_answer:
+            return None
+        cand_final = prune_solution(nbr, n, cand_sel, cand_answer, max_deg)
+        return [v for v in range(1, n + 1) if cand_final[v]]
+
+    best = None
+
+    for qsel in q_solutions:
+        result = expand_and_prune(qsel)
+        if result is None:
+            continue
+        if not dominates(adjacency, n, result):
+            continue
+        if best is None or len(result) < len(best) or (len(result) == len(best) and result < best):
+            best = result
+
+    return best
+
+
+def main():
+    stream = sys.stdin.buffer
+    n = 0
+    for line in stream:
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == b'p':
+            if len(parts) >= 3 and parts[1] in (b'edge', b'col', b'ds'):
+                n = int(parts[2])
+            elif len(parts) >= 2:
+                n = int(parts[1])
+            break
+
+    adjacency = [array('I') for _ in range(n + 1)]
+    for line in stream:
+        parts = line.split()
+        if not parts:
+            continue
+        first = parts[0]
+        if first.startswith(b'c') or first.startswith(b'#'):
+            continue
+        if first in (b'e', b'a'):
+            if len(parts) < 3:
+                continue
+            u = int(parts[1])
+            v = int(parts[2])
+        else:
+            if len(parts) < 2:
+                continue
+            u = int(parts[0])
+            v = int(parts[1])
+        if u == v:
+            continue
+        if 1 <= u <= n and 1 <= v <= n:
+            adjacency[u].append(v)
+            adjacency[v].append(u)
+
+    if n == 0:
+        sys.stdout.write('0' + chr(10))
+        return
+
+    nbr = unique_adjacency(adjacency, n)
+    nbr_max_deg = 0
+    for v in range(1, n + 1):
+        d = len(nbr[v])
+        if d > nbr_max_deg:
+            nbr_max_deg = d
+
+    base_sel = best_seed(nbr, n, nbr_max_deg)
+    baseline = [v for v in range(1, n + 1) if base_sel[v]]
+
+    candidate = reduced_candidate(adjacency, nbr, n, nbr_max_deg)
+
+    if candidate is None:
+        result = baseline
+    elif len(candidate) < len(baseline):
+        result = candidate
+    elif len(candidate) > len(baseline):
+        result = baseline
+    else:
+        if candidate < baseline:
+            result = candidate
+        else:
+            result = baseline
+
+    if not dominates(nbr, n, result):
+        result = baseline
+    if not dominates(nbr, n, result):
+        result = list(range(1, n + 1))
+
+    nl = chr(10)
+    out = [str(len(result))]
+    for v in result:
+        out.append(str(v))
+    sys.stdout.write(nl.join(out) + nl)
+
+
+if __name__ == '__main__':
+    main()

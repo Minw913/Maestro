@@ -1,0 +1,936 @@
+{
+  "group": "old-warm",
+  "regime": "R4",
+  "source_root": "artifacts/runs/pace-ds/deepseek-flash/adjusted_valuation/legacywarm-restart-20261029T085402Z",
+  "source_report_sha256": "9d5301f486093e191c221d5cf4df2753d615c16943bca8f57020b81a09816198",
+  "episode_id": "legacywarm-r4-20-20261029t085402z",
+  "warm_id": "warm-5e4162c13d3149ff",
+  "warm_checkpoint_hash": "a2ad1c6e7d0f7223077ad24154cdaad336eefa45cb7bedd6a815706aabfee48d",
+  "warm_schema": 2,
+  "warm_pipeline": "postbid_v1",
+  "warm_start_score": 0.9414633933509519,
+  "final_training_score": 0.9465068033471541,
+  "market_gain": 0.0050434099962022305,
+  "final_champion_hash": "218ea474498767e6a73e3a3666d345babfc0332a7ad1b883e3cc21a6abb49fba",
+  "effective_config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+  "panel_hash": "40ef4b92cfde83a1dc01f39050d499a5721e16d4d2a7a67c3f07a8198192552d",
+  "contract_hash": "7892e7e4138f9e4970e13a30104c1594873bf815422e45918da76a4b8dfb07a8",
+  "settled_rounds": 20,
+  "request_failure_counts": {
+    "unknown_requests": 2,
+    "failed_or_unknown_requests": 2,
+    "affected_logical_requests": 2,
+    "affected_phase_scopes": 2,
+    "unknown_with_completed_replacement": 2,
+    "unknown_with_phase_abstention": 0,
+    "unknown_without_traceback": 0
+  },
+  "source_summary": {
+    "admitted_slots": 40,
+    "benchmark": "pace",
+    "calibration_scope": "funded_only_selection_biased",
+    "candidate_pipeline": "prebid_v2",
+    "common_prefix_cost": {
+      "cpu_seconds": 0,
+      "llm_calls": 0,
+      "model_request_measurement": "confirmed_requests",
+      "session_turns": 0,
+      "tokens": 0,
+      "usage_complete": true
+    },
+    "comparison_eligible": true,
+    "config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+    "config_sources": {
+      "benchmark": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/benchmarks/pace/benchmark.yaml",
+        "sha256": "ce282208f3e5f1a6186525470792c313fa1641161c99a6223b3ca3c8b31db78c"
+      },
+      "deployment": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/deployments/remote.yaml",
+        "sha256": "45211c82c180a41e370c1df2d034a9db1c18d11d3c79e39e86013f691a512a75"
+      },
+      "experiment": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/experiments/pace_remote_deepseek_prebid.yaml",
+        "sha256": "14d7d35e302e863a06b6af5b7ff2c9aeafbfa63366de77d6e2ca77bcd8e2bf00"
+      },
+      "runtime": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/runtimes/coral_deepseek_prebid.yaml",
+        "sha256": "e7d4f1e1703ef32c0bacaff21762932dbfd4042fa25bbb8071bb0b5a6da097b3"
+      },
+      "warm_start": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/benchmarks/pace/warm_start.yaml",
+        "sha256": "979864cbfebbe25838258c39b10c2e6ee25c75d8cab40c4c81fd6e8f2e4ad72d"
+      }
+    },
+    "costs": {
+      "formal": {
+        "cpu_seconds": 6564.521348,
+        "llm_calls": 0,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 0,
+        "usage_complete": true,
+        "wall_seconds": 1338.4140091645531
+      },
+      "generation": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 80,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 2502446,
+        "usage_complete": true,
+        "wall_seconds": 10039.918150527868
+      },
+      "planning": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 80,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 389317,
+        "usage_complete": true,
+        "wall_seconds": 0.0
+      },
+      "precheck": {
+        "cpu_seconds": 1.750792,
+        "llm_calls": 0,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 0,
+        "usage_complete": true,
+        "wall_seconds": 21.074062675237656
+      },
+      "preparation": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 322,
+        "model_request_measurement": "confirmed_lower_bound",
+        "session_turns": 0,
+        "token_measurement": "known_lower_bound_with_unresolved_usage",
+        "tokens": 2541762,
+        "usage_complete": false,
+        "wall_seconds": 1989.3495112485252
+      },
+      "valuation": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 315,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 2075589,
+        "usage_complete": true,
+        "wall_seconds": 1691.4447326306254
+      }
+    },
+    "effective_rounds": 20,
+    "episode_id": "legacywarm-r4-20-20261029t085402z",
+    "execution_mode": "real",
+    "experiment_stage": "market",
+    "failure_policy": {
+      "backoff_seconds": 10.0,
+      "continue_after_network_failure": true,
+      "max_extra_requests": 20,
+      "max_retries_per_request": 1,
+      "warm_seed_fallback": true
+    },
+    "final_training_score": 0.9465068033471541,
+    "forecast_mae": 0.20854205,
+    "forecast_mse": 0.20935753091394999,
+    "generation_nonadmissions": 0,
+    "heldout_score": null,
+    "heldout_status": "NOT_RUN",
+    "inference_budget_unit": "provider_request",
+    "initial_rounds": 20,
+    "invitations": 40,
+    "outcome_label": "pace_style_internal",
+    "policy": "adjusted_valuation",
+    "prebid_proposals": 79,
+    "prebid_proposals_without_formal_evaluation": 39,
+    "profile": "v1_cooperative",
+    "regime_contract": {
+      "artifact_hash": "b6cb89674765bc20f4e67dfb904d9e9641f369347c57cc30b10e713a76289ab4",
+      "content_hash": "b6cb89674765bc20f4e67dfb904d9e9641f369347c57cc30b10e713a76289ab4",
+      "contract": {
+        "benchmark": "pace",
+        "candidate_pipeline": "prebid_v2",
+        "config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+        "execution_mode": "real",
+        "regime": {
+          "allocation": "descending affordable adjusted-value bids",
+          "id": "R4",
+          "name": "Agent-adjusted valuation",
+          "number": 4,
+          "payment": "own bid on formal admission",
+          "policy": "adjusted_valuation"
+        },
+        "registry_revision": 5,
+        "requires_prebid": true,
+        "schema_version": 1,
+        "settings": {
+          "catchup_fraction": "0.25",
+          "cpu_seconds_per_instance": 30,
+          "cpu_workers": 20,
+          "evaluation_instance_count": 20,
+          "generation_calls": 1,
+          "generation_cpu_seconds": 30,
+          "generation_window_seconds": 360,
+          "initial_wealth": "0",
+          "instance_workers": 10,
+          "memory_bytes": 1073741824,
+          "n_agents": 4,
+          "output_bytes": 1048576,
+          "pids_max": 32,
+          "planning_calls": 1,
+          "planning_window_seconds": 120,
+          "preparation_calls": 4,
+          "preparation_window_seconds": 300,
+          "refresh_interval": 3,
+          "reward_scale": "100",
+          "rounds": 20,
+          "runtime_repair_calls": 3,
+          "seed": 0,
+          "slots": 2,
+          "ucb_exploration_coefficient": 0.0,
+          "valuation_calls": 4,
+          "valuation_discount_factor": 0.8,
+          "valuation_window_seconds": 300,
+          "verification_cpu_seconds": 20
+        },
+        "ucb_exploration_active": false,
+        "valuation": "adjusted_valuation_expected_credit_with_discounted_baseline",
+        "wallet_funding": {
+          "configured_credits": "0",
+          "effective_initial_wealth": "2500.000000",
+          "mode": "sufficient"
+        },
+        "wealth_limited_bidding": true
+      }
+    },
+    "reserved_cpu_seconds": 24800,
+    "round_extensions": [],
+    "seed_fallback_agents": {},
+    "status": "COMPLETED",
+    "total_cpu_seconds_with_prefix": 6566.27214,
+    "ucb_exploration_coefficient": 0.0,
+    "valuation_discount_factor": 0.8,
+    "valuation_method": "discounted_actual_credit",
+    "valuation_results": [
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "ecff90d99f3c1672ccb3201ec5654f601012808ff2627471a443daeeadd47f69",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "f16570cccadfde2c27567b3164b7e4cae274b7fe6066033a4fef102f83cb6b2f",
+        "round_index": 0,
+        "status": "ACCEPTED",
+        "value": "0.056138"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "57a3643405f9591b10857e4f27ecd45afd1a8211af4d34fe70711b6f7bfcf843",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "9ab47cf50ebc9c4bf66cdf12fcd63442903c70868056413abee1ebc81f4b5cae",
+        "round_index": 0,
+        "status": "ACCEPTED",
+        "value": "0.265098"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "58085d6c4dc5b143105af76a85ec7fd3025239683e3fbd18c5b005a04a6d425f",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "7e1c1fa403a5334db63cef050ac1f67909eb212d1c1a781edde3882488f50c0c",
+        "round_index": 0,
+        "status": "ACCEPTED",
+        "value": "0.084551"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "07cbbef04eff8a36a52f8ec63727d40cb9a9a9f22c49c4619bf8a9cab418721d",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "ff764c0ed9fae56c5583a6b83e3bc89745df7db61a6d97b268bea4b5fef6d24c",
+        "round_index": 0,
+        "status": "ACCEPTED",
+        "value": "0.000000"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "7b100b779df10df4a4565487115bb1eac4918adba40f091f3b83564df42c0ccc",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "879bdb0ebc4327d4bc3ad9efa3571e99ee632c8a2aaa8093e1c9f50d7c53712d",
+        "round_index": 1,
+        "status": "FALLBACK",
+        "value": "1.394009"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "767df1382df6e7a9ebb481197af5690364298f60e959949cccd0b349af151564",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "562124611929c67ab245b3254eeeb1cca5d4f841bf02e4bdceeb2de15247f184",
+        "round_index": 1,
+        "status": "ACCEPTED",
+        "value": "0.400843"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "0ae27581b5e18f333e9baf55abeba6787b6a0c8f8d800dee7ce6d06bf1a5d471",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "2ed0349de3e6546d4d620221fccbb129ec5cc3feb2e21afa64902d9ae182913e",
+        "round_index": 1,
+        "status": "ACCEPTED",
+        "value": "0.069986"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "561b202fe8594a8115301d77023cb13e5f66c7194056c48135cc972f02cd2ad4",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "ffb26e9539e432787b44a4fb5e09198b40f13b23781a034686ae603e143416ef",
+        "round_index": 1,
+        "status": "ACCEPTED",
+        "value": "0.187542"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "15f2f95f084712786a241cc10c798be390e6ede4bb7025099ba29e03fd67fc8b",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "3ff669d5b7a0cd6285ac0c0211a49454e970366dc3162375b1412e59d7f1c8a8",
+        "round_index": 2,
+        "status": "ACCEPTED",
+        "value": "0.204549"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "ae7bedcd8146b936e20ea516269a76d27e2e894ca397155c6cd9486b190a7ed6",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "19b2a0123268617d1c5cda61b788398c4065f41570e74df2e3be4a49ca1b3801",
+        "round_index": 2,
+        "status": "ACCEPTED",
+        "value": "0.000233"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "e1db3fd0d74b536236ac92630104d375af66f897133743db8266a0a2b7c4765e",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "b798510d463fa155af01df46b0e05fa54188be296c0329b9c696eb54f85dcd27",
+        "round_index": 2,
+        "status": "ACCEPTED",
+        "value": "0.053540"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "8e33c43200383fbc67fb48f633e617d9037f876c6c145e305537fd0f13690150",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "d3efd60f0acb72f34bf65d0656e9a299e7be859c3b49d1d978f642bbb754ef7c",
+        "round_index": 2,
+        "status": "ACCEPTED",
+        "value": "0.075459"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "11bc5fb582527a2589063bfe570ea62e9702b83d57dfbc164f6526a37be17105",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "706fc7042404d374d47ffb1ad8ec83953d6679366f317b97135d92ba148022c8",
+        "round_index": 3,
+        "status": "ACCEPTED",
+        "value": "0.179296"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "b7889771442dc5255fe374d3036a4b1b8b24d8994c7f68e9261220b99f375a3a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "f9c7a6bb7f2bab502ba1de0dcd98a093492df379a8f75fdbcfccdea7f565d7d4",
+        "round_index": 3,
+        "status": "ACCEPTED",
+        "value": "0.002366"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "e43cc18e556e9930ee2e6bcc58dc1344cacf43fedd1f1f737b2d6baebafb2fba",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "dc85d54487934f635eb86c1da7117b0c1a026098b58396372cd18b37fc08f705",
+        "round_index": 3,
+        "status": "ACCEPTED",
+        "value": "0.036012"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "079e42bc01ae58899987f0647fb9ce04cc923ff355bf2efac54d5f39e9c4ee21",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "5fff2b8881446a64c6b27b7e3efc0f1f555a8b7d5c6d93eaff592400d69040ab",
+        "round_index": 3,
+        "status": "ACCEPTED",
+        "value": "0.215387"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "6a3c2c908272d3da366c6fd2d6a1ddbd606b147fed33d0a5635f60c0ce5d72de",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "c7076d9ce66317fba52ee57244d40467b694e4a2fbce860bf7c2a31dfea7dc3e",
+        "round_index": 4,
+        "status": "FAILED",
+        "value": "0.481954"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "59f931ae94046dec548ae15da17aafdd4b93ff0ce6167dd63d7dcd4f0d7b6f30",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "e590b26bacc0055c950f0fd8089f8482ce329f18119f14d61a1f8222447e89bc",
+        "round_index": 4,
+        "status": "ACCEPTED",
+        "value": "0.004376"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "d216a6479f9809bae0bfc82166300a157eddd651e750b78c6020325e50e84b91",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "b2273e519c81716f1e7020240921253816d057c094a3782cd333dbebfff59e66",
+        "round_index": 4,
+        "status": "ACCEPTED",
+        "value": "0.167297"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "7619a5f95b816631a8025a92630196b0db64461912737958b6a5f4be60720c61",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "5b1ff3a02a31870e49d26f271eaeffd8d7c47235a2844b8b4540bff474bc7c57",
+        "round_index": 4,
+        "status": "ACCEPTED",
+        "value": "0.001804"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "62d7fedea929901b219132480e37ad053ec4e619815db60d656e671145f280c8",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "989711b627a2d88a4241a7fc261cd5aaa6d40591001b2051b002d69e06bc53ff",
+        "round_index": 5,
+        "status": "ACCEPTED",
+        "value": "0.197832"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "86a02a38667e61067254b4dc598e5fd6f3d73479739cbe7bc21f77ed5fb153b2",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "b9caa3d5de1d30bb387253a32f315f95070ebe01dbbc76c9980dc92397c76adc",
+        "round_index": 5,
+        "status": "ACCEPTED",
+        "value": "0.007256"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "e6e47e556368d032db5605069a362fec32ff98f37647a28615d26e9a3bee2fdc",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "926c50b26ef8490cfda5a29e3f5034ef45cf93c8e402e860d661dfbde82d7c9e",
+        "round_index": 5,
+        "status": "ACCEPTED",
+        "value": "0.001226"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "9d0c33b6f297d5f2caf770db8b4006981b1e2d7f5d29580ab61887dd7d0d3848",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "b51aa90c0bb0fe51f4a0ab101ef6011c92c78fc97662a98f23809e02ee57271e",
+        "round_index": 5,
+        "status": "ACCEPTED",
+        "value": "0.001430"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "d11dc12bd14e5af9c1644ff507f4c92424f4180ed6db3494f129e9f71658aa15",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "e4f572c99ccb6019f78fa7ccc881cb5fa2dbc1b371ab912a6ebf60860bbf8951",
+        "round_index": 6,
+        "status": "ACCEPTED",
+        "value": "0.001295"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "5bd0eb72a5971c0f0b7a8f258f504d1b90d83946ec6b00abcfbc5b3a6ea61e81",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "7598a72af6983772564ab138a9440929d928d3d3b7e3459a42100c984c426eea",
+        "round_index": 6,
+        "status": "ACCEPTED",
+        "value": "0.108817"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "10173faba75512538dd018be6c2950e12bedb6f160393d62d3c07d54214c2b1a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "a1237a5be0268c82c61a87a1ac52b1849633ba48568eaa325abd05e3b6a171c5",
+        "round_index": 6,
+        "status": "ACCEPTED",
+        "value": "0.096885"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "494bcb75bba33319dc5bfe291c53954e6177754dc4d6de446761b975e7ae6243",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "e47536c4850ac5eda7ae43af2f1d4dcd0eba4a0eb1f2a4cf34e6ed74f23ad3e6",
+        "round_index": 6,
+        "status": "ACCEPTED",
+        "value": "0.007030"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "e5190ca1356009eb9ce0521d8fcdf935b7b3baf3c1806cf682194d43ae042b6a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "012d6c00a2925ae94a54ff22a73a941f4a6ac82c846e952a346438857afebafb",
+        "round_index": 7,
+        "status": "FAILED",
+        "value": "0.370620"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "a266300413474eb2211983769c30a27745d8f5d03d8419dc6c4c7d8a8c7c50f9",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "2172c66f08e0e41e03916de7d4db8ac28b4106faf5850528971b2510d0d10cdd",
+        "round_index": 7,
+        "status": "ACCEPTED",
+        "value": "0.048727"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "2cfef57a024612051412c265d14f5ccd0622be697f102066f3c950e647c3ec09",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "e84bdb4b397d401a8dfe209e6813de82be4096606afb85da9949d785bf4b5867",
+        "round_index": 7,
+        "status": "ACCEPTED",
+        "value": "0.042489"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "c1bb1ae8349a6e390f28ec54c7c0ef0fdb0f00dfa237aa221346484f7f70fab0",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "65425e3d4f836ea12d45ce9429a2c73fbfd94c74d5f0c25b21c7bf4b376653fa",
+        "round_index": 7,
+        "status": "ACCEPTED",
+        "value": "0.003583"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "2f6d401977927011786e5461c8b866584500ab0dce4b4aa0655432c8130dbea4",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "8b467dc55f830cc2df5159262febb34d446fabfebb1dadf7674238ee49e9f3f5",
+        "round_index": 8,
+        "status": "ACCEPTED",
+        "value": "0.083944"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "eee233313a98a7fcce04d90a8fd49928021653b77ce603e75ca6413db346bc11",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "aed6297d7ea521a0b0c69fa4e20a10af744b5052f12ae2a0bfe012068adc8761",
+        "round_index": 8,
+        "status": "ACCEPTED",
+        "value": "0.004788"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "b8f3d22992760df8cb01bc1c5d9aa757acbdc60e32c41d751edc15ecc2a30ccf",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "a98d0433938ec5a12c93ac2a9fea1e02f8854169b1480edcfb0bbb94e4acadb6",
+        "round_index": 8,
+        "status": "ACCEPTED",
+        "value": "0.222005"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "e696d32f517f9879bbf277a91486333ed204d23c027aee26b9c75fe5f88ed5b4",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "f45ae9837abb41edd129bf107e006f9e0b12d2aa4c036dda19581d01fc2aa8df",
+        "round_index": 8,
+        "status": "ACCEPTED",
+        "value": "0.033392"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "2c7d428b23861ee8809c5281d8609a59123aa2aad8948b0a34a2a75e7e983b84",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "07bf2cd58dfd99fd4dd788a0b6e21e410ec70e94b55b909605bdfad241f2483d",
+        "round_index": 9,
+        "status": "FALLBACK",
+        "value": "0.253327"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "eae74b785733ba70d0317b02041bd7304aa805417601877ab0e696f8cb4a8644",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "358c6173e44ed13cb62f68fb53bb905a5b49425552ee2c982baf6896787d41cb",
+        "round_index": 9,
+        "status": "ACCEPTED",
+        "value": "0.000533"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "fb1b6163f87798c5cd54eff7e4cd81f8bf80c1fc3839f30cc9efc46c30fd8a85",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "9f3dbc5a407fa89605a5b7c3a9605f2b276b7ff9a5a828c61a0b37ae12e9f5f6",
+        "round_index": 9,
+        "status": "ACCEPTED",
+        "value": "0.109668"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "c9781730c23f413c32e8bd68134699ae549218415a12c1726caebb41a558a906",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "2257281809fdd7676bd3817fe75687917aa3d473a971e7308ba8218029797eec",
+        "round_index": 9,
+        "status": "ACCEPTED",
+        "value": "0.038839"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "12ae9df4d4625b004d499195154e1981f0c1892181e2d054e7b9378cdece4852",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "b147d99ed7e5439df31f560594ddf9b98740b011dfaff41406c36de26c209f15",
+        "round_index": 10,
+        "status": "ACCEPTED",
+        "value": "0.002192"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "b81895b476e6d9078b4ad63458d32a26e5f08fd61293f2222bf07b9e95d15bf5",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "6066eb4e5a36419ae0defda46ca6ddcd6079a0ae50dec47d5594294f36e225af",
+        "round_index": 10,
+        "status": "ACCEPTED",
+        "value": "0.013170"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "3111bbbf8a406ca3f73b9c4e2f643fd9e4bafcf1128f879f096ebc125b49c340",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "7d9c88e6cec4abff7953d9c76fe70e8beb370ef5e4ec54cd37778a8302c6f435",
+        "round_index": 10,
+        "status": "ACCEPTED",
+        "value": "0.045077"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "d64acb137846b74265910dc7d4fae948c2a47dd8a1cec6360adfa35525a8ded5",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "94dc696c804ff307770231bed9307d9ac854cb7c5362076aa00434ba0d7e66b6",
+        "round_index": 10,
+        "status": "ACCEPTED",
+        "value": "0.022711"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "787c3cf91e0605cf4f70b4a04cf5d2cd6b17bcb4cd96bd39f15ca3ffc0ef4d40",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "833340ddbfe4f0321905b2d2a9f7112e7e79db4855c208257641393af7c44631",
+        "round_index": 11,
+        "status": "FAILED",
+        "value": "0.287580"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "1afd31baa8aac9473c41c78d9f700d53a62a05344b3e1ec30ff07d6c495e03bb",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "986bb39901fefcdfbaa16ede7241c09fcd187d796ce437462de1f97bf2d8df2b",
+        "round_index": 11,
+        "status": "ACCEPTED",
+        "value": "0.000722"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "a197e8e40e0706044a47c8dd45b32cfd88af006f733f03ae7400913647de78e2",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "fed1bef8f7ef0ca1f8a9000b8086db1e987a2910931238b1d0fd473b1a6b9fd4",
+        "round_index": 11,
+        "status": "ACCEPTED",
+        "value": "0.253034"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "0db64bd75f7838ecebd3dd7f7b68f03329e7208f503d32b8d6deb16689b3a3f1",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "ee739d793bf7b778a425b2914ea381d946d8b637cdd779a61c4b3d482ee13bd5",
+        "round_index": 11,
+        "status": "ACCEPTED",
+        "value": "0.023400"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "69f1a3d7cbebfc3eaa976eb0b9f7e4c7ad583ec0dd783004350d1579bd4ecddb",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "9539e435f681ecd1737bcc46e1e396ae5931dbf75540fc9b67e8fdaeb51ffd9a",
+        "round_index": 12,
+        "status": "ACCEPTED",
+        "value": "0.110520"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "5f78a021b5f5ef05c5fa2cc68aa4b215caab3b6645fe9f7448f34c227ae556f0",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "3902441830ada095454405552eed13dcfc654f48b57e4d3ec136067ef6b5c152",
+        "round_index": 12,
+        "status": "ACCEPTED",
+        "value": "0.010013"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "d5509b3d1fbd9d1c83f79b1167de29f32e4f47bb76590f9df2bdf93d87c0f5c4",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "3bf37cecb47c0e607bc6f323768e8ab8f4daf89d81ad8dd4df889b2b3675ca4b",
+        "round_index": 12,
+        "status": "ACCEPTED",
+        "value": "0.020694"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "81680c8ebee42716887232dd0df1ee2940988cc7a57685bdb4c49a9ed1ee6cb0",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "b726c06a10c3297ae1d4997d0fc68e58c028b69dcd20c47527cb296cc3b07260",
+        "round_index": 12,
+        "status": "ACCEPTED",
+        "value": "0.094881"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "653f28cc4313103d013a9b73e4da1d35bb9341c1a32c2d44299f268e9a9a92d4",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "0a68cd92af1c0ec56d7ef785becfe38bc9a0794937889b8492648fa9974a7ee2",
+        "round_index": 13,
+        "status": "ACCEPTED",
+        "value": "0.028839"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "a80a16f3f0e76f79f2a9d6d34a94d537cf0a7b79391e2e23e8be95aefa6d8320",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "0741750d7525dd17c3e7bbbf4c62a11923d351739cecf31388b1d74e1c30544a",
+        "round_index": 13,
+        "status": "ACCEPTED",
+        "value": "0.045520"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "527935687315d064d4c4f3dbb759f65607a9c1fc495cfb00bfcf3a1569fb4bb5",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "157093bccfa50fe5ff0034e8ea0f3964983fbdeb766c3f6683e39600857aca55",
+        "round_index": 13,
+        "status": "ACCEPTED",
+        "value": "0.000926"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "b4ea33c91854e1cb87b40bc0c991b3d63ce1ff7253783efb3182ece06f427ee1",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "17759fc0a4cb8e7b9ab15568ce4bdcf7c5a1903b2c70a460d7ed3a70813af6ec",
+        "round_index": 13,
+        "status": "ACCEPTED",
+        "value": "0.100510"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "51ad749ed98ac3b8098d16925d2967569b5a6cda81a229499cde532bd5eacdea",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "2e0678fb07a42c5c6e92a8e1757f3d1a2f6de63e3a152f22176dcebc3f3bde8b",
+        "round_index": 14,
+        "status": "FAILED",
+        "value": "0.194807"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "1d24c38aa3e4d391a80b9846da663356203df730091c44c14149577f9ffd34f6",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "0b621e17075e7082809b4a1fe7ee4985a28189231cfb2e85e9df154a3c822ba9",
+        "round_index": 14,
+        "status": "ACCEPTED",
+        "value": "0.021009"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "511deee4aaf04e17f0c81acbef4178ecec9eba8c3f15f603d6b59a3de29752a0",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "58145fc42529f18440bbad15e2a0291a15ca7d63fd38615edbd788d676486992",
+        "round_index": 14,
+        "status": "ACCEPTED",
+        "value": "0.026401"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "83008f6b346837a3491574d48919703010273e7f97599819ff54d1031bd9f59a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "3b48d14321d5ba9bdf13d65d18a2e728727eccc13efecde85cd94829aa6928b9",
+        "round_index": 14,
+        "status": "ACCEPTED",
+        "value": "0.004071"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "e767c8d23ca6f212332026c2d6679b9e35a1a4df01a979c6eee337cfe2dc482f",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "054509cdd3eed2c1a660be289eb9439ab7e715d8dde95d4dd4793e4e333b1c9b",
+        "round_index": 15,
+        "status": "FALLBACK",
+        "value": "0.445072"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "f2974bf2224d8a957e2e28cafcab96680261118b89395fca28dfc23f051d516e",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "e8af510d2fe1d01298335f3250ccb9254d2913e3594e2177fa48f112f1c9ee71",
+        "round_index": 15,
+        "status": "ACCEPTED",
+        "value": "0.055016"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "cc67f783c8c6a7aedca3fd433dda51ba923c90312d98a7d0461ea8a890e2bfc1",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "8be6100dd4f421591d403803ba01e56d9897bc0a52a4ef95c0f7b29f81c12c92",
+        "round_index": 15,
+        "status": "ACCEPTED",
+        "value": "0.131433"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "ea7e1394f78cb06241be373bec615f406af1b21d3fd326c3529f9784f5c29323",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "447759c0c06f5d74a300936b7d0d771ed58b5fe8d8db21b13ec7468f3954c871",
+        "round_index": 16,
+        "status": "ACCEPTED",
+        "value": "0.054019"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "85e016b7b6df57b1fc05a2bf4e40cef9bef94612ae8aaa44acc9bab0e7b9246a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "5a37c4d50159f4d8c518548e57f1e2c9d15f48685a50df2cf13937b91c91935e",
+        "round_index": 16,
+        "status": "ACCEPTED",
+        "value": "0.016053"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "9a84e468ce16b7652979c41a5a38d1fcc42506a4b834c51b05ec53ef3af90284",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "7a1880482940a420e1fc275d06e7bb2c3e5ca3d0e7d2f8c0ba21e866418c3a53",
+        "round_index": 16,
+        "status": "ACCEPTED",
+        "value": "0.017923"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "ae771a94b828b48f8db48c18f2ede8bf994e7556648007304eec48103d068d0d",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "0768ff8ae95b2f1c497753bcb61a021d94fb021b81c52270b19adf5e51c7f87f",
+        "round_index": 16,
+        "status": "ACCEPTED",
+        "value": "0.063505"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "ae974a44c3cce03e9dbf8cb84b250db51733a3828aa34062d8e2d41e86509b86",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "218ea474498767e6a73e3a3666d345babfc0332a7ad1b883e3cc21a6abb49fba",
+        "round_index": 17,
+        "status": "ACCEPTED",
+        "value": "0.045016"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "e75952c8ba58774785e6b6af22b48a4347ac87f164fa88f72262bdd4c89281cc",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "c99c5434f5abc012f8724684cb43a61a650ebaf2e20776d7f1a7483ab95bd1c6",
+        "round_index": 17,
+        "status": "ACCEPTED",
+        "value": "0.009170"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "2104ff6f4fdae10a3fc5738ae564157e07c9a4d3f55d14921e1d5201bd230812",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "cea7e88a96665a5995e04bf6206b893935e01476effb7aa6e1c4fe13cfdb68cc",
+        "round_index": 17,
+        "status": "ACCEPTED",
+        "value": "0.062639"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "e6cad376412282cb0e54eda52d6e099c41ef5f44334efb5fcb4a84b03b5a16fb",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "706fc7042404d374d47ffb1ad8ec83953d6679366f317b97135d92ba148022c8",
+        "round_index": 17,
+        "status": "ACCEPTED",
+        "value": "0.032604"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "3603d251ee925d120d33ff7c1857560c9458f0f5e87e4eee6ac5d9c18a2feddf",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "8850ace712181ab876192b7bc1f5465a3e9f155cbdd1b4b567d854975b6492f0",
+        "round_index": 18,
+        "status": "ACCEPTED",
+        "value": "0.005918"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "d92cf31e75084467c5127d86211bee05914f2b53bb3b1c9589bce44126c65340",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "aeeee3d623b3ba5071de06da04205ce1735808359ea5cdd1c1a92e768c368680",
+        "round_index": 18,
+        "status": "ACCEPTED",
+        "value": "0.001701"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "78edb6987d3e5c812ab99833b4ba26740beaae9782f7ea7d9d9d5a7f144f2716",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "c010ecc72eb72edf567cde61812ffda65beb0a9bd7ce37b6fe194f071b8a6dab",
+        "round_index": 18,
+        "status": "ACCEPTED",
+        "value": "0.127015"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "1a5231a611ebac67a543c6a5cfadc656db551c02627d0d7b53d1a9dcdb0673c2",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "9df836812c8783ffde884fb9d5e75de29904178ebd6e9e0b67cbe98629f460eb",
+        "round_index": 18,
+        "status": "FALLBACK",
+        "value": "0.345368"
+      },
+      {
+        "agent_id": "agent-4",
+        "artifact_hash": "61988142a0a90115530cf61ca2a7780dae5d50fb93b162555c2a56d6a2f1dc89",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "c4e45897e8c96d4502c5843edc1d2e493ea2e7c091ca93f254ee94e03ed21c96",
+        "round_index": 19,
+        "status": "FAILED",
+        "value": "0.269850"
+      },
+      {
+        "agent_id": "agent-1",
+        "artifact_hash": "e2ce293a9865f015c8824c9fda618fdfdf27fdb5218e37ca4001454533a1fb40",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "0f1fb468cf4b02fb17fe263804aed6e21d609c90ae12cc6094ba98e30c0bfb97",
+        "round_index": 19,
+        "status": "ACCEPTED",
+        "value": "0.096012"
+      },
+      {
+        "agent_id": "agent-3",
+        "artifact_hash": "2741e582d31a687de9d8d827eaf08f8f79570e39eb3704924386c043fd085a7a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "6f185901b0f184d9a73fa3261bbece1c6cbdcee265358f8a294e7cf69bd6f900",
+        "round_index": 19,
+        "status": "ACCEPTED",
+        "value": "0.034622"
+      },
+      {
+        "agent_id": "agent-2",
+        "artifact_hash": "f21336c47b6fea0e1886d06cc9eb672f7c919b857d855e5441e3accd2815844a",
+        "boundary_adjustment_count": 0,
+        "proposal_hash": "66d051b3749bd2621b116d9aa1144e850cb8f6d7566255a42ed9361c6493b074",
+        "round_index": 19,
+        "status": "ACCEPTED",
+        "value": "0.000280"
+      }
+    ],
+    "warm_history_complete": true,
+    "warm_id": "warm-5e4162c13d3149ff",
+    "workspace_collision_rounds": []
+  }
+}
