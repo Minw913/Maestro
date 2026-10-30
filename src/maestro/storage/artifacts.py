@@ -10,9 +10,10 @@ from maestro.types import canonical_json, IntegrityError
 
 
 class ArtifactStore:
-    def __init__(self, root, register=None):
+    def __init__(self, root, register=None, *, read_only=False):
         self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.read_only=read_only
+        if not read_only:self.root.mkdir(parents=True, exist_ok=True)
         self.register = register
 
     def path(self, digest):
@@ -21,6 +22,7 @@ class ArtifactStore:
         return self.root / digest[:2] / digest
 
     def put(self, data: bytes) -> str:
+        if self.read_only:raise PermissionError('Read-only artifact store')
         digest = hashlib.sha256(data).hexdigest()
         target = self.path(digest)
         target.parent.mkdir(parents=True, exist_ok=True)

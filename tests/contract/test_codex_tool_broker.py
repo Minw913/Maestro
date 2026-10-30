@@ -314,6 +314,27 @@ def test_repair_grant_binding_preserves_cpu_and_call_usage(tmp_path):
         tools.bind_grant(lambda: None, deadline=tools.deadline + 10)
 
 
+def test_valuation_pause_extends_only_elapsed_wall_time_once(tmp_path):
+    _, tools = broker(tmp_path)
+    original_deadline = tools.deadline
+    original_usage = tools.usage()
+    started = time.monotonic()
+    tools.pause_for_valuation(started)
+    with pytest.raises(ToolScopeExpired):
+        tools.call("list", {"path": "solver"})
+    with pytest.raises(ValueError, match="finish"):
+        tools.resume_after_valuation(time.monotonic() + 10)
+    finished = time.monotonic()
+    assert tools.resume_after_valuation(finished) == original_deadline + (finished-started)
+    assert tools.usage() == original_usage
+    with pytest.raises(ToolScopeExpired):
+        tools.resume_after_valuation(time.monotonic())
+    with pytest.raises(ToolScopeExpired):
+        tools.pause_for_valuation(time.monotonic())
+    with pytest.raises(ValueError, match="common"):
+        tools.bind_grant(lambda: None, deadline=tools.deadline + 1)
+
+
 def test_unknown_or_closed_stage_cannot_rebind_a_fresh_grant(tmp_path):
     _, tools = broker(tmp_path, runner=Runner([RuntimeError("missing receipt")]))
     with pytest.raises(ToolExecutionUnknown):

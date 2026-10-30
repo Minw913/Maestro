@@ -9,3 +9,5 @@ stages:
 execution_mode: real
 n_agents: 4
 seed: 0
+
+valuation_discount_factor: 0.8  # Per own settled evaluation; shared by first-price and UCB

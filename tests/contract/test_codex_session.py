@@ -296,7 +296,7 @@ def test_stale_generation_epoch_is_rejected_before_dispatch(tmp_path):
     driver.close()
 
 
-def test_session_proposals_flow_through_auction_ticket_and_settlement(tmp_path):
+def test_legacy_session_protocol_cannot_enter_prebid_market(tmp_path):
     """Injected CLI + simulated scorer: never a claim of physical PACE execution."""
     from maestro.config import RunConfig
     from maestro.loop import ExperimentEngine
@@ -324,16 +324,12 @@ def test_session_proposals_flow_through_auction_ticket_and_settlement(tmp_path):
         engine.config = replace(config,execution_mode='real',profile='codex_session_pilot')
         engine.backend = driver
         states = {'a':state}
-        engine.ledger.create_episode('episode','first_price',engine.config,states)
+        engine.ledger.create_episode('episode','first_price_naive',engine.config,states)
         parent = driver.prepare_seed()
         engine.ledger.record_candidate(parent['candidate_hash'],parent)
-        engine._round('episode',0,states,'first_price')
-        ticket = engine.ledger.connection.execute('SELECT * FROM eval_tickets').fetchone()
-        settlement = engine.ledger.connection.execute('SELECT * FROM settlements').fetchone()
-        assert ticket['status']=='SETTLED' and settlement['payment']!='0'
-        from decimal import Decimal
-        assert states['a'].wealth==Decimal(settlement['wealth_before'])-Decimal(settlement['payment'])+Decimal(settlement['reward'])
-        assert engine.evaluator.calls == [ticket['job_id']]
-        assert driver.turn_store.db.execute('SELECT count(*) FROM session_turns').fetchone()[0]==2
-        assert all(json.loads(row[0])['request_count_unknown'] for row in engine.ledger.connection.execute(
-            "SELECT payload FROM resource_usage WHERE phase IN('planning','generation')"))
+        from maestro.types import MaestroError
+        with pytest.raises(MaestroError,match='separated implementation/runtime repair'):
+            engine._round('episode',0,states,'first_price_naive')
+        assert not engine.ledger.connection.execute('SELECT * FROM eval_tickets').fetchone()
+        assert not engine.ledger.connection.execute('SELECT * FROM invitations').fetchone()
+        assert not engine.ledger.connection.execute('SELECT * FROM settlements').fetchone()

@@ -72,9 +72,11 @@ class CoralBackend:
                 self._warm_memory[agent_id] = self.workspaces.freeze(workspace.private)
         self.supervisor._sessions.clear()
         self._agents.clear()
+        self.board = {}
         self._generation_spent.clear()
         self._checkpoint_memory.clear()
         self.episode_id = episode_id
+        self.request_episode_id = episode_id
         self.planner_client.episode_id = episode_id
         self.workspaces = WorkspaceStore(self._workspace_base / episode_id, self.workspaces.artifact_root)
 
@@ -113,9 +115,19 @@ class CoralBackend:
                 raise PermissionError("Checkpoint memory identity mismatch")
         self._checkpoint_memory = {agent: dict(reference) for agent, reference in manifest.items()}
 
+    def isolate_recovered_workspaces(self, namespace):
+        """Keep an interrupted attempt's local files as evidence on resume."""
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+',namespace) or self._agents:
+            raise PermissionError('Recovery workspace namespace is invalid or already active')
+        target=self._workspace_base/namespace
+        if target.exists() and any(target.iterdir()):
+            raise FileExistsError('Recovery workspace namespace already consumed')
+        self.workspaces=WorkspaceStore(target,self.workspaces.artifact_root)
+
     def set_board(self, board: dict):
         with self._workspace_lock:
-            self._set_board_locked(board)
+            self._set_board_locked({} if self.episode_id.startswith('warm-') else board)
 
     def _set_board_locked(self, board: dict, *, workspaces=None):
         self.board = dict(board)
@@ -132,13 +144,13 @@ class CoralBackend:
         for workspace in (self._agents.values() if workspaces is None else workspaces):
             path = workspace.public / "board.json"
             path.write_text(json.dumps(board, ensure_ascii=False), encoding="utf-8")
+            target = workspace.public / "champion"
+            if target.exists() or target.is_symlink():
+                from .workspace import remove_private_path
+                remove_private_path(target, workspace.public)
             if champion and Path(champion).is_dir():
                 import shutil
                 from .workspace import solver_files
-                target = workspace.public / "champion"
-                if target.exists():
-                    from .workspace import remove_private_path
-                    remove_private_path(target, workspace.public)
                 target.mkdir()
                 for source, relative in solver_files(Path(champion)):
                     destination = target / relative
@@ -258,8 +270,11 @@ class CoralBackend:
                       "plan_version_id": plan.version_id, "parent_hash": plan.parent_hash,
                       "target": plan.target, "mod_type": plan.mod_type, "change": plan.change,
                       "revision": revision}, ensure_ascii=False))
-        prompt += (f"\nPrivate memory: {workspace.private}. Read-only shared verified board/champion: "
-                   f"{workspace.public}. Direction brief: " + json.dumps(self._directions.get(state.agent_id, {}), ensure_ascii=False))
+        shared = ("No global champion or peer board is available during Warm Start. "
+                  if self.episode_id.startswith('warm-') else
+                  f"Read-only shared verified board/champion: {workspace.public}. ")
+        prompt += (f"\nPrivate memory: {workspace.private}. " + shared +
+                   "Direction brief: " + json.dumps(self._directions.get(state.agent_id, {}), ensure_ascii=False))
         account = f"{self.episode_id}:{round_index}:{state.agent_id}:GENERATION:{plan.version_id}"
         usage_reader = getattr(self.supervisor.provider, "usage", lambda account: {})
         before = usage_reader(account)

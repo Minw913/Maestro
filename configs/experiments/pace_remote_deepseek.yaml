@@ -10,3 +10,6 @@ stages:
 execution_mode: real
 n_agents: 4
 seed: 0
+ucb_exploration_coefficient: 0  # Mean-reward-only UCB for new experiments
+
+valuation_discount_factor: 0.8  # Per own settled evaluation; shared by first-price and UCB

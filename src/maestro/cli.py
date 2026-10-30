@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -18,22 +19,39 @@ def _config(args):
         stage='warm_start' if getattr(args,'command',None)=='bootstrap' else 'market'
         config=load_config(args.config,stage=stage)
     elif getattr(args,'bootstrap',None):
-        config=RunConfig.from_dict(json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config']).for_stage('market')
+        raw=json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config']
+        from maestro.execution.pipeline import require_prebid
+        require_prebid(raw)
+        source=RunConfig.from_dict(raw)
+        if getattr(args,'credits',None) is not None:
+            source=source.with_market_credits(args.credits)
+        config=source.for_stage('market')
     elif getattr(args,'command',None) in ('resume','final-eval'):
-        from maestro.storage import Ledger
-        with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
-            row=ledger.connection.execute('SELECT config_json FROM episodes WHERE id=?',(args.episode,)).fetchone()
-            if row is None:
-                raise ValueError('Unknown episode')
-            config=RunConfig.from_dict(json.loads(row['config_json']))
+        from maestro.execution.pipeline import read_episode,require_prebid
+        episode=read_episode(args.root,args.episode)
+        raw=json.loads(episode['config_json'])
+        require_prebid(raw)
+        if args.command=='resume':
+            from maestro.market.round_extension import latest_config
+            from maestro.storage import Ledger
+            with Ledger(Path(args.root)/'authority'/'ledger.sqlite',read_only=True) as ledger:
+                config,_=latest_config(ledger.connection,episode)
+        else:
+            config=RunConfig.from_dict(raw)
     else:
         config=RunConfig()
     if getattr(args,'seed',None) is not None:
         config=replace(config,seed=args.seed)
-    overrides = {name: getattr(args, name) for name in ('execution_mode', 'benchmark')
+    overrides = {name: getattr(args, name) for name in ('execution_mode', 'benchmark','ucb_exploration_coefficient')
                  if getattr(args, name, None) is not None}
     if overrides:
         config = replace(config, **overrides)
+    if getattr(args,'credits',None) is not None and getattr(args,'config',None):
+        config=config.with_market_credits(args.credits)
+    elif getattr(args,'credits',None) is not None and getattr(args,'command',None)=='resume':
+        config=config.with_market_credits(args.credits)
+    if getattr(args,'rounds',None) is not None:
+        config=config.with_market_rounds(args.rounds)
     return config
 
 
@@ -67,7 +85,13 @@ def build_parser():
     qualify.add_argument('--phase-seconds',type=float,default=120)
     qualify.add_argument('--historical-unknown',help='Read-only legacy UNKNOWN database to hash-attest')
     qualify.add_argument('--historical-sha256',help='Expected SHA256 of the historical evidence file')
+    registry=sub.add_parser('regimes',help='List stable Market regime IDs and optionally resolve their settings without execution')
+    registry.add_argument('--config',help='Experiment manifest; resolves the Market stage without constructing a backend')
     sub.add_parser('pause',help='Cooperatively pause a DeepSeek controller; never resets quotas')
+    recovery=sub.add_parser('reconcile-prebid',help='Verify local containment and authorize one in-place prebid restart')
+    recovery.add_argument('--episode',required=True)
+    recovery.add_argument('--round-index',type=int,required=True)
+    recovery.add_argument('--service',required=True,help='Stopped user systemd service unit that owned the controller')
     audit=sub.add_parser('deepseek-audit',help='Read-only DeepSeek request/restart audit; no inference')
     audit.add_argument('--ledger',required=True,help='DeepSeek requests.sqlite path')
     for command in ('bootstrap','run','resume','smoke','final-eval'):
@@ -76,17 +100,44 @@ def build_parser():
         item.add_argument('--seed',type=int)
         item.add_argument('--execution-mode', choices=['mock','real'], help='Simulated evaluation or real execution')
         item.add_argument('--benchmark', choices=['pace'], help='Benchmark task (PACE only)')
+        if command in ('run','resume'):
+            item.add_argument('--credits',type=Decimal,
+                help='Initial Market credits per agent; 0 provisions sufficient funding. Set at Market launch.')
+            item.add_argument('--rounds',type=int,
+                help='Market round horizon for this episode; resume accepts only an increase at a completed boundary.')
+        if command in ('bootstrap','run','resume'):
+            item.add_argument('--ucb-exploration-coefficient',type=float,
+                help='Nonnegative multiplier for the UCB exploration bonus; new experiments default to 0 (mean reward only). Resume preserves the frozen value.')
         if command=='run':
             item.add_argument('--bootstrap',required=True)
-            item.add_argument('--policy',choices=['first_price','uniform','ucb'],default='first_price')
+            item.add_argument('--import-legacy-warm',action='store_true',
+                help='Explicitly transfer verified schema-2 Warm states into a new prebid Market; requires --config')
+            from maestro.market.regimes import resolve_policy
+            selection=item.add_mutually_exclusive_group()
+            selection.add_argument('--policy',choices=['first_price_naive','uniform','ucb','adjusted_valuation'],help='Market policy; default first_price_naive')
+            selection.add_argument('--regime',type=resolve_policy,help='Regime number or ID: 1/R1=uniform, 2/R2=ucb, 3/R3=first_price_naive, 4/R4=adjusted_valuation')
             item.add_argument('--episode')
         if command=='resume':
+            from maestro.market.regimes import resolve_policy
+            item.add_argument('--regime',type=resolve_policy,help='Optional expected regime; must match the stored episode')
             item.add_argument('--episode',required=True)
         if command=='final-eval':
             item.add_argument('--episode',required=True)
             item.add_argument('--manifest',required=True)
     archive=sub.add_parser('export-artifacts',help='Export standard experiment outputs with standalone SQLite backups; no local runtime logs')
     archive.add_argument('--output',required=True,help='New destination outside the original run root')
+    plot=sub.add_parser('plot-search-tree',help='Draw settled Warm/Market search trees from a read-only ledger; no model/evaluation calls')
+    plot.add_argument('--root',default=argparse.SUPPRESS,help='Explicit experiment root (also accepted before the command)')
+    plot.add_argument('--benchmark',help='Benchmark folder, for example pace-ds')
+    plot.add_argument('--model',help='Frozen model name, for example deepseek-flash')
+    plot.add_argument('--regime',choices=['first_price_naive','ucb','uniform','adjusted_valuation',
+                                          'first_price','agent_adjusted'],required=True)
+    plot.add_argument('--run','--timestamp','--name',dest='run_label',help='UTC timestamp or custom run-folder name')
+    plot.add_argument('--runs-dir',default='artifacts/runs',help='Parent of benchmark/model/regime/run folders')
+    plot.add_argument('--episode',help='Select one Market episode if multiple episodes use this regime')
+    plot.add_argument('--output',help='Figure directory; default ROOT/reports/search-tree/REGIME')
+    plot.add_argument('--dpi',type=int,default=145,help='PNG resolution, 50–300 (default 145)')
+    plot.add_argument('--detail-rounds',help='Optional 1-based Market excerpt START:END; default highlights the largest champion gain')
     for command in ('report','replay','status'):
         item=sub.add_parser(command)
         item.add_argument('--episode')
@@ -125,12 +176,30 @@ def main(argv=None):
 
 def _execute(args):
     try:
-        if args.command=='pause':
+        if args.command=='regimes':
+            from maestro.market.regimes import REGIMES,REGISTRY_REVISION,contract
+            result={'registry_revision':REGISTRY_REVISION,'market_regimes':[dict(row) for row in REGIMES],
+                    'warm_start':'shared initialization, not a Market regime'}
+            if args.config:
+                config=load_config(args.config,stage='market')
+                result['contracts']=[contract(row['policy'],config) for row in REGIMES]
+        elif args.command=='plot-search-tree':
+            from maestro.search_tree import resolve_root,plot_search_tree
+            root=resolve_root(root=args.root if args.root!='artifacts/runs/local' or args.run_label is None else None,
+                runs_dir=args.runs_dir,benchmark=args.benchmark,model=args.model,
+                regime=args.regime,run=args.run_label)
+            result=plot_search_tree(root,args.regime,episode=args.episode,
+                benchmark=args.benchmark,model=args.model,output=args.output,
+                dpi=args.dpi,detail_rounds=args.detail_rounds)
+        elif args.command=='pause':
             from maestro.execution.pause import PauseController
             pause=PauseController(args.root)
             pause.request()
             result={'status':'PAUSE_REQUESTED','marker':str(pause.path.resolve()),
                 'drain_seconds':pause.grace_seconds,'provider_termination_confirmed':False}
+        elif args.command=='reconcile-prebid':
+            from maestro.execution.prebid_recovery import reconcile_prebid
+            result=reconcile_prebid(args.root,args.episode,args.round_index,service=args.service)
         elif args.command=='deepseek-audit':
             from maestro.backends.coral.deepseek_lifecycle import audit_ledger
             result=audit_ledger(args.ledger)
@@ -169,23 +238,38 @@ def _execute(args):
                 phase_seconds=args.phase_seconds,reasoning_effort=args.reasoning_effort)
             print(canonical_json(result))
             return 0 if result.get('status')=='PASSED' else 2
-        elif args.command in ('bootstrap','run','resume','smoke','final-eval'):
+        elif args.command=='final-eval':
+            if any(getattr(args,key,None) is not None for key in ('config','seed','execution_mode','benchmark')):
+                raise ValueError('final-eval uses the frozen source contract; configuration overrides are not supported')
+            from maestro.tasks.pace.heldout import evaluate_frozen_final
+            result=evaluate_frozen_final(args.root,args.episode,args.manifest)
+        elif args.command in ('bootstrap','run','resume','smoke'):
             from maestro.loop import ExperimentEngine
             config=_config(args)
             if args.command=='run':
-                warm=RunConfig.from_dict(json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config'])
-                config.validate_warm_source(warm)
+                raw=json.loads(Path(args.bootstrap).read_text(encoding='utf-8'))['payload']['config']
+                if args.import_legacy_warm:
+                    if not args.config:
+                        raise ValueError('--import-legacy-warm requires an explicit current Market --config')
+                else:
+                    from maestro.execution.pipeline import require_prebid
+                    require_prebid(raw)
+                    warm=RunConfig.from_dict(raw)
+                    config.validate_warm_source(warm)
             if args.command=='smoke' and config.stage_configs:
                 raise MaestroError('Layered experiments require separate bootstrap and run commands')
             if args.command=='resume':
+                from maestro.execution.pipeline import read_episode,require_prebid
+                row=read_episode(args.root,args.episode)
+                require_prebid(json.loads(row['config_json']))
+                if args.regime is not None and args.regime!=row['policy']:
+                    raise ValueError('Resume regime differs from frozen episode')
+                from maestro.market.round_extension import latest_config,validate_extension
                 from maestro.storage import Ledger
-                with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
-                    row = ledger.connection.execute('SELECT config_json,config_hash FROM episodes WHERE id=?', (args.episode,)).fetchone()
-                    if row is None:
-                        raise ValueError('Unknown episode')
-                    RunConfig.from_dict(json.loads(row['config_json']))
-                    if row['config_hash'] != config.hash:
-                        raise ValueError('Resume config hash mismatch')
+                with Ledger(Path(args.root)/'authority'/'ledger.sqlite',read_only=True) as ledger:
+                    previous,_=latest_config(ledger.connection,row)
+                if previous.hash != config.hash:
+                    validate_extension(previous,config)
             if args.command=='smoke' and config.execution_mode!='mock':
                 raise MaestroError('smoke is explicitly simulated; use bootstrap/run for real evaluation')
             from contextlib import nullcontext
@@ -194,15 +278,13 @@ def _execute(args):
                 if args.command=='bootstrap':
                     result=engine.bootstrap()
                 elif args.command=='run':
-                    result=engine.run(args.bootstrap,args.policy,episode_id=args.episode)
+                    result=engine.run(args.bootstrap,args.regime or args.policy or 'first_price_naive',
+                        episode_id=args.episode,legacy_warm_import=args.import_legacy_warm)
                 elif args.command=='resume':
                     result=engine.resume(args.episode)
-                elif args.command=='final-eval':
-                    from maestro.tasks.pace.heldout import evaluate_final
-                    result=evaluate_final(engine,args.episode,args.manifest)
                 else:
                     warm=engine.bootstrap()
-                    runs=[engine.run(warm['checkpoint'],policy) for policy in ('uniform','ucb','first_price')]
+                    runs=[engine.run(warm['checkpoint'],policy) for policy in ('uniform','ucb','first_price_naive')]
                     result={'warm':warm,'runs':runs}
             if args.command=='smoke':
                 from maestro.replay import verify_ledger
@@ -220,7 +302,7 @@ def _execute(args):
             result=report(args.root,args.episode)
         elif args.command=='status':
             from maestro.storage import Ledger
-            with Ledger(Path(args.root)/'authority'/'ledger.sqlite') as ledger:
+            with Ledger(Path(args.root)/'authority'/'ledger.sqlite',read_only=True) as ledger:
                 query='SELECT id,policy,execution_mode,benchmark,status FROM episodes'+(' WHERE id=?' if args.episode else '')
                 result={'episodes':[dict(r) for r in ledger.connection.execute(query,(args.episode,) if args.episode else ())]}
         elif args.command=='eval' or (args.command=='agent' and args.agent_command=='candidate-submit'):

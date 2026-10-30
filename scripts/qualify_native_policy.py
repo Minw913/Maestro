@@ -37,6 +37,20 @@ class QualificationBudgets(BudgetStore):
             return super().reserve(*args,**kwargs)
 
 
+def check_repair_context(prompt,private_nonce):
+    """Allow the declared runtime context, while excluding private session data."""
+    if private_nonce in prompt:raise ValueError('Private memory leaked to repair')
+    data=json.loads(prompt.split('\n',1)[1])
+    expected={'files','runtime_error','solver_argv','parent_files','parent_hash',
+              'source_index','parent_source_index'}
+    if set(data)!=expected:raise ValueError('Undeclared or incomplete isolated repair context')
+    test=data['runtime_error'].get('test_context',{})
+    if (test.get('kind')!='fixed_sanity_only' or not test.get('stdin')
+            or 'receipt' not in test or not data['files'] or not data['parent_files']):
+        raise ValueError('Actual failed sanity input/receipt and source context are required')
+    return data
+
+
 def check_initial_candidate(path, faulty_source):
     """The qualification must modify the entry, not an unrelated new file."""
     files = {relative.as_posix(): item for item, relative in solver_files(Path(path))}
@@ -121,7 +135,9 @@ def run(root,readiness,config_path,prior_ledgers,live,standalone=False):
             'No performance claim; qualify initial generation and isolated runtime repair')
         deadline=time.monotonic()+target.generation_window_seconds
         def issue(epoch):return authority.issue(episode_id=episode,round_index=0,agent_id='qualifier',
-            plan_version_id=version,parent_hash=state.parent_hash,epoch=epoch,expires_at=time.time()+deadline-time.monotonic())
+            plan_version_id=version,parent_hash=state.parent_hash,epoch=epoch,expires_at=time.time()+deadline-time.monotonic(),
+            purpose='prebid_implementation' if epoch==0 else 'runtime_repair',
+            source_candidate_hash=state.parent_hash if epoch==0 else candidate['candidate_hash'])
         stage='implementation';grant=issue(0)
         candidate=backend.generate(state,plan,0,deadline=deadline,grant=grant,grant_authority=authority)
         result['initial_usage']=dict(backend.last_generation_usage)
@@ -140,7 +156,7 @@ def run(root,readiness,config_path,prior_ledgers,live,standalone=False):
         prompts=[json.loads(p.read_text())['prompt'] for p in phase_scopes]
         repair_prompts=[p for p in prompts if p.startswith('ISOLATED RUNTIME REPAIR.')]
         assert len(repair_prompts)==1 and nonce not in repair_prompts[0]
-        assert set(json.loads(repair_prompts[0].split('\n',1)[1]))=={'files','runtime_error','solver_argv'}
+        check_repair_context(repair_prompts[0],nonce)
         result['checks']['repair_context_isolated']=True
         stage='real-graph-debug'
         graph_path=Path(config.pace['panel_manifest']).parent/'heuristic_032.gr';raw=graph_path.read_text()

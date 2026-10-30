@@ -5,17 +5,19 @@ rounds: 20
 refresh_interval: 3
 reward_scale: '100'
 catchup_fraction: '0.25'
-bid_cap: '100'
-initial_wealth: '2000'
+initial_wealth: '5'  # Initial Market credits per agent; 0 = sufficient funding for all rounds (R3/R4)
 preparation_calls: 4
 preparation_window_seconds: 300
 planning_calls: 1
 planning_window_seconds: 600
 generation_calls: 1
 runtime_repair_calls: 3
-generation_window_seconds: 360  # Shared deadline; backfill gets only the remaining time
+generation_window_seconds: 360  # Shared active generation time; paused during R4 valuation
 generation_cpu_seconds: 30
 memory_bytes: 1073741824
 pids_max: 32
 output_bytes: 1048576
 max_candidate_revisions: 3
+
+valuation_calls: 4
+valuation_window_seconds: 300  # R4 only; independent common valuation window

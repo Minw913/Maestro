@@ -13,6 +13,7 @@ import math
 import threading
 import time
 from maestro.agents.planner import PlanDecision
+from maestro.agents.planning_diagnostics import safe_planning_diagnostic
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class PlanOutcome:
     finished_at: float | None = None
     request_id: str | None = None
     scope_id: str | None = None
+    diagnostic: dict[str, str] | None = None
 
 
 def _capabilities(backend):
@@ -128,7 +130,8 @@ def parallel_plans(states, contexts, backend, round_index, deadline, *, budget_u
                 error=f"{type(error).__name__}: {error}"[:4000],
                 status="INFLIGHT_UNKNOWN" if unknown else "ABSTAIN",
                 inflight_unknown=unknown, started_at=at, finished_at=time.monotonic(),
-                request_id=getattr(error, "request_id", None), scope_id=getattr(error, "scope_id", None))
+                request_id=getattr(error, "request_id", None), scope_id=getattr(error, "scope_id", None),
+                diagnostic=safe_planning_diagnostic(getattr(error, "diagnostic", None)))
 
     executor = ThreadPoolExecutor(max_workers=len(ids), thread_name_prefix="maestro-plan")
     futures = {executor.submit(execute, agent): agent for agent in ids}
@@ -169,7 +172,8 @@ def parallel_plans(states, contexts, backend, round_index, deadline, *, budget_u
                 status="INFLIGHT_UNKNOWN" if late.inflight_unknown else "ABSTAIN",
                 inflight_unknown=late.inflight_unknown,
                 started_at=late.started_at, finished_at=late.finished_at,
-                request_id=late.request_id, scope_id=late.scope_id)
+                request_id=late.request_id, scope_id=late.scope_id,
+                diagnostic=late.diagnostic if late.inflight_unknown else None)
         else:
             unknown = not quiescent and at is not None
             outcomes[agent] = PlanOutcome(agent,

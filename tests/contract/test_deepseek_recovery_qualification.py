@@ -1,5 +1,6 @@
 """Qualification envelopes are enforced before any external dispatch."""
 import importlib.util
+import json
 from pathlib import Path
 import time
 import pytest
@@ -32,3 +33,16 @@ def test_initial_qualification_checks_exact_entry_and_preserved_fault(tmp_path):
     qualification.check_initial(tmp_path,original)
     (tmp_path/'run').write_text('# initial-qualified\npass\n')
     with pytest.raises(ValueError):qualification.check_initial(tmp_path,original)
+
+
+def test_recovery_qualification_admits_declared_context_with_harness_suffix_only():
+    data={'files':[{'path':'run'}],'parent_files':[{'path':'run'}],
+        'parent_hash':'p','source_index':[],'parent_source_index':[],'solver_argv':['/candidate/run'],
+        'runtime_error':{'test_context':{'kind':'fixed_sanity_only','stdin':'p ds 1 0\n',
+                                        'receipt':{'returncode':1}}}}
+    prompt=lambda:'ISOLATED RUNTIME REPAIR.\n'+json.dumps(data)+'\nHarness runtime suffix'
+    assert qualification.check_repair_prompt(prompt(),['private-nonce'])==data
+    data['memory']='private-nonce'
+    with pytest.raises(ValueError):qualification.check_repair_prompt(prompt(),['private-nonce'])
+    del data['memory'];data['parent_files']=[]
+    with pytest.raises(ValueError):qualification.check_repair_prompt(prompt(),['private-nonce'])

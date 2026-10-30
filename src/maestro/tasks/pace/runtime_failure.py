@@ -1,5 +1,5 @@
 """Conservative pre-admission runtime evidence; never authorizes a re-evaluation."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 
@@ -9,6 +9,8 @@ class RuntimeFailure:
     exception_type: str
     diagnostic: str
     locations: tuple[tuple[str, int], ...]
+    # Controller-supplied fixed sanity input, never training/reference data.
+    test_context: dict = field(default_factory=dict)
 
 
 class RuntimePrecheckFailure(tuple):
@@ -23,7 +25,7 @@ _RUNTIME_EXCEPTIONS = frozenset({'NameError','UnboundLocalError','TypeError','Va
     'OverflowError','AssertionError','StopIteration'})
 
 
-def classify_runtime_failure(candidate_hash, receipt):
+def classify_runtime_failure(candidate_hash, receipt, *, test_context=None):
     # Missing commands/dependencies, syntax/format/solution errors, OOM/signals,
     # output/CPU/wall limits and executor failures all fail closed. This is a
     # diagnostic classifier, not a proof that untrusted stderr is honest.
@@ -42,4 +44,4 @@ def classify_runtime_failure(candidate_hash, receipt):
     locations = tuple((p, int(n)) for p,n in re.findall(r'File "/candidate/([^"\n]+)", line ([0-9]+)',error))
     if not locations:
         return None
-    return RuntimeFailure(candidate_hash, kind, error, locations)
+    return RuntimeFailure(candidate_hash, kind, error, locations, test_context or {})

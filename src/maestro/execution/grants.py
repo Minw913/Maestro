@@ -24,6 +24,8 @@ class EditGrant:
     epoch: int
     expires_at: float
     signature: str = ""
+    purpose: str = "legacy"
+    source_candidate_hash: str = ""
 
 
 class GrantAuthority:
@@ -47,11 +49,12 @@ class GrantAuthority:
 
     def issue(self, *, episode_id: str, round_index: int, agent_id: str,
               plan_version_id: str, parent_hash: str, epoch: int,
-              expires_at: float) -> EditGrant:
+              expires_at: float, purpose: str = 'legacy', source_candidate_hash: str = '') -> EditGrant:
         if expires_at <= self.clock():
             raise GrantError("Cannot issue an expired grant")
         grant = EditGrant(secrets.token_hex(16), episode_id, round_index, agent_id,
-                          plan_version_id, parent_hash, epoch, expires_at)
+                          plan_version_id, parent_hash, epoch, expires_at,
+                          purpose=purpose, source_candidate_hash=source_candidate_hash)
         return EditGrant(**{**asdict(grant), "signature": self._signature(grant)})
 
     def verify(self, grant: EditGrant, *, agent_id: str, plan_version_id: str,

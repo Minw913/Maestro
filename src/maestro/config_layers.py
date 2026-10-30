@@ -12,6 +12,7 @@ from maestro.config import (RunConfig, read_config_document, EXPERIMENT_STAGES,
     STAGE_FIELDS, PHASE_BUDGET_FIELDS, WARM_FIELDS, MARKET_FIELDS)
 
 RUNTIME_CORAL_FIELDS = frozenset({
+    'candidate_pipeline',
     'backend_factory','revision','model','codex_cli_version','codex_reasoning_effort',
     'director_mode','runtime','runtime_model','provider_model','planning_model',
     'planning_api_base','generation_api_base','planning_api_key_env','generation_api_key_env',
@@ -122,7 +123,7 @@ def _fragment(path, role, seen, sources):
 def load_experiment(path, manifest, digest, *, stage):
     path=path.resolve()
     _keys(manifest,{'kind','schema_version','runtime','deployment','benchmark','stages',
-                    'execution_mode','n_agents','seed','failures'},'experiment')
+                    'execution_mode','n_agents','seed','failures','ucb_exploration_coefficient','valuation_discount_factor'},'experiment')
     if type(manifest.get('schema_version')) is not int or manifest['schema_version'] != 1:
         raise ValueError('Experiment schema_version must be 1')
     if stage not in EXPERIMENT_STAGES:
@@ -140,11 +141,17 @@ def load_experiment(path, manifest, digest, *, stage):
     common={}
     for role in ('runtime','deployment','benchmark'):
         _merge(common,reference(manifest.get(role),role))
-    for key in ('execution_mode','n_agents','seed','failures'):
+    for key in ('execution_mode','n_agents','seed','failures','ucb_exploration_coefficient','valuation_discount_factor'):
         if key in manifest:
             _merge(common,{key:manifest[key]})
     if 'execution_mode' not in common:
         raise ValueError('Experiment execution_mode must be explicit')
+    from maestro.execution.pipeline import new_pipeline_settings
+    common['coral']=new_pipeline_settings(common.get('coral',{}))
+    if common.get('valuation_discount_factor',0.8) is None:
+        raise ValueError('New configs require a numeric valuation_discount_factor')
+    common.setdefault('valuation_discount_factor',RunConfig().valuation_discount_factor)
+    common.setdefault('ucb_exploration_coefficient',RunConfig().ucb_exploration_coefficient)
     # Repeated resource values inside an evaluation contract must agree with
     # their top-level meaning, even though they are distinct serialized fields.
     contract=common.get('pace',{}).get('contract',{})

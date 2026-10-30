@@ -1,0 +1,23 @@
+# New pipeline, separate from historical frozen runtimes.
+kind: runtime
+schema_version: 1
+profile: v1_cooperative
+coral:
+  candidate_pipeline: prebid_v2
+  backend_factory: maestro.backends.coral.deepseek_backend:native_factory
+  runtime: dsh
+  revision: '0123dfb939b35228cf2c1fde224cd0561e727408'
+  model: deepseek-flash
+  director_mode: predeclared
+  deepseek_api_base: https://api.deepseek.com/anthropic
+  deepseek_api_key_env: DEEPSEEK_API_KEY
+  deepseek_reasoning_effort: low
+  deepseek_max_output_tokens: 96000
+  deepseek_transport_retry:
+    max_retries_per_request: 1
+    max_extra_requests: 20
+    backoff_seconds: 10.0
+    continue_after_network_failure: true
+    warm_seed_fallback: true
+  deepseek_cli_version: 0.2.1-rc.2
+  deepseek_cli_sha256: 5cc35f6234183ab7725a1a6ab4c9bd8cea2c7b02b7b8e05030657332950eee61

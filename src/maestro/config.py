@@ -19,10 +19,10 @@ from maestro.tasks.pace.taxonomy import TARGETS, MOD_TYPES, taxonomy_identity
 PHASE_BUDGET_FIELDS = frozenset({
     'preparation_calls','preparation_window_seconds','planning_calls','planning_window_seconds',
     'generation_calls','generation_window_seconds','generation_cpu_seconds','memory_bytes',
-    'pids_max','output_bytes','max_candidate_revisions','runtime_repair_calls'})
+    'pids_max','output_bytes','max_candidate_revisions','runtime_repair_calls','valuation_calls','valuation_window_seconds'})
 WARM_FIELDS = frozenset({'warm_opportunities_per_agent','warm_concurrency'})
 MARKET_FIELDS = frozenset({'slots','rounds','refresh_interval','reward_scale',
-                           'catchup_fraction','bid_cap','initial_wealth'})
+                           'catchup_fraction','initial_wealth'})
 STAGE_FIELDS = PHASE_BUDGET_FIELDS | WARM_FIELDS | MARKET_FIELDS
 EXPERIMENT_STAGES = frozenset({'warm_start','market'})
 
@@ -37,10 +37,13 @@ class RunConfig:
     cpu_workers: int = 4
     instance_workers: int = 1
     refresh_interval: int = 3
+    # New runs default to greedy; value 1 retains the historical wire identity.
+    ucb_exploration_coefficient: float = field(default=0.0, metadata={'omit_value': 1.0})
+    # None is reserved for reading pre-discount historical wire records.
+    valuation_discount_factor: float | None = field(default=0.8, metadata={'omit_value': None})
     reward_scale: Decimal = Decimal('100')
     catchup_fraction: Decimal = Decimal('0.25')
-    bid_cap: Decimal = Decimal('100')
-    initial_wealth: Decimal = Decimal('2000')
+    initial_wealth: Decimal | None = Decimal('2000')
     seed: int = 0
     execution_mode: str = 'mock'
     benchmark: str = 'pace'
@@ -48,6 +51,8 @@ class RunConfig:
     # Independent read-only preparation budget for the Coral native backend.
     preparation_calls: int = 4
     preparation_window_seconds: float = 300
+    valuation_calls: int = 4
+    valuation_window_seconds: float = 300
     generation_calls: int = 1
     planning_calls: int = 1
     planning_window_seconds: float = 120
@@ -73,14 +78,20 @@ class RunConfig:
     def __post_init__(self):
         if self.plan_taxonomy != taxonomy_identity():
             raise ValueError("Plan taxonomy differs from the supported frozen PACE vocabulary")
-        for name in ('reward_scale','catchup_fraction','bid_cap','initial_wealth'):
+        if self.experiment_stage=='warm_start':
+            object.__setattr__(self,'initial_wealth',None)
+        for name in ('reward_scale','catchup_fraction'):
             value=Decimal(str(getattr(self,name)))
             if not value.is_finite():
                 raise ValueError(f'{name} must be finite')
             object.__setattr__(self, name,value)
+        if self.initial_wealth is not None:
+            value=Decimal(str(self.initial_wealth))
+            if not value.is_finite():raise ValueError('initial_wealth must be finite')
+            object.__setattr__(self,'initial_wealth',value)
         if type(self.preparation_calls) is not int or self.preparation_calls < 0:
             raise ValueError('preparation_calls must be a nonnegative integer (0 = no call-count cap)')
-        for name in ('n_agents','slots','rounds','warm_opportunities_per_agent','warm_concurrency','cpu_workers','instance_workers','refresh_interval','generation_calls','planning_calls','max_candidate_revisions','runtime_repair_calls'):
+        for name in ('n_agents','slots','rounds','warm_opportunities_per_agent','warm_concurrency','cpu_workers','instance_workers','refresh_interval','generation_calls','planning_calls','max_candidate_revisions','runtime_repair_calls','valuation_calls'):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f'{name} must be a positive integer')
         if self.slots > self.n_agents:
@@ -91,22 +102,40 @@ class RunConfig:
             raise ValueError('benchmark must be pace')
         if type(self.seed) is not int:
             raise ValueError('seed must be an integer')
+        if self.valuation_discount_factor is not None:
+            from maestro.agents.valuation import validate_discount
+            object.__setattr__(self,'valuation_discount_factor',float(validate_discount(self.valuation_discount_factor)))
+        coefficient=self.ucb_exploration_coefficient
+        if (isinstance(coefficient,bool) or not isinstance(coefficient,(int,float))
+                or not math.isfinite(coefficient) or coefficient < 0):
+            raise ValueError('ucb_exploration_coefficient must be finite and nonnegative')
+        object.__setattr__(self,'ucb_exploration_coefficient',float(coefficient))
         for name in ('failures','coral','pace'):
             if not isinstance(getattr(self,name),dict):
                 raise ValueError(f'{name} must be a mapping')
+        # Direct constructors create new configurations. Frozen readers supply
+        # an explicit legacy version below, so absence never upgrades an archive.
+        if 'candidate_pipeline' not in self.coral:
+            object.__setattr__(self,'coral',{'candidate_pipeline':'prebid_v2',**self.coral})
+        if self.coral.get('candidate_pipeline','postbid_v1') not in ('postbid_v1','prebid_v2'):
+            raise ValueError('Unknown candidate_pipeline version')
         if self.profile not in ('v1_cooperative', 'codex_session_pilot'):
             raise ValueError('full profiles require explicit separate configuration; V1 is the executable profile')
         if self.profile == 'codex_session_pilot' and self.execution_mode != 'real':
             raise ValueError('codex_session_pilot requires execution_mode=real and benchmark=pace; smoke stays explicitly simulated')
+        if self.valuation_calls>4:
+            raise ValueError('Valuation is bounded to at most four actual requests')
         if self.runtime_repair_calls > 3:
             raise ValueError("Runtime repair cap must not exceed three")
         if self.planning_calls > 1:
             raise ValueError('V1 inference call caps exceeded')
-        if self.reward_scale <= 0 or not 0 <= self.catchup_fraction <= 1 or self.bid_cap < 0:
-            raise ValueError('invalid reward/bid units')
-        if self.initial_wealth < self.rounds * self.bid_cap:
-            raise ValueError('V1 requires ample wealth >= rounds * bid_cap')
-        for name in ('preparation_window_seconds','planning_window_seconds','generation_window_seconds','generation_cpu_seconds','memory_bytes','pids_max','output_bytes','evaluation_instance_count','cpu_seconds_per_instance','verification_cpu_seconds'):
+        if self.reward_scale <= 0 or not 0 <= self.catchup_fraction <= 1:
+            raise ValueError('invalid reward units')
+        if self.initial_wealth is not None and self.initial_wealth < 0:
+            raise ValueError('initial_wealth must be nonnegative')
+        if self.experiment_stage=='market' and self.initial_wealth is None:
+            raise ValueError('Select Market credits before running')
+        for name in ('valuation_window_seconds','preparation_window_seconds','planning_window_seconds','generation_window_seconds','generation_cpu_seconds','memory_bytes','pids_max','output_bytes','evaluation_instance_count','cpu_seconds_per_instance','verification_cpu_seconds'):
             value=getattr(self,name)
             if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<=0:
                 raise ValueError(f'{name} must be positive')
@@ -125,12 +154,14 @@ class RunConfig:
             shared={f.name:getattr(self,f.name) for f in fields(self)
                     if f.name not in STAGE_FIELDS | {'stage_configs','config_sources','experiment_stage'}}
             for name,values in self.stage_configs.items():
-                if not isinstance(values,dict) or set(values) != STAGE_FIELDS:
+                keys=set(values) if isinstance(values,dict) else set()
+                allowed={STAGE_FIELDS,STAGE_FIELDS-{'initial_wealth'}}
+                if not isinstance(values,dict) or keys not in allowed:
                     raise ValueError(f'Incomplete frozen stage configuration: {name}')
                 # Check both stages before any execution, not just the selected one.
                 type(self)(**shared,**values)
-        elif self.experiment_stage is not None or self.config_sources:
-            raise ValueError('Experiment metadata requires frozen stage configurations')
+        elif self.config_sources:
+            raise ValueError('Experiment sources require frozen stage configurations')
         for role,source in self.config_sources.items():
             if (not isinstance(source,dict) or set(source) != {'path','sha256'}
                     or not isinstance(source['path'],str) or not source['path']
@@ -142,25 +173,81 @@ class RunConfig:
         if stage not in EXPERIMENT_STAGES:
             raise ValueError('stage must be warm_start or market')
         if not self.stage_configs:
+            if self.experiment_stage=='warm_start' and stage=='market':
+                raise ValueError('Select Market credits with --config or --credits at run')
             return self
+        if stage=='market' and 'initial_wealth' not in self.stage_configs['market']:
+            raise ValueError('Select Market credits with --config or --credits at run')
         return replace(self, experiment_stage=stage, **self.stage_configs[stage])
+
+    def with_market_credits(self, credits):
+        """Set the Market wallet without changing the Warm checkpoint."""
+        amount=Decimal(str(credits))
+        if not self.stage_configs:
+            return replace(self,experiment_stage='market',initial_wealth=amount)
+        stages={name:dict(values) for name,values in self.stage_configs.items()}
+        stages['market']['initial_wealth']=str(amount)
+        active={'initial_wealth':amount} if self.experiment_stage=='market' else {}
+        return replace(self,stage_configs=stages,**active)
+
+    def with_market_rounds(self, rounds):
+        """Select the Market horizon without changing the Warm checkpoint."""
+        if type(rounds) is not int or rounds < 1:
+            raise ValueError('Market rounds must be a positive integer')
+        if self.experiment_stage=='warm_start':
+            raise ValueError('Market rounds cannot override Warm Start')
+        if not self.stage_configs:
+            return replace(self,rounds=rounds)
+        stages={name:dict(values) for name,values in self.stage_configs.items()}
+        stages['market']['rounds']=rounds
+        return replace(self,rounds=rounds,stage_configs=stages)
+
+    @property
+    def effective_initial_wealth(self):
+        """Zero credits request a finite balance sufficient for every round.
+
+        A formal score lies in [0,1]. Even without assuming parent <= champion,
+        reward is at most scale * (1 + catchup). Include Warm's reward units,
+        since first-price's Market estimate averages credits earned during Warm. One
+        agent buys at most one formal admission per Market round.
+        """
+        if self.initial_wealth is None:
+            raise ValueError('Warm Start has no Market wallet')
+        if self.initial_wealth:
+            return self.initial_wealth
+        from maestro.market.credit import money
+        bounds=[money(self.reward_scale*(1+self.catchup_fraction))]
+        if self.stage_configs:
+            warm=self.stage_configs['warm_start']
+            bounds.append(money(Decimal(str(warm['reward_scale']))*
+                (1+Decimal(str(warm['catchup_fraction'])))))
+        return self.rounds*max(bounds)
 
     @property
     def shared_config_hash(self):
         value=self.to_dict()
         for key in STAGE_FIELDS | {'experiment_stage','failures'}:
             value.pop(key,None)
+        for stage in value.get('stage_configs',{}).values():
+            stage.pop('initial_wealth',None)
+        value.get('config_sources',{}).pop('market',None)
         return stable_hash(value)
 
     def validate_warm_source(self, warm):
-        """Permit only predeclared stage differences; freeze the whole experiment."""
+        """Freeze Warm identity while allowing Market to choose its round horizon."""
         from maestro.types import IntegrityError
         if bool(self.stage_configs) != bool(warm.stage_configs):
             raise IntegrityError('Warm/main configuration layout mismatch')
         if self.stage_configs:
             if warm.experiment_stage != 'warm_start' or self.experiment_stage != 'market':
                 raise IntegrityError('Warm/main experiment stage mismatch')
-            if warm.shared_config_hash != self.shared_config_hash:
+            # The Market round horizon may be chosen when an arm is cloned from
+            # an otherwise frozen Warm checkpoint. Keep every Warm setting and
+            # every other Market setting bound to that checkpoint.
+            aligned_stages={name:dict(values) for name,values in warm.stage_configs.items()}
+            aligned_stages['market']['rounds']=self.stage_configs['market']['rounds']
+            aligned_warm=replace(warm,stage_configs=aligned_stages)
+            if aligned_warm.shared_config_hash != self.shared_config_hash:
                 raise IntegrityError('Warm/main shared configuration or frozen stage mismatch')
             if (warm.hash != warm.for_stage('warm_start').hash
                     or self.hash != self.for_stage('market').hash):
@@ -169,6 +256,9 @@ class RunConfig:
         source,target=warm.to_dict(),self.to_dict()
         # Preserve existing explicitly simulated main fault-injection scenarios.
         source.pop('failures',None);target.pop('failures',None)
+        source.pop('initial_wealth',None);target.pop('initial_wealth',None)
+        source.pop('experiment_stage',None);target.pop('experiment_stage',None)
+        source.pop('rounds',None);target.pop('rounds',None)
         if source != target:
             raise IntegrityError('Warm/main configuration mismatch')
 
@@ -206,17 +296,29 @@ class RunConfig:
         return stable_hash(self.to_dict())
 
     def to_dict(self):
-        return to_jsonable(self)
+        value=to_jsonable(self)
+        value.get('stage_configs',{}).get('warm_start',{}).pop('initial_wealth',None)
+        if self.experiment_stage=='warm_start':
+            value.pop('initial_wealth',None)
+            value.get('stage_configs',{}).get('market',{}).pop('initial_wealth',None)
+            value.get('config_sources',{}).pop('market',None)
+        return value
 
     @classmethod
     def from_dict(cls, value):
+        """Deserialize wire records; old records without the coefficient used 1.
+
+        New config documents go through load_config/load_experiment, which insert
+        the current default explicitly before using this compatibility reader.
+        """
         if not isinstance(value, dict):
             raise ValueError("Configuration must be a mapping")
         known = {f.name for f in fields(cls)}
         unknown = set(value) - known
         if unknown:
             raise ValueError(f'Unknown config keys: {sorted(unknown)}')
-        return cls(**value)
+        coral={'candidate_pipeline':'postbid_v1',**value.get('coral',{})}
+        return cls(**{'ucb_exploration_coefficient':1.0,'valuation_discount_factor':None,**value,'coral':coral})
 
 
 def _unique_mapping(pairs):
@@ -260,4 +362,9 @@ def load_config(path: str | Path, *, stage: str | None = None) -> RunConfig:
         return load_experiment(Path(path), value, digest, stage=stage or 'warm_start')
     if stage is not None and stage not in EXPERIMENT_STAGES:
         raise ValueError('stage must be warm_start or market')
-    return RunConfig.from_dict(value)
+    if value.get('valuation_discount_factor',0.8) is None:
+        raise ValueError('New configs require a numeric valuation_discount_factor')
+    from maestro.execution.pipeline import new_pipeline_settings
+    return RunConfig.from_dict({'ucb_exploration_coefficient':RunConfig().ucb_exploration_coefficient,
+        'valuation_discount_factor':RunConfig().valuation_discount_factor,**value,
+        'coral':new_pipeline_settings(value.get('coral',{}))})

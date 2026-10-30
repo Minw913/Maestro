@@ -11,7 +11,7 @@ from maestro.market.credit import reward, money
 from maestro.market.policies import rank
 from maestro.market.eligibility import check_eligibility
 from maestro.market.settlement import settle_agent
-from maestro.agents.valuation import estimate_value
+from maestro.agents.valuation import estimate_legacy_value as estimate_value
 from maestro.agents.bidding import cooperative_bid
 from maestro.agents.planner import (mock_plan, needs_refresh, parse_plan_decision,
     apply_decision, validate_plan, validate_complete_evidence, invalidate_pending)
@@ -46,13 +46,13 @@ class CreditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reward(1.01, .5, .6)
 
-    def test_history_rebased_fixture_is_2_125(self):
+    def test_legacy_history_rebased_fixture_is_2_125(self):
         value, ids = estimate_value(history(), "local_search", "parameter_change", .70, .75)
         self.assertEqual(value, Decimal("2.125000"))
         self.assertEqual(ids, ["exp-a-0", "exp-a-1", "exp-a-2", "exp-a-3"])
         self.assertEqual(cooperative_bid(value), Decimal("2.125000"))
 
-    def test_category_fallback_and_failures_not_filtered(self):
+    def test_legacy_category_fallback_and_failures_not_filtered(self):
         records = history(gains=(.08, 0))
         records[1] = replace(records[1], valid=False, status="TIMEOUT", score=0)
         records.append(HistoryRecord("other", "a", .5, .6, .9, True, "restart", "removal"))
@@ -63,10 +63,10 @@ class CreditTests(unittest.TestCase):
         self.assertEqual(len(ids), 3)
         self.assertGreater(fallback, exact)
 
-    def test_no_prior_and_cap(self):
+    def test_no_prior_and_uncapped_bid(self):
         with self.assertRaises(BootstrapIncomplete):
             estimate_value([], "other", "other", .7, .75)
-        self.assertEqual(cooperative_bid(200), Decimal("100.000000"))
+        self.assertEqual(cooperative_bid(200), Decimal("200.000000"))
         with self.assertRaises(ValueError):
             cooperative_bid(-1)
 
@@ -86,19 +86,20 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(rank("uniform", partial, self.states, 0, 19),
                          [a for a in complete if a != removed])
 
-    def test_first_price_is_seeded_stable_and_never_reorders_by_text(self):
+    def test_first_price_naive_is_seeded_stable_and_never_reorders_by_text(self):
         submissions = [replace(s, bid=Decimal(i)) for i, s in enumerate(self.submissions)]
-        self.assertEqual(rank("first_price", submissions, self.states, 0, 5), list("dcba"))
-        self.assertEqual(rank("first_price", self.submissions, self.states, 0, 5),
-                         rank("first_price", self.submissions[::-1], self.states, 0, 5))
+        self.assertEqual(rank("first_price_naive", submissions, self.states, 0, 5), list("dcba"))
+        self.assertEqual(rank("first_price_naive", self.submissions, self.states, 0, 5),
+                         rank("first_price_naive", self.submissions[::-1], self.states, 0, 5))
 
     def test_ucb_uses_warm_history_and_cold_start(self):
         for a, s in self.states.items():
             s.ucb_n = 10
             s.ucb_total = Decimal(10 if a == "a" else 0)
-        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0)[0], "a")
+            s.history = [replace(record,credit=Decimal(1 if a=='a' else 0)) for record in s.history]
+        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0, ucb_exploration_coefficient=1)[0], "a")
         self.states["d"].ucb_n = 0
-        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0)[0], "d")
+        self.assertEqual(rank("ucb", self.submissions, self.states, 0, 0, ucb_exploration_coefficient=1)[0], "d")
 
     def test_duplicate_submission_rejected(self):
         with self.assertRaises(ValueError):
@@ -162,7 +163,7 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(check_eligibility(p, s, executed_versions=[p.version_id]).eligible)
         self.assertFalse(check_eligibility(replace(p, agent_id="b"), s).eligible)
 
-    def test_losing_reuse_revalues_from_new_champion(self):
+    def test_legacy_losing_reuse_revalues_from_new_champion(self):
         records = history()
         first, _ = estimate_value(records, "local_search", "parameter_change", .7, .75)
         second, _ = estimate_value(records, "local_search", "parameter_change", .7, .8)
@@ -170,6 +171,14 @@ class PlanTests(unittest.TestCase):
 
 
 class RetrievalMemoryTests(unittest.TestCase):
+    def test_free_category_catalog_preserves_distinct_pairs(self):
+        s=AgentState('a','parent',.5,history=[
+            HistoryRecord('one','a',.5,.6,.5,True,'a/b','c'),
+            HistoryRecord('two','a',.5,.6,.5,True,'a','b/c')])
+        catalog=build_context(s,{})['evidence_catalog']
+        self.assertEqual(catalog['a/b']['c'],['one'])
+        self.assertEqual(catalog['a']['b/c'],['two'])
+
     def test_context_filters_private_board_fields_and_truncation_has_manifest(self):
         s = state(gains=tuple(.01 for _ in range(40)))
         board = {"champion_score": .75, "private_notes": "secret",
@@ -180,7 +189,7 @@ class RetrievalMemoryTests(unittest.TestCase):
         self.assertLessEqual(len(encoded), 2200)
         self.assertNotIn("secret", encoded.decode())
         self.assertGreater(context["manifest"]["omitted_record_count"], 0)
-        self.assertEqual(len(context["evidence_catalog"]["local_search/parameter_change"]), 40)
+        self.assertEqual(len(context["evidence_catalog"]["local_search"]["parameter_change"]), 40)
         value, ids = estimate_value(s.history, "local_search", "parameter_change", .7, .75)
         self.assertEqual(len(ids), 40)
         self.assertEqual(value, Decimal(".250000"))

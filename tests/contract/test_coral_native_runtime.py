@@ -61,6 +61,28 @@ def test_mcp_read_only_and_closed_capability(tmp_path, monkeypatch):
         broker.close();service.close()
 
 
+def test_tool_service_distinguishes_reclaimed_listener_from_unknown_tool_error():
+    import urllib.error
+    import urllib.request
+    from maestro.llm import InferenceRequestUnknown
+
+    def unknown_tool(_name,_args):
+        raise InferenceRequestUnknown('Unresolved request',request_id='offline',scope_id='offline',context={})
+
+    service=ToolService(unknown_tool,time.monotonic()+10)
+    try:
+        request=urllib.request.Request(service.url,data=b'{}',headers={'Content-Type':'application/json'})
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request,timeout=3)
+        assert response.value.code==403
+        with pytest.raises(NativeCoralUnknown):service.close()
+        assert service.close_receipt=={
+            'server_thread_reclaimed':True,'pending_calls':0,'transport_reclaimed':True,
+            'tool_error_type':'InferenceRequestUnknown'}
+    finally:
+        if service.thread.is_alive():service.close()
+
+
 def test_actual_upstream_runtime_start_is_used_without_live_inference(tmp_path,monkeypatch):
     from coral.agent.builtin.codex import CodexRuntime
     # Only the subprocess is injected. Upstream start(), command construction,

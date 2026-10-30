@@ -9,13 +9,14 @@ from urllib.parse import urlsplit
 import pytest
 
 from maestro.backends.coral.native_backend import NativeCoralBackend
+from maestro.llm import PlanningResponseError
 from maestro.backends.coral.native_client import MCP_TOOL
 from maestro.backends.coral.workspace import WorkspaceStore
 from maestro.backends.codex_session.quota_proxy import CodexQuotaProxy
 from maestro.config import RunConfig
 from maestro.execution.budgets import BudgetStore
 from maestro.execution.grants import GrantAuthority
-from maestro.types import AgentState, stable_hash
+from maestro.types import AgentState, HistoryRecord, stable_hash
 
 
 class Response:
@@ -119,6 +120,32 @@ def test_native_stages_have_separate_quotas_and_edit_grant(backend):
         owner.prepare_with_receipt(state,0,{},deadline=time.monotonic()+20)
 
 
+def test_native_warm_workspace_hides_global_result_then_market_shares_it(backend):
+    owner,state,_,_=backend
+    state.history=[HistoryRecord('own-job',state.agent_id,.4,.9,.5,True,
+                                 'restart','new_component')]
+    board={'champion_hash':state.parent_hash,'champion_score':.9,
+           'results':[{'agent_id':'peer','score':.9,'verified':True}]}
+    owner.begin_episode('warm-visibility',{state.agent_id:state})
+    owner.set_board(board)
+    warm=owner._workspace(state)
+    owner._publish_own_history(warm,state)
+    assert json.loads((warm.public/'board.json').read_text())=={}
+    assert not (warm.public/'champion').exists()
+    own=json.loads((warm.root/'history'/'record-000000.json').read_text())
+    assert own['score']==.5 and 'champion_score' not in own and 'credit' not in own
+    assert 'board' not in owner._identity_context(state)['paths']
+
+    owner.begin_episode('market-visibility',{state.agent_id:state})
+    owner.set_board(board)
+    market=owner._workspace(state)
+    owner._publish_own_history(market,state)
+    assert json.loads((market.public/'board.json').read_text())['champion_score']==.9
+    assert (market.public/'champion'/'run').is_file()
+    assert json.loads((market.root/'history'/'record-000000.json').read_text())['champion_score']==.9
+    assert owner._identity_context(state)['paths']['board']=='public/board.json'
+
+
 def test_uncapped_preparation_accepts_more_than_four_metered_requests(backend):
     owner,state,native,forwarded=backend
     owner.config=replace(owner.config,preparation_calls=0)
@@ -132,6 +159,46 @@ def test_no_planning_without_same_round_preparation(backend):
     owner,state,_,forwarded=backend
     with pytest.raises(PermissionError):owner.plan_with_receipt(state,0,{},deadline=time.monotonic()+20)
     assert not forwarded
+
+
+def test_rejected_coral_plan_has_safe_validation_diagnostic(backend):
+    owner,state,native,_=backend
+    owner.prepare_with_receipt(state,0,{},deadline=time.monotonic()+20)
+    secret='DO_NOT_WRITE_MODEL_TEXT_TO_LEDGER'
+    def invalid_plan(prompt, *, base_url, deadline, tools=None, output_schema=None, session_id=None):
+        assert output_schema is not None
+        native.request(base_url)
+        raw=json.dumps({'action':secret,'plan':None})
+        return SimpleNamespace(text=raw,response_hash=stable_hash(raw),thread_id='')
+    native.run_phase=invalid_plan
+    with pytest.raises(PlanningResponseError) as caught:
+        owner.plan_with_receipt(state,0,{},deadline=time.monotonic()+20)
+    error=caught.value
+    assert error.diagnostic=={'category':'PLAN_VALIDATION','code':'INVALID_ACTION',
+                              'exception_type':'ValueError'}
+    assert secret not in json.dumps(error.diagnostic)
+    assert error.receipt.actual_requests==1
+    assert owner.budget_store.usage('offline:0:agent:PLAN_RO')['unresolved_requests']==0
+
+
+def test_custom_categories_are_admitted_without_extra_request(backend):
+    owner,state,native,forwarded=backend
+    owner.prepare_with_receipt(state,0,{},deadline=time.monotonic()+20)
+    def custom_plan(prompt, *, base_url, deadline, tools=None, output_schema=None, session_id=None):
+        assert 'examples, not an exclusive list' in prompt
+        assert 'enum' not in output_schema['properties']['plan']['anyOf'][1]['properties']['target']
+        native.request(base_url)
+        raw=json.dumps({'action':'revise','plan':{'target':'spectral_pruning',
+            'mod_type':'hybrid_rewrite','diagnosis':'test','change':'test',
+            'expected_effect':'test','evidence_run_ids':[]},'lessons':[]})
+        return SimpleNamespace(text=raw,response_hash=stable_hash(raw),thread_id='')
+    native.run_phase=custom_plan
+    before=len(forwarded)
+    decision,receipt,_=owner.plan_with_receipt(state,0,{},deadline=time.monotonic()+20)
+    assert (decision.plan.target,decision.plan.mod_type)==('spectral_pruning','hybrid_rewrite')
+    assert receipt.actual_requests==1
+    assert len(forwarded)==before+1
+    assert owner.budget_store.usage('offline:0:agent:PLAN_RO')['unresolved_requests']==0
 
 
 def test_planning_exposes_matching_failed_and_zero_gain_evidence(backend):
@@ -190,3 +257,44 @@ def test_peer_unknown_blocks_further_native_dispatch_and_tools(backend):
     assert not forwarded
     assert owner.budget_store.connection.execute(
         "SELECT status FROM codex_phase_scopes WHERE account='old-peer'").fetchone()[0]=='UNKNOWN'
+
+
+def test_valuation_uses_fresh_read_scope_and_actual_request_gate(backend):
+    owner,state,native,forwarded=backend
+    files={'public/contract.json':'{"parent_score":0.7}',
+           'public/trajectory.json':'[]','solver/run':'print(1)'}
+    def run(prompt,**options):
+        assert prompt.startswith('VALUATION_RO:') and options['session_id'] is None
+        assert 'auction' not in prompt.lower() and 'wallet' not in prompt.lower()
+        assert options['output_schema']['additionalProperties'] is False
+        native.request(options['base_url'])
+        tool=options['tools']
+        assert tool('maestro_tool',{'action':'read','path':'solver/run'})['content']=='print(1)'
+        assert 'error' in tool('maestro_tool',{'action':'write','path':'solver/run','content':'bad'})
+        assert 'error' in tool('maestro_tool',{'action':'read','path':'public/board.json'})
+        for _ in range(3):native.request(options['base_url'])
+        with pytest.raises(RuntimeError):native.request(options['base_url'])
+        return SimpleNamespace(text='{}',response_hash=stable_hash('{}'))
+    native.run_phase=run
+    outcome=owner.value_with_receipt(state.agent_id,0,files,deadline=time.monotonic()+20)
+    assert outcome['usage']['calls']==4 and len(forwarded)==4
+    assert files['solver/run']=='print(1)'
+    with pytest.raises(PermissionError):owner.value_with_receipt(state.agent_id,0,files,deadline=time.monotonic()+20)
+    # Its allowance never consumed the independent preparation/planning accounts.
+    assert owner.budget_store.usage('offline:0:agent:VALUATION_RO')['calls']==4
+
+
+def test_valuation_requires_native_cleanup_receipt_after_request(backend):
+    from maestro.llm import InferenceRequestUnknown
+    owner,state,native,_=backend
+    owner.simulation=False
+    def run(prompt,**options):
+        native.request(options['base_url'])
+        return SimpleNamespace(text='{}',response_hash=stable_hash('{}'))
+    native.run_phase=run
+    files={'public/contract.json':'{}','public/trajectory.json':'[]','solver/run':'print(1)'}
+    with pytest.raises(InferenceRequestUnknown):
+        owner.value_with_receipt(state.agent_id,0,files,deadline=time.monotonic()+20)
+    assert owner.budget_store.usage('offline:0:agent:VALUATION_RO')['calls']==1
+    assert owner.budget_store.connection.execute(
+        "SELECT status FROM codex_phase_scopes WHERE account='offline:0:agent:VALUATION_RO'").fetchone()[0]=='UNKNOWN'

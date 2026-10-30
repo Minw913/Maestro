@@ -102,6 +102,9 @@ class StageToolBroker:
         if phase == "GENERATION" and not callable(grant_checker):
             raise PermissionError("GENERATION tools require the controller's EditGrant verifier")
         self.workspace, self.phase, self.deadline = workspace, phase, float(deadline)
+        self._created_at = time.monotonic()
+        self._valuation_paused_at = None
+        self._valuation_pause_used = False
         self.runner, self.image = runner or FailClosedRunner(), image
         self.cpu_budget, self.grant_checker, self.cpu_pool = float(cpu_budget), grant_checker, cpu_pool
         self.memory_mb, self.pids = memory_mb, pids
@@ -126,7 +129,8 @@ class StageToolBroker:
         self._cleanup_failures = 0
 
     def _check(self):
-        if self._closed or self._unknown or time.monotonic() >= self.deadline:
+        if (self._closed or self._unknown or self._valuation_paused_at is not None
+                or time.monotonic() >= self.deadline):
             raise ToolScopeExpired("Tool stage expired, closed, or needs executor reconciliation")
         if self.phase == "GENERATION":
             self.grant_checker()
@@ -134,6 +138,33 @@ class StageToolBroker:
     def close(self):
         with self._lock:
             self._closed = True
+
+    def pause_for_valuation(self, started_at):
+        """Suspend this generation scope for the controller's read-only barrier."""
+        with self._lock:
+            now = time.monotonic()
+            if (self.phase != "GENERATION" or self._closed or self._unknown
+                    or self._valuation_pause_used or self._valuation_paused_at is not None):
+                raise ToolScopeExpired("Generation valuation pause is unavailable")
+            if (type(started_at) not in {int, float} or not math.isfinite(started_at)
+                    or not self._created_at <= started_at <= now):
+                raise ValueError("Invalid valuation pause start")
+            self._valuation_paused_at = float(started_at)
+
+    def resume_after_valuation(self, finished_at):
+        """Restore only the wall time spent in the one authorized barrier."""
+        with self._lock:
+            started_at = self._valuation_paused_at
+            if (self.phase != "GENERATION" or self._closed or self._unknown
+                    or started_at is None or self._valuation_pause_used):
+                raise ToolScopeExpired("No active generation valuation pause")
+            if (type(finished_at) not in {int, float} or not math.isfinite(finished_at)
+                    or not started_at <= finished_at <= time.monotonic()):
+                raise ValueError("Invalid valuation pause finish")
+            self.deadline += float(finished_at) - started_at
+            self._valuation_paused_at = None
+            self._valuation_pause_used = True
+            return self.deadline
 
     def bind_grant(self, checker, *, deadline=None):
         """Rotate an admitted repair capability without resetting any budget.
@@ -145,7 +176,8 @@ class StageToolBroker:
         with self._lock:
             if self.phase != "GENERATION" or not callable(checker):
                 raise PermissionError("Only GENERATION can bind a controller grant")
-            if self._closed or self._unknown or time.monotonic() >= self.deadline:
+            if (self._closed or self._unknown or self._valuation_paused_at is not None
+                    or time.monotonic() >= self.deadline):
                 raise ToolScopeExpired("A closed or unresolved stage cannot be reopened")
             if deadline is not None:
                 if (type(deadline) not in {int, float} or not math.isfinite(deadline)

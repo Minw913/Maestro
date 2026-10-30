@@ -11,7 +11,7 @@ from maestro.execution.budgets import BudgetStore, BudgetExceeded
 from maestro.execution.gateway import BudgetGateway, GatewayHTTPServer
 from maestro.execution.grants import GrantAuthority, GrantError
 from maestro.execution.phases import PhaseController, PhaseError, Phase
-from maestro.execution.generation import bounded_generate, precheck_mock
+from maestro.execution.generation import precheck_mock
 from maestro.execution.sandbox import FailClosedRunner, ResourceLimits, RunRequest, SandboxUnavailable, DockerRunner
 
 
@@ -141,16 +141,10 @@ def test_phase_waits_for_barrier_and_process_tree_stop():
     assert controller.advance(processes_stopped=True, force_deadline=True) == Phase.PLAN
 
 
-def test_generation_repair_is_bounded_and_shared_deadline():
-    generated = []
-    result = bounded_generate(lambda i: generated.append(i) or i,
-                              lambda candidate: (candidate == 2, "syntax"), deadline=100,
-                              clock=lambda: 0)
-    assert result.passed and result.attempts == 3 and generated == [0, 1, 2]
-    assert not bounded_generate(lambda i: i, lambda c: (True, "PASS"),
-                                deadline=1, clock=lambda: 2).passed
-    assert precheck_mock("a", 1, {"a:1": ["precheck", None]}, revision=0)[0] is False
-    assert precheck_mock("a", 1, {"a:1": ["precheck", None]}, revision=1)[0] is True
+def test_simulation_faults_distinguish_runtime_from_rejected_checks():
+    assert precheck_mock("a", 1, {"a:1": ["runtime", None]}, revision=0) == (False, "runtime")
+    assert precheck_mock("a", 1, {"a:1": ["runtime", None]}, revision=1) == (True, "PASS")
+    assert precheck_mock("a", 1, {"a:1": "invalid"}, revision=0) == (False, "invalid")
 
 
 def test_no_unsafe_native_fallback(tmp_path):

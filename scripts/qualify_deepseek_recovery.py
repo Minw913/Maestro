@@ -17,6 +17,7 @@ import time
 from maestro.backends.coral.deepseek_backend import native_factory
 from maestro.backends.coral.deepseek_retry import DeepSeekRetryStore,RetryPolicy,audit_retry_continuation
 from maestro.backends.coral.deepseek_lifecycle import audit_ledger,exception_details
+from maestro.agents.planning_diagnostics import safe_planning_diagnostic
 from maestro.backends.coral.failure_report import write_failure_report
 from maestro.backends.coral.workspace import solver_files
 from maestro.bootstrap.director import make_direction_briefs
@@ -30,6 +31,20 @@ from maestro.types import AgentState
 
 
 def utc():return datetime.now(timezone.utc).isoformat()
+
+
+def check_repair_prompt(prompt,nonces):
+    if any(n in prompt for n in nonces):raise ValueError('Private preparation memory leaked to repair')
+    # The installed harness may append runtime text after the JSON payload.
+    payload,_=json.JSONDecoder().raw_decode(prompt.split('\n',1)[1])
+    if set(payload)!={'files','runtime_error','solver_argv','parent_files','parent_hash',
+                      'source_index','parent_source_index'}:
+        raise ValueError('Undeclared or incomplete isolated repair context')
+    test=payload['runtime_error'].get('test_context',{})
+    if (test.get('kind')!='fixed_sanity_only' or not test.get('stdin') or 'receipt' not in test
+            or not payload['files'] or not payload['parent_files']):
+        raise ValueError('Failed sanity input/receipt and parent source required')
+    return payload
 
 
 class QualificationStore(DeepSeekRetryStore):
@@ -123,7 +138,9 @@ def run(args):
                     event('RESULT_ACCEPTED',phase=name,agent=agent)
                 except Exception as error:
                     result['samples'].setdefault(agent,{})[name]={'status':'FAILED','error_type':type(error).__name__,
-                        'start_monotonic':began,'finished_monotonic':time.monotonic(),**exception_details(error)}
+                        'start_monotonic':began,'finished_monotonic':time.monotonic(),
+                        'diagnostic':safe_planning_diagnostic(getattr(error,'diagnostic',None)),
+                        **exception_details(error)}
                     failures.append(agent);event('TASK_FAILED',phase=name,agent=agent,**exception_details(error))
             pool=ThreadPoolExecutor(4)
             futures=[pool.submit(worker,a) for a in states];gate.set()
@@ -151,7 +168,9 @@ def run(args):
         candidates={};failures={}
         def grant(agent,epoch):return authority.issue(episode_id=episode,round_index=0,agent_id=agent,
             plan_version_id=plans[agent].version_id,parent_hash=states[agent].parent_hash,epoch=epoch,
-            expires_at=time.time()+generation_deadline-time.monotonic())
+            expires_at=time.time()+generation_deadline-time.monotonic(),
+            purpose='prebid_implementation' if epoch==0 else 'runtime_repair',
+            source_candidate_hash=states[agent].parent_hash if epoch==0 else candidates[agent]['candidate_hash'])
         def initial(agent):
             token=grant(agent,0)
             try:
@@ -177,8 +196,7 @@ def run(args):
         repair_prompts=[p for p in prompts if p.startswith('ISOLATED RUNTIME REPAIR.')]
         assert len(repair_prompts)==4
         for prompt in repair_prompts:
-            assert not any(n in prompt for n in nonces.values())
-            payload,_=json.JSONDecoder().raw_decode(prompt.split('\n',1)[1]);assert set(payload)=={'files','runtime_error','solver_argv'}
+            check_repair_prompt(prompt,nonces.values())
         result['repair_context_isolated']=True
         graph=Path(target.pace['panel_manifest']).parent/'heuristic_032.gr';raw=graph.read_text()
         def debug(agent):

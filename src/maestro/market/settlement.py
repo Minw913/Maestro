@@ -16,7 +16,7 @@ class AgentSettlement:
 
 
 def settle_agent(*, wealth, parent, champion, admitted, bid=Decimal(0),
-                 result=None, policy="first_price", credited_duplicate=False,
+                 result=None, policy="first_price_naive", credited_duplicate=False,
                  scale=Decimal("100"), catchup=Decimal("0.25")):
     """Use pre-admission wealth and frozen baselines; never debit in storage here.
 
@@ -25,13 +25,13 @@ def settle_agent(*, wealth, parent, champion, admitted, bid=Decimal(0),
     """
     before = money(wealth)
     p = score(parent)
-    if policy not in {"uniform", "ucb", "first_price"}:
+    if policy not in {"uniform", "ucb", "first_price_naive", "first_price", "adjusted_valuation", "agent_adjusted"}:
         raise ValueError("unsupported V1 policy")
     if not admitted and result is not None:
         raise ValueError("unadmitted agent cannot have a formal result")
     if admitted and result is None:
         raise ValueError("all admitted jobs require an explicit terminal result")
-    payment = money(bid) if admitted and policy == "first_price" else money(0)
+    payment = money(bid) if admitted and policy in ("first_price_naive","first_price","adjusted_valuation","agent_adjusted") else money(0)
     if payment < 0 or payment > before:
         raise ValueError("payment exceeds pre-admission available wealth")
     credited = money(0)

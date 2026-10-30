@@ -73,8 +73,17 @@ def validate_round_resources(config, snapshot, ticket=None):
 
 
 class Ledger:
-    def __init__(self, path):
+    def __init__(self, path, *, read_only=False):
         self.path = Path(path)
+        if read_only:
+            self.connection=sqlite3.connect(self.path.resolve().as_uri()+'?mode=ro',uri=True,check_same_thread=False)
+            self.connection.row_factory=sqlite3.Row
+            self._lock=threading.RLock()
+            row=self.connection.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+            if row is None or row[0]!=SCHEMA_VERSION:
+                self.connection.close()
+                raise IntegrityError('Incompatible ledger schema; old experiments are not supported')
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(str(path), timeout=30, isolation_level=None, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
@@ -133,11 +142,14 @@ class Ledger:
             if db.execute('SELECT 1 FROM episodes WHERE id=?', (episode_id,)).fetchone():
                 raise IntegrityError(f'Episode already exists: {episode_id}')
             db.execute('INSERT INTO episodes VALUES(?,?,?,?,?,?,?,?,?)',
-                (episode_id,policy,config.execution_mode,config.benchmark,canonical_json(config),config.hash,bootstrap_id,'RUNNING',datetime.now(timezone.utc).isoformat()))
+                (episode_id,policy,config.execution_mode,config.benchmark,canonical_json(config.to_dict()),config.hash,bootstrap_id,'RUNNING',datetime.now(timezone.utc).isoformat()))
             for state in states.values():
-                db.execute('INSERT INTO agents VALUES(?,?,?)', (episode_id,state.agent_id,canonical_json(state)))
-                db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',
-                    (f'{episode_id}:initial:{state.agent_id}',episode_id,state.agent_id,'INITIAL',str(state.wealth),None))
+                payload=json.loads(canonical_json(state))
+                if policy=='warm':payload.pop('wealth',None)
+                db.execute('INSERT INTO agents VALUES(?,?,?)', (episode_id,state.agent_id,canonical_json(payload)))
+                if policy!='warm':
+                    db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',
+                        (f'{episode_id}:initial:{state.agent_id}',episode_id,state.agent_id,'INITIAL',str(state.wealth),None))
             self.event('EPISODE_CREATED', {'policy':policy,'config_hash':config.hash,'bootstrap_id':bootstrap_id},episode_id)
 
     def balance(self, episode_id, agent_id):
@@ -155,6 +167,18 @@ class Ledger:
             db.execute('INSERT INTO rounds VALUES(?,?,?,?,?)',(episode_id,round_index,'PLANNING',text,stable_hash(snapshot)))
             self.event('ROUND_OPENED', {'snapshot_hash':stable_hash(snapshot)},episode_id,round_index)
 
+    def restart_reconciled_round(self, episode_id, round_index, snapshot, request_namespace):
+        """Append a new prebid attempt without replacing its frozen round anchor."""
+        with self.transaction() as db:
+            row=db.execute('SELECT status,snapshot_hash FROM rounds WHERE episode_id=? AND round_index=?',
+                (episode_id,round_index)).fetchone()
+            if not row or row['status']!='RESTART_AUTHORIZED' or row['snapshot_hash']!=stable_hash(snapshot):
+                raise IntegrityError('Recovery snapshot/status differs from the frozen round')
+            db.execute("UPDATE rounds SET status='PLANNING' WHERE episode_id=? AND round_index=?",
+                (episode_id,round_index))
+            self.event('ROUND_RESTARTED',{'snapshot_hash':row['snapshot_hash'],
+                'request_namespace':request_namespace},episode_id,round_index)
+
     def set_round_phase(self, episode_id, round_index, phase):
         with self.transaction() as db:
             current = db.execute('SELECT status FROM rounds WHERE episode_id=? AND round_index=?',(episode_id,round_index)).fetchone()
@@ -167,9 +191,18 @@ class Ledger:
         with self.transaction() as db:
             if submission.agent_id!=plan.agent_id or submission.plan_version_id!=plan.version_id:
                 raise AuthorizationError('Submission identity does not match the frozen plan')
-            current = db.execute('SELECT status FROM rounds WHERE episode_id=? AND round_index=?',(episode_id,round_index)).fetchone()
-            if not current or current[0] != 'PLANNING':
+            current = db.execute('SELECT status,snapshot_json FROM rounds WHERE episode_id=? AND round_index=?',(episode_id,round_index)).fetchone()
+            prebid=bool(current and json.loads(current['snapshot_json']).get('candidate_pipeline')=='prebid_v2')
+            if not current or current['status'] != ('BIDDING' if prebid else 'PLANNING'):
                 raise AuthorizationError('Planning window closed')
+            if prebid:
+                frozen=[json.loads(row[0]) for row in db.execute(
+                    "SELECT payload FROM events WHERE episode_id=? AND round_index=? AND kind='PROPOSAL_FROZEN'",
+                    (episode_id,round_index)) if json.loads(row[0])['agent_id']==plan.agent_id]
+                if (len(frozen)!=1 or frozen[0]['plan_version_id']!=plan.version_id
+                        or frozen[0]['parent_hash']!=plan.parent_hash
+                        or metadata.get('proposal_hash')!=frozen[0]['candidate_hash']):
+                    raise AuthorizationError('Bid must bind the previously frozen candidate')
             consumed=db.execute('SELECT 1 FROM round_submissions s JOIN final_allocations a ON a.episode_id=s.episode_id AND a.round_index=s.round_index AND a.agent_id=s.agent_id WHERE s.plan_version_id=? AND a.x=1 LIMIT 1',(plan.version_id,)).fetchone()
             if consumed:
                 raise AuthorizationError('A formally consumed plan version cannot be resubmitted')
@@ -263,12 +296,15 @@ class Ledger:
                 if ticket.get('target')!=plan['target'] or ticket.get('mod_type')!=plan['mod_type']:
                     raise AuthorizationError('Ticket modification labels mismatch')
                 policy=db.execute('SELECT policy FROM episodes WHERE id=?',(e,)).fetchone()[0]
-                expected_payment=Decimal(json.loads(submission['payload'])['bid']) if policy=='first_price' and ticket['purpose']=='MAIN' else Decimal(0)
+                expected_payment=Decimal(json.loads(submission['payload'])['bid']) if policy in ('first_price_naive','first_price','adjusted_valuation','agent_adjusted') and ticket['purpose']=='MAIN' else Decimal(0)
                 if Decimal(str(payment))!=expected_payment:
                     raise AuthorizationError('Final admission must charge the frozen policy payment')
                 precheck=db.execute('SELECT 1 FROM prechecks WHERE episode_id=? AND round_index=? AND agent_id=? AND candidate_hash=? AND passed=1',(e,r,a,ticket['candidate_hash'])).fetchone()
                 if not precheck:
                     raise AuthorizationError('Candidate has not passed this invitation precheck')
+                if snapshot.get('candidate_pipeline')=='prebid_v2':
+                    from maestro.execution.proposals import validate_proposal_binding
+                    validate_proposal_binding(db,ticket,json.loads(submission['payload']))
             elif ticket['purpose'] in ('SETUP','HELDOUT'):
                 expected=snapshot.get('candidate_hash',snapshot.get('seed',{}).get('candidate_hash'))
                 if expected!=ticket['candidate_hash']:
@@ -299,7 +335,8 @@ class Ledger:
             db.execute('INSERT INTO jobs VALUES(?,?,?,?,?)',(ticket['job_id'],ticket['ticket_id'],'ADMITTED',0,None))
             db.execute('INSERT INTO dispatch_outbox VALUES(?,?)',(ticket['job_id'],'PENDING'))
             db.execute("UPDATE holds SET status='DEBITED' WHERE episode_id=? AND round_index=? AND agent_id=?",(e,r,a))
-            db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',(f"{ticket['job_id']}:payment",e,a,'PAYMENT',str(-Decimal(str(payment))),r))
+            if ticket['purpose']=='MAIN':
+                db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',(f"{ticket['job_id']}:payment",e,a,'PAYMENT',str(-Decimal(str(payment))),r))
             self.event('ADMITTED',{**ticket,'payment':str(payment)},e,r)
 
     def ticket(self, ticket_id):
@@ -425,12 +462,16 @@ class Ledger:
                     or job['receipt'] is not None):
                 raise AuthorizationError('Cannot refund a started formal job')
             entry = db.execute('SELECT amount FROM wallet_entries WHERE operation_key=?',(t['job_id']+':payment',)).fetchone()
-            db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',(t['job_id']+':compensation',t['episode_id'],t['agent_id'],'COMPENSATION',str(-Decimal(entry[0])),t['round_index']))
+            if entry:
+                db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',(t['job_id']+':compensation',t['episode_id'],t['agent_id'],'COMPENSATION',str(-Decimal(entry[0])),t['round_index']))
+            elif t['purpose']!='WARM':
+                raise IntegrityError('Market admission payment entry missing')
             db.execute("UPDATE final_allocations SET x=0,payment='0',status='NOT_STARTED' WHERE ticket_id=?",(ticket_id,))
             db.execute("UPDATE eval_tickets SET status='NOT_STARTED' WHERE id=?",(ticket_id,))
             db.execute("UPDATE jobs SET status='NOT_STARTED' WHERE id=?",(t['job_id'],))
             db.execute("UPDATE dispatch_outbox SET status='DONE' WHERE job_id=?",(t['job_id'],))
-            self.event('NOT_STARTED_COMPENSATED',{'ticket_id':ticket_id,'proof':proof},t['episode_id'],t['round_index'])
+            self.event('NOT_STARTED_COMPENSATED' if entry else 'NOT_STARTED_VOIDED',
+                {'ticket_id':ticket_id,'proof':proof},t['episode_id'],t['round_index'])
 
     def usage(self, episode_id, round_index, agent_id, phase, cpu=0, wall=0, calls=0, tokens=0, payload=None):
         with self.transaction() as db:

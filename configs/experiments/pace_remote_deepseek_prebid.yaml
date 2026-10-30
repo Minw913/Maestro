@@ -1,0 +1,15 @@
+# New experiment only; never use an old post-bid Warm checkpoint.
+kind: experiment
+schema_version: 1
+runtime: ../runtimes/coral_deepseek_prebid.yaml
+deployment: ../deployments/remote.yaml
+benchmark: ../benchmarks/pace/benchmark.yaml
+stages:
+  warm_start: ../benchmarks/pace/warm_start.yaml
+  market: ../benchmarks/pace/market.yaml
+execution_mode: real
+n_agents: 4
+seed: 0
+ucb_exploration_coefficient: 0  # Mean-reward-only UCB for new experiments
+
+valuation_discount_factor: 0.8  # Per own settled evaluation; shared by first-price and UCB

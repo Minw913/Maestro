@@ -12,18 +12,18 @@ from maestro.storage.ledger import Ledger
 from maestro.types import AgentState, AuthorizationError, IntegrityError, EvaluationResult, Plan, Submission
 
 
-def prepare_ticket(tmp_path):
+def prepare_ticket(tmp_path, *, warm=False):
     seed = tmp_path / "seed"; seed.mkdir(); (seed / "solver.py").write_text("print('1\\n1')")
     store = WorkspaceStore(tmp_path / "agents", tmp_path / "cas")
     candidate = store.freeze(seed)
     ledger = Ledger(tmp_path / "ledger.sqlite")
     state = AgentState("a", "parent", 0.2)
-    ledger.create_episode("e", "first_price", RunConfig(), {"a": state})
-    ledger.open_round("e", 0, {"purpose": "MAIN", "contract_hash": "contract", "panel_hash": "panel",
+    ledger.create_episode("e", "warm" if warm else "first_price_naive", RunConfig(), {"a": state})
+    ledger.open_round("e", 0, {"purpose": "WARM" if warm else "MAIN", "contract_hash": "contract", "panel_hash": "panel",
                                  "states": {"a": state}, "board": {"champion_score": 0.2}})
     plan = Plan("p", "pv", "a", "parent", "local_search", "parameter_change", "diagnosis", "change", "effect")
-    ledger.submit("e", 0, plan, Submission("a", "pv", Decimal(3), Decimal(3)), {})
-    ledger.invite("e", 0, "a", Decimal("3"))
+    ledger.submit("e", 0, plan, Submission("a", "pv", Decimal(0 if warm else 3), Decimal(0 if warm else 3)), {})
+    ledger.invite("e", 0, "a", Decimal("0" if warm else "3"))
     ledger.record_candidate(candidate["candidate_hash"], candidate)
     with ledger.transaction() as db:
         db.execute("INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)", ("check", "e", 0, "a", candidate["candidate_hash"], 1, "{}"))
@@ -31,7 +31,7 @@ def prepare_ticket(tmp_path):
     ticket = dict(candidate, ticket_id="t", job_id="j", episode_id="e", round_index=0,
         agent_id="a", parent_hash="parent", parent_score=0.2, champion_score=0.2,
         contract_hash="contract", panel_hash="panel", plan_version_id="pv", phase_epoch=0,
-        purpose="MAIN", target="local_search", mod_type="parameter_change")
+        purpose="WARM" if warm else "MAIN", target="local_search", mod_type="parameter_change")
     return ledger, ticket
 
 
@@ -192,6 +192,18 @@ def test_launch_attempt_cannot_be_refunded_as_never_started(admitted):
     assert ledger.balance("e", "a") == Decimal("1997")
 
 
+def test_warm_never_started_voids_ticket_without_wallet_entry(tmp_path):
+    ledger,ticket=prepare_ticket(tmp_path,warm=True)
+    try:
+        ledger.admit(ticket,Decimal(0),2)
+        assert ledger.connection.execute("SELECT count(*) FROM wallet_entries WHERE episode_id='e'").fetchone()[0]==0
+        ledger.void_never_started('t',{'confirmed_not_started':True,'executor_receipt':'no-launch'})
+        assert ledger.ticket('t')['status']=='NOT_STARTED'
+        assert ledger.connection.execute("SELECT count(*) FROM wallet_entries WHERE episode_id='e'").fetchone()[0]==0
+        assert ledger.connection.execute("SELECT kind FROM events WHERE kind='NOT_STARTED_VOIDED'").fetchone()[0]=='NOT_STARTED_VOIDED'
+    finally:ledger.close()
+
+
 @pytest.mark.parametrize("proof", [{"confirmed_not_started": True},
     {"confirmed_not_started": 1, "executor_receipt": "x"},
     {"confirmed_not_started": True, "executor_receipt": " "}])
@@ -217,5 +229,5 @@ def test_mock_outcome_ignores_policy_episode_and_dispatch_order():
     base = {"agent_id": "a", "round_index": 1, "parent_score": 0.2,
             "semantic_plan_key": "same-refinement", "target": "local_search", "mod_type": "rule_replacement"}
     first = MockEvaluator(7).evaluate(dict(base, candidate_hash="h1", job_id="uniform:j", policy="uniform"))
-    second = MockEvaluator(7).evaluate(dict(base, candidate_hash="h2", job_id="market:j", policy="first_price", bid=100))
+    second = MockEvaluator(7).evaluate(dict(base, candidate_hash="h2", job_id="market:j", policy="first_price_naive", bid=100))
     assert (first.score, first.cpu_seconds) == (second.score, second.cpu_seconds)

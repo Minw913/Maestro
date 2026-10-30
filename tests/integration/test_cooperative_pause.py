@@ -24,9 +24,7 @@ def test_pause_between_failed_precheck_and_repair_prevents_new_model_call(tmp_pa
     engine = ExperimentEngine(tmp_path, RunConfig(rounds=1))
     class Backend:
         def __init__(self):self.initial=0;self.repairs=0;self.last_generation_usage={}
-        def generate(self,*args,**kwargs):
-            self.initial+=1;self.last_generation_usage={'calls':1}
-            return {'candidate_hash':'failed'}
+        def activate_frozen_candidate(self,*args,**kwargs):pass
         def precheck(self,candidate):
             engine.pause.request()
             return RuntimePrecheckFailure('runtime',RuntimeFailure('failed','NameError','bad',(('run',1),)))
@@ -40,8 +38,8 @@ def test_pause_between_failed_precheck_and_repair_prevents_new_model_call(tmp_pa
     engine.ledger.open_round('e',0,{})
     try:
         with pytest.raises(PauseRequested):
-            engine._generate_once_runtime_only('e',0,'a',state,plan,'WARM',time.monotonic()+5)
-        assert backend.initial==1 and backend.repairs==0
+            engine._generate_once_runtime_only('e',0,'a',state,plan,'WARM',time.monotonic()+5,initial_candidate={'candidate_hash':'failed'})
+        assert backend.initial==0 and backend.repairs==0
         assert engine.ledger.connection.execute('select status from episodes').fetchone()[0]=='INCOMPLETE'
     finally:engine.close()
 

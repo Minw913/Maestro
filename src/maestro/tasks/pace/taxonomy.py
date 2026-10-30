@@ -1,4 +1,4 @@
-"""Versioned PACE plan vocabulary; frozen within an episode/comparison."""
+"""Versioned suggested PACE plan labels; agents may add bounded free labels."""
 
 TAXONOMY_VERSION = "maestro-v1-target-modtype-1"
 TARGETS = ("reduction", "initialization", "local_search", "tie_break", "restart",

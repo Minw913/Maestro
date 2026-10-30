@@ -326,7 +326,9 @@ _PLAN_SCHEMA = {"type": "object", "additionalProperties": False,
     "properties": {"action": {"type": "string", "enum": ["retain", "revise", "withdraw"]},
         "plan": {"anyOf": [{"type": "null"}, {"type": "object", "additionalProperties": False,
             "properties": {name: ({"type": "array", "items": {"type": "string"}}
-                if name == "evidence_run_ids" else {"type": "string"})
+                if name == "evidence_run_ids" else
+                {"type": "string", "minLength": 1, "maxLength": 64} if name in {"target", "mod_type"} else
+                {"type": "string"})
                 for name in ("target", "mod_type", "diagnosis", "change", "expected_effect", "evidence_run_ids")},
             "required": ["target", "mod_type", "diagnosis", "change", "expected_effect", "evidence_run_ids"]}]},
         "lessons": {"type": "array", "maxItems": 0, "items": {"type": "string"}}},

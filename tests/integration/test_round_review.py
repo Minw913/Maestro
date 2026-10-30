@@ -18,7 +18,7 @@ def test_initial_generation_winners_start_together_before_any_formal_execution(t
     config=RunConfig(rounds=1,warm_opportunities_per_agent=1)
     with ExperimentEngine(tmp_path,config) as engine:
         warm=engine.bootstrap()
-        original=engine._generate
+        original=engine._check_frozen_proposal
         rendezvous=threading.Barrier(config.slots)
         completed=[]
         lock=threading.Lock()
@@ -30,7 +30,7 @@ def test_initial_generation_winners_start_together_before_any_formal_execution(t
                 completed.append(args[2])
             return candidate
 
-        engine._generate=generation
+        engine._check_frozen_proposal=generation
         evaluate=engine.dispatcher.dispatch
 
         def dispatch(*args):
@@ -215,7 +215,7 @@ def test_unresolved_generation_never_advances_to_formal_admission(tmp_path):
                     completed.set()
             return None
 
-        engine._generate=unbounded
+        engine._check_frozen_proposal=unbounded
         try:
             with pytest.raises(MaestroError,match='containment reconciliation'):
                 engine.run(checkpoint,episode_id='unresolved-main')
@@ -239,7 +239,7 @@ def test_unknown_generation_inference_keeps_holds_and_stops_before_backfill(tmp_
             raise InferenceRequestUnknown('provider processing state cannot be established',
                 request_id='request',scope_id='scope',context={})
 
-        engine._generate=unresolved
+        engine._check_frozen_proposal=unresolved
         with pytest.raises(InferenceRequestUnknown):
             engine.run(warm['checkpoint'],episode_id='unknown-inference-main')
         assert engine.ledger.connection.execute(
@@ -257,6 +257,7 @@ def test_live_generation_unknown_receipt_is_recorded_without_inventing_zero_requ
     from maestro.agents.planner import mock_plan
 
     class UnknownInference:
+        supports_runtime_only_repair=True
         def generate(self,*args,**kwargs):
             self.calls+=1
             self.last_generation_usage={'calls':None,'input_tokens':None,'output_tokens':None,
@@ -274,13 +275,13 @@ def test_live_generation_unknown_receipt_is_recorded_without_inventing_zero_requ
         state=AgentState('a','parent',.5)
         plan=mock_plan(state,0,1)
         with pytest.raises(InferenceRequestUnknown):
-            engine._generate('unit',0,'a',state,plan,'MAIN',time.monotonic()+5)
+            engine._implement_proposal('unit',0,'a',state,plan,'MAIN',time.monotonic()+5)
         assert backend.calls==1
         usage=engine.ledger.connection.execute("SELECT * FROM resource_usage WHERE phase='generation'").fetchone()
         details=json.loads(usage['payload'])
         assert usage['llm_calls']==0
         assert details['request_count_unknown'] is True
-        assert details['session_turns']==1
+        assert details['usage']['session_turns']==1
         assert details['usage_complete'] is False
 
 
@@ -302,7 +303,7 @@ def test_close_preserves_authority_until_late_generation_cleanup_finishes(tmp_pa
         envelope['artifact_hash'] = stable_hash(envelope['payload'])
         checkpoint = tmp_path/'cleanup-window.json'
         checkpoint.write_text(json.dumps(envelope), encoding='utf-8')
-        generate = engine._generate
+        generate = engine._check_frozen_proposal
 
         def late_cleanup(*args):
             assert release.wait(timeout=3)
@@ -310,7 +311,7 @@ def test_close_preserves_authority_until_late_generation_cleanup_finishes(tmp_pa
             # failure event, even though the round has already been isolated.
             return generate(*args)
 
-        engine._generate = late_cleanup
+        engine._check_frozen_proposal = late_cleanup
         with pytest.raises(MaestroError, match='containment reconciliation'):
             engine.run(checkpoint, episode_id='cleanup-main')
         callbacks = tuple(engine._generation_futures)
@@ -372,7 +373,7 @@ def test_grant_expiring_before_initial_verification_never_dispatches(tmp_path):
         engine.grants = SlowAuthority()
         state = AgentState('a', 'parent', .5)
         plan = mock_plan(state, 0, 1)
-        assert engine._generate('expired-grant', 0, 'a', state, plan, 'MAIN', time.monotonic()+.2) is None
+        assert engine._implement_proposal('expired-grant', 0, 'a', state, plan, 'MAIN', time.monotonic()+.2) is None
         assert engine.grants.entered
         assert engine.budgets.snapshot('expired-grant:0:a:generation')['calls'] == 0
         assert not engine.ledger.connection.execute('SELECT 1 FROM candidates').fetchone()

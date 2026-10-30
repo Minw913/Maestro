@@ -23,7 +23,7 @@ def test_replacement_starts_before_slow_peer_returns_and_shares_deadline(tmp_pat
     config=RunConfig(rounds=1,warm_opportunities_per_agent=1)
     with ExperimentEngine(tmp_path,config) as engine:
         warm=engine.bootstrap()
-        original=engine._generate
+        original=engine._check_frozen_proposal
         peer_started=threading.Event()
         replacement_started=threading.Event()
         failed_scope_reclaimed=threading.Event()
@@ -32,7 +32,7 @@ def test_replacement_starts_before_slow_peer_returns_and_shares_deadline(tmp_pat
         deadlines={}
         active=[0]
         peak=[0]
-        def generation(e,r,a,state,plan,purpose,deadline):
+        def generation(e,r,a,state,plan,purpose,deadline,candidate):
             order=priority(engine,e,r)
             with lock:
                 deadlines[a]=deadline
@@ -48,17 +48,17 @@ def test_replacement_starts_before_slow_peer_returns_and_shares_deadline(tmp_pat
                 if a==order[1]:
                     peer_started.set()
                     assert replacement_started.wait(timeout=2), 'backfill waited for a slow peer'
-                    result=original(e,r,a,state,plan,purpose,deadline)
+                    result=original(e,r,a,state,plan,purpose,deadline,candidate)
                     peer_returned.set()
                     return result
                 assert failed_scope_reclaimed.is_set()
                 assert not peer_returned.is_set()
                 replacement_started.set()
-                return original(e,r,a,state,plan,purpose,deadline)
+                return original(e,r,a,state,plan,purpose,deadline,candidate)
             finally:
                 with lock:
                     active[0]-=1
-        engine._generate=generation
+        engine._check_frozen_proposal=generation
         engine.run(warm['checkpoint'],episode_id='event-backfill')
         order=priority(engine,'event-backfill',0)
         assert replacement_started.is_set() and peer_returned.is_set()
@@ -84,7 +84,7 @@ def test_faster_lower_priority_duplicate_cannot_win_by_completion_speed(tmp_path
         warm=engine.bootstrap()
     duplicate=replace(config,failures={'duplicate_candidate_rounds':[0]})
     with ExperimentEngine(tmp_path,duplicate) as engine:
-        original=engine._generate
+        original=engine._check_frozen_proposal
         event=engine.ledger.event
         lower_observed=threading.Event()
         def record(kind,payload,*args,**kwargs):
@@ -95,12 +95,12 @@ def test_faster_lower_priority_duplicate_cannot_win_by_completion_speed(tmp_path
                     lower_observed.set()
             return result
         engine.ledger.event=record
-        def generation(e,r,a,state,plan,purpose,deadline):
+        def generation(e,r,a,state,plan,purpose,deadline,candidate):
             order=priority(engine,e,r)
             if a==order[0]:
                 assert lower_observed.wait(timeout=2), 'controller did not observe the fast peer'
-            return original(e,r,a,state,plan,purpose,deadline)
-        engine._generate=generation
+            return original(e,r,a,state,plan,purpose,deadline,candidate)
+        engine._check_frozen_proposal=generation
         engine.run(warm['checkpoint'],episode_id='priority-backfill')
         order=priority(engine,'priority-backfill',0)
         rows=engine.ledger.connection.execute(
@@ -128,7 +128,7 @@ def test_unknown_stops_immediately_without_waiting_for_or_replacing_peer(tmp_pat
                 raise error
             release.wait(timeout=5)
             return None
-        engine._generate=generation
+        engine._check_frozen_proposal=generation
         def run():
             try:
                 engine.run(warm['checkpoint'],episode_id='unknown-backfill')

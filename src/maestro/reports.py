@@ -12,7 +12,7 @@ def report(root,episode_id=None):
     root=Path(root)
     output=root/'reports'
     output.mkdir(parents=True,exist_ok=True)
-    with Ledger(root/'authority'/'ledger.sqlite') as ledger:
+    with Ledger(root/'authority'/'ledger.sqlite',read_only=True) as ledger:
         db=ledger.connection
         episodes=db.execute('SELECT * FROM episodes'+(' WHERE id=?' if episode_id else ''),(episode_id,) if episode_id else ()).fetchall()
         summary=[]
@@ -34,10 +34,18 @@ def report(root,episode_id=None):
             stats=db.execute('SELECT sum(x) admitted,count(*) decisions FROM final_allocations WHERE episode_id=? AND round_index>=0',(e,)).fetchone()
             invites=db.execute('SELECT count(*) FROM invitations WHERE episode_id=? AND round_index>=0',(e,)).fetchone()[0]
             cfg=json.loads(ep['config_json'])
+            from maestro.market.round_extension import latest_config
+            effective_cfg,round_extensions=latest_config(db,ep)
             row={'episode_id':e,'policy':ep['policy'],'execution_mode':ep['execution_mode'],'benchmark':ep['benchmark'],'status':ep['status'],
+                'candidate_pipeline':cfg.get('coral',{}).get('candidate_pipeline','postbid_v1'),
+                'valuation_discount_factor':cfg.get('valuation_discount_factor'),
+                'valuation_method':('discounted_actual_credit' if cfg.get('valuation_discount_factor') is not None else 'legacy'),
+                'ucb_exploration_coefficient':cfg.get('ucb_exploration_coefficient',1.0),
                 'profile':cfg.get('profile','v1_cooperative'),
                 'experiment_stage':cfg.get('experiment_stage'),
                 'config_hash':ep['config_hash'],'config_sources':cfg.get('config_sources',{}),
+                'initial_rounds':cfg['rounds'],'effective_rounds':effective_cfg.rounds,
+                'round_extensions':[json.loads(item['payload']) for item in round_extensions],
                 'inference_budget_unit':'session_turn' if cfg.get('profile')=='codex_session_pilot' else 'provider_request',
                 'warm_id':ep['bootstrap_id'],'final_training_score':checkpoint.get('board',{}).get('champion_score'),
                 'admitted_slots':stats['admitted'] or 0,'invitations':invites,
@@ -45,12 +53,23 @@ def report(root,episode_id=None):
                 'costs':costs,'heldout_score':None,'heldout_status':'NOT_RUN',
                 'reserved_cpu_seconds':(stats['admitted'] or 0)*(cfg['evaluation_instance_count']*cfg['cpu_seconds_per_instance']+cfg['verification_cpu_seconds']),
                 'calibration_scope':'funded_only_selection_biased','outcome_label':'simulated' if ep['execution_mode']=='mock' else 'pace_style_internal'}
+            frozen_regime=db.execute("SELECT payload FROM events WHERE episode_id=? AND kind='REGIME_CONTRACT_FROZEN'",(e,)).fetchone()
+            row['regime_contract']=json.loads(frozen_regime[0]) if frozen_regime else None
+            row['valuation_results']=[{'round_index':v['round_index'],**json.loads(v['payload'])} for v in db.execute(
+                "SELECT round_index,payload FROM events WHERE episode_id=? AND kind='VALUATION_RESULT' ORDER BY id",(e,))]
+            proposals=[(item['round_index'],json.loads(item['payload'])) for item in db.execute(
+                "SELECT round_index,payload FROM events WHERE episode_id=? AND kind='PROPOSAL_FROZEN'",(e,))]
+            row['prebid_proposals']=len(proposals)
+            row['prebid_proposals_without_formal_evaluation']=sum(not db.execute(
+                'SELECT 1 FROM eval_tickets WHERE episode_id=? AND round_index=? AND agent_id=?',
+                (e,round_index,record['agent_id'])).fetchone() for round_index,record in proposals)
             errors=[]
             for s in db.execute('SELECT * FROM settlements WHERE episode_id=?',(e,)):
                 submission=db.execute('SELECT payload FROM round_submissions WHERE episode_id=? AND round_index=? AND agent_id=?',(e,s['round_index'],s['agent_id'])).fetchone()
                 if submission and json.loads(s['payload']).get('result_job_id'):
                     errors.append(float(json.loads(submission[0])['value'])-float(s['reward']))
-                wallets.append({k:s[k] for k in ('episode_id','round_index','agent_id','payment','reward','wealth_before','wealth_after')})
+                if ep['policy']!='warm':
+                    wallets.append({k:s[k] for k in ('episode_id','round_index','agent_id','payment','reward','wealth_before','wealth_after')})
             row['forecast_mae']=sum(abs(v) for v in errors)/len(errors) if errors else None
             row['forecast_mse']=sum(v*v for v in errors)/len(errors) if errors else None
             heldout_data=None
@@ -64,7 +83,14 @@ def report(root,episode_id=None):
                 row['heldout_status']=heldout_data.get('status','COMPLETED')
                 row['heldout_record']=heldout_data
                 row['costs']['heldout']={'cpu_seconds':heldout_data['cpu_seconds'],'wall_seconds':heldout_data['wall_seconds'],'llm_calls':0,'tokens':0}
-            row['comparison_eligible']=ep['policy'] in ('uniform','ucb','first_price') and ep['status']=='COMPLETED' and cfg.get('profile','v1_cooperative')=='v1_cooperative'
+            row['comparison_eligible']=ep['policy'] in ('uniform','ucb','first_price_naive','first_price','adjusted_valuation','agent_adjusted') and ep['status']=='COMPLETED' and cfg.get('profile','v1_cooperative')=='v1_cooperative'
+            collisions=[event['round_index'] for event in db.execute(
+                "SELECT round_index,payload FROM events WHERE episode_id=? AND kind='PREPARATION_OUTCOME'",
+                (e,)) if json.loads(event['payload']).get('error_type')=='FileExistsError']
+            row['workspace_collision_rounds']=sorted(set(collisions))
+            if collisions:
+                row['comparison_eligible']=False
+                row['integrity_note']='Preparation workspace collisions caused empty settled rounds; no formal evaluation occurred in those rounds'
             warm_payload=db.execute('SELECT payload FROM warm_checkpoints WHERE id=?',(ep['bootstrap_id'] or e,)).fetchone()
             row['seed_fallback_agents']=json.loads(warm_payload[0]).get('seed_fallback_agents',{}) if warm_payload else {}
             row['warm_history_complete']=not bool(row['seed_fallback_agents'])
@@ -126,7 +152,7 @@ def report(root,episode_id=None):
 def _trajectory_svg(path,rows):
     """Simple dependency-free quality curve; source data remain in CSV."""
     from html import escape
-    colors={'uniform':'#2563eb','ucb':'#dc2626','first_price':'#16a34a'}
+    colors={'uniform':'#2563eb','ucb':'#dc2626','first_price_naive':'#16a34a','first_price':'#16a34a','adjusted_valuation':'#9333ea','agent_adjusted':'#9333ea'}
     groups={}
     for row in rows:
         if row['policy'] in colors:

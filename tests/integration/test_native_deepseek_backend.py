@@ -69,7 +69,8 @@ def test_separate_deepseek_stages_own_memory_and_edit_grant(tmp_path):
         with pytest.raises(PermissionError):backend.generate(state,decision.plan,0,deadline=time.monotonic()+10)
         authority=GrantAuthority()
         grant=authority.issue(episode_id='offline',round_index=0,agent_id='agent',
-            plan_version_id=decision.plan.version_id,parent_hash=state.parent_hash,epoch=0,expires_at=time.time()+10)
+            plan_version_id=decision.plan.version_id,parent_hash=state.parent_hash,epoch=0,expires_at=time.time()+10,
+            purpose='prebid_implementation',source_candidate_hash=state.parent_hash)
         result=backend.generate(state,decision.plan,0,deadline=time.monotonic()+10,grant=grant,grant_authority=authority)
         assert 'changed' in (workspace.solver/'run').read_text()
         assert result['candidate_hash']!=state.parent_hash and len(calls)==3

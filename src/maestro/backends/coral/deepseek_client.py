@@ -19,6 +19,7 @@ from maestro.backends.base import BackendUnavailable
 from maestro.backends.codex_session.autonomous_client import _loopback_url
 from maestro.types import stable_hash
 from .deepseek_exec import DISABLED
+from .deepseek_lifecycle import exception_details
 from .native_client import ToolService, CoralCodexClient, NativeCoralUnknown
 
 
@@ -137,9 +138,18 @@ class CoralDeepSeekClient:
                 cleanup['local_process_group_reclaimed']=True
             finally:
                 try:
-                    if service:service.close()
+                    if service:
+                        try:service.close()
+                        except BaseException as error:
+                            # Keep the scope fail-closed, but distinguish an
+                            # unreclaimed listener from a reclaimed listener
+                            # carrying an unresolved tool execution error.
+                            cleanup['tool_service_close_error']=exception_details(error)
+                            raise
                     cleanup['tool_service_reclaimed']=True
                 finally:
+                    if service and service.close_receipt is not None:
+                        cleanup['tool_service_close_receipt']=service.close_receipt
                     cleanup['cleanup_finished_monotonic']=time.monotonic()
                     (phase/'cleanup.json').write_text(json.dumps(cleanup,indent=2))
                     with self._lock:self._cleanup_by_url[base_url]={**cleanup,'phase_path':str(phase)}
