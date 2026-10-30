@@ -7,7 +7,7 @@
 /maestro_plan_V1.md
 # Execution and test logs stay local, including logs under shareable outputs.
 *.log
-# Keep experiment records local; publish only the reviewed six-run Warm comparison.
+# Keep experiment records local; publish only the retained pilot results.
 /artifacts/*
 !/artifacts/exports/
 /artifacts/exports/*
@@ -33,3 +33,6 @@ auth.json
 # Live SQLite sidecars are included through SQLite backup, not Git copies.
 *.sqlite-wal
 *.sqlite-shm
+
+# Keep the New Warm comparison group local only.
+/artifacts/exports/warm-start-comparison-six-runs-20261029/new-warm/
