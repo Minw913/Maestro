@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
@@ -15,6 +15,8 @@ class RuntimeFailure:
     exception_type: str
     diagnostic: str
     locations: tuple[tuple[str, int], ...]
+    # Controller-supplied fixed sanity input, never training/reference data.
+    test_context: dict = field(default_factory=dict)
 
 
 class RuntimePrecheckFailure(tuple[bool, str]):
@@ -33,7 +35,7 @@ _RUNTIME_EXCEPTIONS = frozenset({'NameError','UnboundLocalError','TypeError','Va
     'OverflowError','AssertionError','StopIteration'})
 
 
-def classify_runtime_failure(candidate_hash: str, receipt: RunReceipt) -> RuntimeFailure | None:
+def classify_runtime_failure(candidate_hash: str, receipt: RunReceipt, *, test_context: dict | None = None) -> RuntimeFailure | None:
     # Missing commands/dependencies, syntax/format/solution errors, OOM/signals,
     # output/CPU/wall limits and executor failures all fail closed. This is a
     # diagnostic classifier, not a proof that untrusted stderr is honest.
@@ -53,4 +55,4 @@ def classify_runtime_failure(candidate_hash: str, receipt: RunReceipt) -> Runtim
                       for m in re.finditer(r'File "/candidate/([^"\n]+)", line ([0-9]+)', error))
     if not locations:
         return None
-    return RuntimeFailure(candidate_hash, kind, error, locations)
+    return RuntimeFailure(candidate_hash, kind, error, locations, test_context or {})

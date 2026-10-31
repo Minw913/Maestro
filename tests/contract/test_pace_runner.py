@@ -150,6 +150,25 @@ def test_fixed_smoke_returns_only_pass_fail(tmp_path):
     assert not failed and "dominating" in reason
 
 
+def test_runtime_sanity_evidence_carries_actual_input_contract_limits_and_receipt(tmp_path):
+    from hashlib import sha256
+    from maestro.tasks.runtime_failure import RuntimePrecheckFailure
+    candidate=tmp_path/'candidate';candidate.mkdir();(candidate/'run').write_text('print(missing)\n')
+    graph=tmp_path/'sanity.gr';data='p ds 2 1\n1 2\n';graph.write_text(data)
+    failed=RunReceipt(1,'partial\n','Traceback (most recent call last):\n'
+        '  File "/candidate/run", line 1\nNameError: missing',.1,.2,
+        diagnostics={'reason':'COMPLETED','aggregate_cgroup_cpu':True})
+    outcome=smoke_test(candidate,graph,QueueRunner([failed]),image='offline-fixture',
+        solver_argv=('python3','/candidate/run'))
+    assert isinstance(outcome,RuntimePrecheckFailure)
+    ctx=outcome.evidence.test_context
+    assert ctx['stdin']==data and ctx['input_sha256']==sha256(data.encode()).hexdigest()
+    assert ctx['solver_argv']==['python3','/candidate/run']
+    assert ctx['limits']['cpu_seconds']==1 and ctx['limits']['wall_seconds']==3
+    assert ctx['receipt']['returncode']==1 and ctx['receipt']['stdout']=='partial\n'
+    assert 'first non-comment line' in ctx['problem_contract']
+
+
 def test_plain_dictionary_cannot_launch_formal_experiment(tmp_path):
     evaluator, runner, ticket, _ = setup(tmp_path, [receipt(), receipt()])
     # Even an otherwise valid ticket, or guessed claimed status/fence, conveys

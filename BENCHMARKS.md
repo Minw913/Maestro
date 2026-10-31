@@ -1,6 +1,6 @@
 # Benchmarks
 
-Setup once per benchmark, then one line per experiment (Warm Start, then `uniform`, `ucb`, `first_price` from the same checkpoint).
+Setup once per benchmark, then one line per experiment (Warm Start, then `uniform`, `ucb`, `first_price_naive` from the same checkpoint).
 
 ## Prerequisites
 

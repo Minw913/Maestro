@@ -10,7 +10,8 @@ def _tie(seed, *parts):
     return hashlib.sha256(repr((seed, *parts)).encode()).hexdigest()
 
 
-def rank(policy, submissions, states, round_index, seed, *, slots):
+def rank(policy, submissions, states, round_index, seed, *, slots=2,
+         ucb_exploration_coefficient=0.0, valuation_discount_factor=0.8):
     """Return every eligible agent once; callers may take successive backfills.
 
     ``slots`` is the configured K (``RunConfig.slots``). UCB never mutates
@@ -29,7 +30,7 @@ def rank(policy, submissions, states, round_index, seed, *, slots):
         raise ValueError(f"submission has unknown agent: {sorted(unknown)}")
     eligible = [a for a, submission in by_agent.items() if submission.eligible]
     tie = lambda a: _tie(seed, "policy-tie", round_index, a)
-    if policy == "first_price":
+    if policy in ("first_price_naive","first_price","adjusted_valuation","agent_adjusted"):
         for agent in eligible:
             if decimal(by_agent[agent].bid) < 0:
                 raise ValueError("negative bid")
@@ -44,14 +45,31 @@ def rank(policy, submissions, states, round_index, seed, *, slots):
         priority = population[offset:] + population[:offset]
         return [a for a in priority if a in eligible]
     if policy == "ucb":
+        if valuation_discount_factor is not None:
+            from maestro.agents.valuation import validate_discount
+            validate_discount(valuation_discount_factor)
+        coefficient=ucb_exploration_coefficient
+        if (isinstance(coefficient,bool) or not isinstance(coefficient,(int,float))
+                or not math.isfinite(coefficient) or coefficient < 0):
+            raise ValueError('ucb_exploration_coefficient must be finite and nonnegative')
         if any(s.ucb_n < 0 for s in state_map.values()):
             raise ValueError("UCB counts cannot be negative")
         total_n = sum(s.ucb_n for s in state_map.values())
         def ucb(agent):
             s = state_map[agent]
             if s.ucb_n == 0:
-                return math.inf
-            return float(decimal(s.ucb_total) / s.ucb_n) + math.sqrt(
+                # With exploration disabled there is no forced cold-start
+                # exploration. Zero is a ranking prior, not an observed reward.
+                return 0.0 if coefficient==0 else math.inf
+            if valuation_discount_factor is None:
+                # Historical frozen runs used the lifetime mean.
+                mean=float(decimal(s.ucb_total) / s.ucb_n)
+            else:
+                from maestro.agents.valuation import estimate_value
+                mean=float(estimate_value(s.history,gamma=valuation_discount_factor)[0])
+            if coefficient==0:
+                return mean
+            return mean + coefficient * math.sqrt(
                 2 * math.log(1 + total_n) / s.ucb_n)
         return sorted(eligible, key=lambda a: (-ucb(a), tie(a)))
     raise ValueError(f"unsupported V1 policy: {policy}")

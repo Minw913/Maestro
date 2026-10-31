@@ -39,8 +39,11 @@ def validate_plan(plan, parent_hash, allowed_evidence_ids):
             raise ValueError(f"invalid {field}")
     if plan.parent_hash != parent_hash:
         raise ValueError("plan parent differs from the frozen parent")
-    if plan.target not in TARGETS or plan.mod_type not in MOD_TYPES:
-        raise ValueError("unknown target or modification type")
+    for field in ("target", "mod_type"):
+        label = getattr(plan, field)
+        if (not isinstance(label, str) or not 1 <= len(label) <= 64
+                or label != label.strip() or not label.isprintable()):
+            raise ValueError(f"invalid {field}")
     if not isinstance(plan.category_detail, str) or len(plan.category_detail) > 4000:
         raise ValueError("invalid category_detail")
     if not isinstance(plan.evidence_run_ids, (tuple, list)):

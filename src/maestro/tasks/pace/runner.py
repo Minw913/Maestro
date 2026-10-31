@@ -313,17 +313,25 @@ def smoke_test(candidate_path: str | Path, graph_path: str | Path, runner: 'Cont
     candidate = Path(candidate_path).resolve(strict=True)
     data = Path(graph_path).read_text(encoding="utf-8")
     graph = parse_graph(data)
+    limits = ResourceLimits(cpu_seconds=1.0, wall_seconds=3.0, memory_mb=128,
+                            pids=8, output_bytes=65536, cpus=1)
     receipt = runner.run(
         RunRequest(tuple(solver_argv), candidate, data, (Mount(candidate, "/candidate", True),), image),
-        ResourceLimits(cpu_seconds=1.0, wall_seconds=3.0, memory_mb=128,
-                       pids=8, output_bytes=65536, cpus=1))
+        limits)
     if receipt.timed_out or receipt.returncode != 0:
         from maestro.backends.coral.workspace import candidate_tree_hash
-        from maestro.tasks.runtime_failure import (
-            RuntimePrecheckFailure,
-            classify_runtime_failure,
-        )
-        evidence = classify_runtime_failure(candidate_tree_hash(candidate), receipt)
+        from hashlib import sha256
+        from maestro.tasks.runtime_failure import RuntimePrecheckFailure, classify_runtime_failure
+        evidence = classify_runtime_failure(candidate_tree_hash(candidate), receipt,
+            test_context={'kind':'fixed_sanity_only','stdin':data,
+                'input_sha256':sha256(data.encode('utf-8')).hexdigest(),
+                'solver_argv':list(solver_argv),'limits':asdict(limits),
+                'receipt':asdict(receipt),
+                'problem_contract':
+                    'PACE Dominating Set: stdin is p ds n m followed by undirected edges u v, '
+                    'vertices 1..n. Output k alone on the first non-comment line, '
+                    'then k distinct vertex IDs (normally one per line); '
+                    'every vertex must be selected or adjacent to a selected vertex.'})
         if evidence is not None:
             return RuntimePrecheckFailure("runtime exception in fixed precheck", evidence)
         return False, "smoke execution failed or timed out"

@@ -6,7 +6,7 @@ import pytest
 from maestro.config import RunConfig, load_config
 from maestro.cli import build_parser, _config
 from maestro.storage import Ledger
-from maestro.types import IntegrityError, stable_hash
+from maestro.types import IntegrityError, MaestroError, stable_hash
 from maestro.loop import ExperimentEngine
 
 
@@ -38,6 +38,8 @@ def test_cli_override_and_help(tmp_path):
     assert _config(args).benchmark == 'pace'
     with pytest.raises(SystemExit):
         build_parser().parse_args(['bootstrap', '--mode', 'pace'])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(['run','--bootstrap','unused','--stop-after-round','10'])
 
 
 @pytest.mark.parametrize('suffix,text', [('.json','{"execution_mode":"mock","execution_mode":"real"}'),
@@ -64,13 +66,13 @@ def test_old_checkpoint_rejected(tmp_path):
     path = tmp_path/'old.json'
     path.write_text(json.dumps({'payload':payload, 'artifact_hash':stable_hash(payload)}))
     with ExperimentEngine(tmp_path/'run', RunConfig()) as engine:
-        with pytest.raises(IntegrityError, match='old experiments'):
+        with pytest.raises(MaestroError, match='postbid_v1 execution is retired'):
             engine.run(path)
 
 
 def test_resume_execution_change_rejected(tmp_path):
     with ExperimentEngine(tmp_path, RunConfig()) as engine:
-        engine.ledger.create_episode('e','first_price',engine.config,{})
+        engine.ledger.create_episode('e','first_price_naive',engine.config,{})
         engine.config = replace(engine.config, execution_mode='real')
         with pytest.raises(IntegrityError, match='Resume config hash mismatch'):
             engine.resume('e')
@@ -79,7 +81,7 @@ def test_resume_execution_change_rejected(tmp_path):
 def test_cli_resume_rejects_override_before_backend_start(tmp_path, monkeypatch):
     from maestro.cli import main
     with Ledger(tmp_path/'authority'/'ledger.sqlite') as ledger:
-        ledger.create_episode('e', 'first_price', RunConfig(), {})
+        ledger.create_episode('e', 'first_price_naive', RunConfig(), {})
     def forbidden(*args, **kwargs):
         pytest.fail('Resume mismatch must be rejected before backend construction')
     monkeypatch.setattr('maestro.loop.ExperimentEngine', forbidden)
@@ -136,7 +138,7 @@ def test_preparation_window_validation(value):
 
 def test_resume_rejects_changed_preparation_budget(tmp_path):
     with ExperimentEngine(tmp_path, RunConfig()) as engine:
-        engine.ledger.create_episode('e', 'first_price', engine.config, {})
+        engine.ledger.create_episode('e', 'first_price_naive', engine.config, {})
         engine.config = replace(engine.config, preparation_calls=5)
         with pytest.raises(IntegrityError, match='Resume config hash mismatch'):
             engine.resume('e')

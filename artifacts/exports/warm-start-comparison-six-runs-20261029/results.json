@@ -1,0 +1,89 @@
+{
+  "scope": "Three completed Pilot experiment Market episodes; training only. Other group retained locally only.",
+  "experiments": [
+    {
+      "group": "old-warm",
+      "regime": "R1",
+      "source_root": "artifacts/runs/pace-ds/deepseek-flash/uniform/legacywarm-restart-20261029T085402Z",
+      "source_report_sha256": "474f53a57178ca591e2c3c22d22ee998c7b3715441db0227d323dd8d1e7b355f",
+      "episode_id": "legacywarm-r1-restart-20-20261029t085402z",
+      "warm_id": "warm-5e4162c13d3149ff",
+      "warm_checkpoint_hash": "a2ad1c6e7d0f7223077ad24154cdaad336eefa45cb7bedd6a815706aabfee48d",
+      "warm_schema": 2,
+      "warm_pipeline": "postbid_v1",
+      "warm_start_score": 0.9414633933509519,
+      "final_training_score": 0.9415265043905962,
+      "market_gain": 6.311103964429243e-05,
+      "final_champion_hash": "d1a39356877dbf6242c3023441a76b6c221f699f4342edf1d6d59499b67e74ef",
+      "effective_config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+      "panel_hash": "40ef4b92cfde83a1dc01f39050d499a5721e16d4d2a7a67c3f07a8198192552d",
+      "contract_hash": "7892e7e4138f9e4970e13a30104c1594873bf815422e45918da76a4b8dfb07a8",
+      "settled_rounds": 20,
+      "request_failure_counts": {
+        "unknown_requests": 4,
+        "failed_or_unknown_requests": 4,
+        "affected_logical_requests": 4,
+        "affected_phase_scopes": 4,
+        "unknown_with_completed_replacement": 4,
+        "unknown_with_phase_abstention": 0,
+        "unknown_without_traceback": 0
+      }
+    },
+    {
+      "group": "old-warm",
+      "regime": "R2",
+      "source_root": "artifacts/runs/pace-ds/deepseek-flash/ucb/legacywarm-restart-20261029T085402Z",
+      "source_report_sha256": "f37bb5bc9ec56f9eba486bb831c59337857e46f130ffa1b6382d22875e35fc7a",
+      "episode_id": "legacywarm-r2-20-20261029t085402z",
+      "warm_id": "warm-5e4162c13d3149ff",
+      "warm_checkpoint_hash": "a2ad1c6e7d0f7223077ad24154cdaad336eefa45cb7bedd6a815706aabfee48d",
+      "warm_schema": 2,
+      "warm_pipeline": "postbid_v1",
+      "warm_start_score": 0.9414633933509519,
+      "final_training_score": 0.9415322468111501,
+      "market_gain": 6.885346019824823e-05,
+      "final_champion_hash": "6e5757f20ff1678c562488e0b3b305b09778d27b4a83b044da844631e36bbc88",
+      "effective_config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+      "panel_hash": "40ef4b92cfde83a1dc01f39050d499a5721e16d4d2a7a67c3f07a8198192552d",
+      "contract_hash": "7892e7e4138f9e4970e13a30104c1594873bf815422e45918da76a4b8dfb07a8",
+      "settled_rounds": 20,
+      "request_failure_counts": {
+        "unknown_requests": 7,
+        "failed_or_unknown_requests": 7,
+        "affected_logical_requests": 7,
+        "affected_phase_scopes": 7,
+        "unknown_with_completed_replacement": 5,
+        "unknown_with_phase_abstention": 2,
+        "unknown_without_traceback": 0
+      }
+    },
+    {
+      "group": "old-warm",
+      "regime": "R4",
+      "source_root": "artifacts/runs/pace-ds/deepseek-flash/adjusted_valuation/legacywarm-restart-20261029T085402Z",
+      "source_report_sha256": "9d5301f486093e191c221d5cf4df2753d615c16943bca8f57020b81a09816198",
+      "episode_id": "legacywarm-r4-20-20261029t085402z",
+      "warm_id": "warm-5e4162c13d3149ff",
+      "warm_checkpoint_hash": "a2ad1c6e7d0f7223077ad24154cdaad336eefa45cb7bedd6a815706aabfee48d",
+      "warm_schema": 2,
+      "warm_pipeline": "postbid_v1",
+      "warm_start_score": 0.9414633933509519,
+      "final_training_score": 0.9465068033471541,
+      "market_gain": 0.0050434099962022305,
+      "final_champion_hash": "218ea474498767e6a73e3a3666d345babfc0332a7ad1b883e3cc21a6abb49fba",
+      "effective_config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+      "panel_hash": "40ef4b92cfde83a1dc01f39050d499a5721e16d4d2a7a67c3f07a8198192552d",
+      "contract_hash": "7892e7e4138f9e4970e13a30104c1594873bf815422e45918da76a4b8dfb07a8",
+      "settled_rounds": 20,
+      "request_failure_counts": {
+        "unknown_requests": 2,
+        "failed_or_unknown_requests": 2,
+        "affected_logical_requests": 2,
+        "affected_phase_scopes": 2,
+        "unknown_with_completed_replacement": 2,
+        "unknown_with_phase_abstention": 0,
+        "unknown_without_traceback": 0
+      }
+    }
+  ]
+}

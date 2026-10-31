@@ -89,7 +89,7 @@ def request_failures(root,episode_ids=None,*,ledger_path=None):
                 payload=json.loads(row['payload'])
                 if row['kind']=='PREPARATION_OUTCOME' and payload.get('status')=='PREPARED':continue
                 result['controller_phase_failures'].append({k:row[k] for k in ('id','episode_id','round_index','kind')} | {
-                    k:payload.get(k) for k in ('agent_id','status','error_type','scope','reason','phase','reclaimed_callbacks','pending_callbacks') if k in payload})
+                    k:payload.get(k) for k in ('agent_id','status','error_type','scope','reason','phase','reclaimed_callbacks','pending_callbacks','diagnostic') if k in payload})
         finally:core.close()
     from maestro.storage.paths import run_paths
     controller=run_paths(root).local/'controller-errors.jsonl'

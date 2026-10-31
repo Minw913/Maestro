@@ -10,6 +10,7 @@ import threading
 import time
 
 from maestro.agents.planner import parse_plan_decision
+from maestro.agents.planning_diagnostics import planning_rejection_diagnostic
 from maestro.backends.codex_session.autonomous_backend import StrictCodexBackend, CodexPhaseUnknown
 from maestro.backends.codex_session.tools import StageToolBroker
 from maestro.llm import PlanningReceipt, PlanningResponseError, InferenceRequestUnknown
@@ -17,7 +18,10 @@ from maestro.types import stable_hash, canonical_json
 from .native_client import CoralCodexClient, MCP_TOOL, MCP_NAMESPACE
 
 
-class NativeCoralBackend(StrictCodexBackend):
+from .valuation import ValuationBackendMixin
+
+
+class NativeCoralBackend(ValuationBackendMixin, StrictCodexBackend):
     requires_fresh_plans = True
     preparation_capabilities = {'read_only': True, 'actual_request_gate': True,
                                 'common_deadline': True}
@@ -50,7 +54,7 @@ class NativeCoralBackend(StrictCodexBackend):
             deadline=deadline, max_calls=calls, max_request_bytes=16*1024*1024,
             max_output_tokens=96_000, allowed_tool_names=(MCP_TOOL,) if tools else (),
             tool_namespace=MCP_NAMESPACE if tools else None, request_guard=self._dispatch_guard,
-            final_response_on_last_request=account.endswith(':PREPARATION'))
+            final_response_on_last_request=account.endswith((':PREPARATION',':VALUATION_RO')))
 
     def preflight(self, config=None):
         report = super().preflight(config)
@@ -60,12 +64,15 @@ class NativeCoralBackend(StrictCodexBackend):
                 'physical_runtime_qualified': False}
 
     def _identity_context(self, state):
-        from maestro.tasks.taxonomy import MOD_TYPES, TARGETS
+        from maestro.tasks.taxonomy import TARGETS, MOD_TYPES
+        paths={'code':'solver/','memory':'private/',
+               'history':'history/index.json','lessons':'history/lessons.json'}
+        if not self.episode_id.startswith('warm-'):
+            paths['board']='public/board.json'
         return {'agent_id':state.agent_id,'parent_hash':state.parent_hash,
             'parent_score':state.parent_score,'taxonomy':{'targets':list(TARGETS),'mod_types':list(MOD_TYPES)},
             'direction':deepcopy(self._directions.get(state.agent_id,{})),
-            'paths':{'code':'solver/','memory':'private/','board':'public/board.json',
-                     'history':'history/index.json','lessons':'history/lessons.json'}}
+            'paths':paths}
 
     def _publish_own_history(self, workspace, state):
         from .workspace import remove_private_path
@@ -78,7 +85,11 @@ class NativeCoralBackend(StrictCodexBackend):
         index=[]
         for i,record in enumerate(state.history):
             name=f'record-{i:06d}.json'
-            (root/name).write_text(canonical_json(record))
+            visible=json.loads(canonical_json(record))
+            if self.episode_id.startswith('warm-'):
+                visible.pop('champion_score',None)
+                visible.pop('credit',None)
+            (root/name).write_text(canonical_json(visible))
             index.append({'experiment_id':record.experiment_id,'path':'history/'+name,
                           'target':record.target,'mod_type':record.mod_type})
         (root/'index.json').write_text(canonical_json({'agent_id':state.agent_id,
@@ -86,8 +97,8 @@ class NativeCoralBackend(StrictCodexBackend):
         (root/'lessons.json').write_text(canonical_json(state.lessons))
 
     def prepare_with_receipt(self, state, round_index, context, *, deadline):
-        account = f'{self.episode_id}:{round_index}:{state.agent_id}:PREPARATION'
-        key = (self.episode_id, round_index, state.agent_id)
+        account = f'{self.request_episode_id}:{round_index}:{state.agent_id}:PREPARATION'
+        key = (self.request_episode_id, round_index, state.agent_id)
         with self.budget_store._lock:
             previous=self.budget_store.connection.execute(
                 'SELECT status FROM codex_phase_scopes WHERE account=?',(account,)).fetchone()
@@ -104,7 +115,7 @@ class NativeCoralBackend(StrictCodexBackend):
         # solver to this round's frozen parent before any autonomous reads.
         self.workspaces.restore(workspace, self._parents.get(state.parent_hash, self.seed_solver))
         self._publish_own_history(workspace,state)
-        assembled = {**self._identity_context(state),'episode_id':self.episode_id,'round_index':round_index}
+        assembled = {**self._identity_context(state),'episode_id':self.request_episode_id,'round_index':round_index}
         call_cap=self.config.preparation_calls
         budget_instruction=(
             'There is no model request-count cap for PREPARATION (preparation_calls=0). '
@@ -120,10 +131,13 @@ class NativeCoralBackend(StrictCodexBackend):
             'Reserve the last request for your final evidence summary with NO tool calls. '
             'The controller disables tools on the last allowed request, regardless of the configured request count. '
             'When only one request remains, stop retrieving and return the summary immediately. ')
+        shared = ('No global champion or peer board is available during Warm Start. '
+                  if self.episode_id.startswith('warm-') else
+                  'You may inspect the published board and champion. ')
         prompt = (
-            'PREPARATION: autonomously inspect your frozen parent code, own persistent memory, '
-            'and the published board using the maestro MCP tool. Virtual roots are solver/, '
-            'private/, public/, history/. Choose what to list/read/search; batch related reads. '
+            'PREPARATION: autonomously inspect your frozen parent code and own persistent memory '
+            'using the maestro MCP tool. ' + shared +
+            'Virtual roots are solver/, private/, public/, history/. Choose what to list/read/search; batch related reads. '
             'All files are read-only. No shell, code edits, evaluation or memory writes are allowed. '
             + budget_instruction +
             'Batch related list/read/search operations into the same response; avoid redundant confirmation reads. '
@@ -214,14 +228,14 @@ class NativeCoralBackend(StrictCodexBackend):
                     broker.close()
 
     def plan_with_receipt(self, state, round_index, context, *, deadline):
-        account = f'{self.episode_id}:{round_index}:{state.agent_id}:PLAN_RO'
-        key = (self.episode_id, round_index, state.agent_id)
+        account = f'{self.request_episode_id}:{round_index}:{state.agent_id}:PLAN_RO'
+        key = (self.request_episode_id, round_index, state.agent_id)
         with self._preparation_lock:
             prepared = deepcopy(self._prepared.get(key))
         if (not prepared or prepared.get('status') != 'PREPARED'
                 or prepared['parent_hash'] != state.parent_hash):
             raise PermissionError('An accepted same-round preparation is required before planning')
-        assembled = {**self._identity_context(state),'episode_id':self.episode_id,'round_index':round_index}
+        assembled = {**self._identity_context(state),'episode_id':self.request_episode_id,'round_index':round_index}
         assembled['preparation'] = prepared
         assembled['direction'] = deepcopy(self._directions.get(state.agent_id, {}))
         assembled['own_evidence_index'] = [
@@ -231,6 +245,9 @@ class NativeCoralBackend(StrictCodexBackend):
         from maestro.backends.codex_session.autonomous_backend import _PLAN_SCHEMA
         prompt = ('PLAN_RO: using your accepted preparation evidence, return one plan decision '
                   'matching the JSON schema. No tool calls or code changes. '
+                  'For a revised plan, taxonomy.targets and taxonomy.mod_types are examples, not an exclusive list. '
+                  'You may define or revise a concise target or mod_type label when the existing examples do not fit. '
+                  'Use the same label for the same meaning when citing own history. '
                   'For a revised plan, evidence_run_ids MUST include EVERY experiment_id in '
                   'own_evidence_index whose target AND mod_type match the proposed plan, '
                   'including invalid, failed and zero-improvement outcomes. Never invent IDs '
@@ -239,23 +256,34 @@ class NativeCoralBackend(StrictCodexBackend):
                   +json.dumps(assembled, ensure_ascii=False))
         with self._phase(account):
             proxy = self._proxy(account, deadline, self.config.planning_calls)
+            step = 'request'
             try:
                 response = self.client.run_phase(prompt, base_url=proxy.start(), deadline=deadline,
                                                  output_schema=_PLAN_SCHEMA,
                     **({"agent_id":state.agent_id} if getattr(self.client,"supports_phase_identity",False) else {}))
+                step = 'proxy_resolution'
                 proxy.assert_resolved()
                 usage = self._usage(account)
                 diagnostics=proxy.usage()
-                if diagnostics['protocol_violations'] or diagnostics['terminal_failures']:
+                step = 'protocol_violation'
+                if diagnostics['protocol_violations']:
+                    raise ValueError('Planning violated the request contract')
+                step = 'terminal_failure'
+                if diagnostics['terminal_failures']:
                     raise ValueError('Planning violated the request contract')
                 receipt = PlanningReceipt(account, account, stable_hash(assembled), response.response_hash,
                     self._planning_provider_id(account), usage.get('input_tokens'), usage.get('output_tokens'),
                     actual_requests=usage['calls'],logical_requests=usage.get('logical_calls'),
                     retry_attempts=usage.get('retry_attempts',0),
                     known_input_tokens=usage.get('known_input_tokens'),known_output_tokens=usage.get('known_output_tokens'))
-                if usage.get('logical_calls',usage['calls']) != 1 or time.monotonic() >= deadline:
+                step = 'request_count'
+                if usage.get('logical_calls',usage['calls']) != 1:
                     raise ValueError('Planning requires one timely metered request')
-                decision = parse_plan_decision(response.text, state, round_index, namespace=self.episode_id)
+                step = 'deadline'
+                if time.monotonic() >= deadline:
+                    raise ValueError('Planning requires one timely metered request')
+                step = 'validation'
+                decision = parse_plan_decision(response.text, state, round_index, namespace=self.request_episode_id)
                 return decision, receipt, assembled
             except Exception as error:
                 usage = self._usage(account)
@@ -264,7 +292,8 @@ class NativeCoralBackend(StrictCodexBackend):
                         request_id=account, scope_id=account, context=assembled) from error
                 receipt = PlanningReceipt(account, account, stable_hash(assembled), stable_hash('rejected'), '',
                     usage.get('input_tokens'), usage.get('output_tokens'), actual_requests=usage.get('calls', 0))
-                raise PlanningResponseError('Coral plan was not accepted', receipt=receipt, context=assembled) from error
+                raise PlanningResponseError('Coral plan was not accepted', receipt=receipt,
+                    context=assembled, diagnostic=planning_rejection_diagnostic(error, step)) from error
             finally:
                 proxy.close()
 

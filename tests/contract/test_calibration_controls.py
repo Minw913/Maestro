@@ -127,6 +127,11 @@ def test_initialization_failure_is_reported_without_wave_two(tmp_path, monkeypat
     from dataclasses import replace
     original_load=calibration.load_config
     monkeypatch.setattr(calibration,"load_config",lambda path:replace(original_load(path),generation_calls=3))
+    # This startup-failure test does not need the operator's private PACE data.
+    graph=Path(calibration.__file__).resolve().parents[1]/'data/training/heuristic_032.gr'
+    read_bytes=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda path: b'p ds 2 1\n1 2\n' if path==graph else read_bytes(path))
+    monkeypatch.setattr(calibration,'candidate_tree_hash',lambda path: '0'*64)
     calls=[]
     def broken(config,root):
         calls.append(root)

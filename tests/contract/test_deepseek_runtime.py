@@ -15,6 +15,106 @@ from maestro.backends.coral.deepseek_exec import command,environment
 @pytest.mark.skipif(os.environ.get('MAESTRO_RUN_NATIVE_WIRE')!='1'
                    or not os.environ.get('MAESTRO_DSH_EXECUTABLE'),
                    reason='Opt-in installed DSH local-only wire test')
+def test_installed_dsh_final_valuation_sees_only_read_evidence_paths(tmp_path):
+    from maestro.agents.valuation_reasoning import ValuationReadBroker
+    from maestro.backends.coral.deepseek_gate import DeepSeekQuotaProxy,DEEPSEEK_TOOL
+    from maestro.execution.budgets import BudgetStore
+    forwarded=[];deadline=time.monotonic()+30
+    files={'public/contract.json':'P=C','solver/run':'print(1)',
+           'private/note.txt':'technical note'}
+    broker=ValuationReadBroker(files,deadline)
+    def upstream(payload, _deadline):
+        forwarded.append(payload);final=len(forwarded)==2
+        if final:
+            assert 'tools' not in payload
+            instruction=str(payload['system'])
+            assert 'LAST allowed model request for VALUATION_RO' in instruction
+            assert 'LAST allowed model request for PREPARATION' not in instruction
+            allowed=json.loads(instruction.split('Allowed evidence.path values: ',1)[1])
+            assert allowed==['public/contract.json']
+            assert 'private' not in allowed and 'solver/run' not in allowed
+            block={'type':'text','text':'{"ok":true}'}
+        else:
+            assert payload['tools'][0]['name']==DEEPSEEK_TOOL
+            block={'type':'tool_use','id':'call_1','name':DEEPSEEK_TOOL,
+                   'input':{'action':'read','path':'public/contract.json'}}
+        events=[{'type':'message_start','message':{'type':'message','id':f'msg_{len(forwarded)}',
+            'role':'assistant','model':'deepseek-flash','stop_reason':None,'content':[],
+            'usage':{'input_tokens':10,'output_tokens':0}}},
+            {'type':'content_block_start','index':0,'content_block':
+             {'type':'text','text':''} if final else {**block,'input':{}}},
+            {'type':'content_block_delta','index':0,'delta':
+             {'type':'text_delta','text':block['text']} if final else
+              {'type':'input_json_delta','partial_json':json.dumps(block['input'])}},
+            {'type':'content_block_stop','index':0},
+            {'type':'message_delta','delta':{'stop_reason':'end_turn' if final else 'tool_use'},
+             'usage':{'output_tokens':3}}, {'type':'message_stop'}]
+        return b''.join(b'data: '+json.dumps(event).encode()+b'\n\n' for event in events),'text/event-stream'
+    store=BudgetStore(tmp_path/'budget.sqlite')
+    proxy=DeepSeekQuotaProxy(store,'wire:0:agent:VALUATION_RO','deepseek-flash',
+        deadline=deadline,max_calls=2,max_request_bytes=2*1024*1024,
+        max_output_tokens=1000,per_request_tokens=100,allowed_tool_names=(DEEPSEEK_TOOL,),
+        final_response_on_last_request=True,upstream=upstream)
+    proxy.bind_final_evidence_paths(broker.evidence_paths)
+    client=CoralDeepSeekClient(model='deepseek-flash',work_root=tmp_path/'native',
+        executable=os.environ['MAESTRO_DSH_EXECUTABLE'],max_output_tokens=100,timeout=30)
+    try:
+        result=client.run_phase('Read a file, then return JSON.',base_url=proxy.start(),
+            deadline=deadline,tools=broker,output_schema={'type':'object'})
+        assert result.text=='{"ok":true}'
+        proxy.assert_resolved()
+        assert len(forwarded)==2 and broker.evidence_paths()==('public/contract.json',)
+        cleanup=json.loads(next((tmp_path/'native').glob('*/cleanup.json')).read_text())
+        assert cleanup['local_process_group_reclaimed'] and cleanup['tool_service_reclaimed']
+    finally:client.close();proxy.close();store.close()
+
+
+@pytest.mark.skipif(os.environ.get('MAESTRO_RUN_NATIVE_WIRE')!='1'
+                   or not os.environ.get('MAESTRO_DSH_EXECUTABLE'),
+                   reason='Opt-in installed DSH local-only wire test')
+def test_installed_dsh_rejects_malformed_terminal_json_without_repair(tmp_path):
+    from maestro.backends.coral.deepseek_gate import DeepSeekQuotaProxy
+    from maestro.execution.budgets import BudgetStore
+    forwarded=[]
+    malformed='{"rationale":"brief reason"],"uncertainties":[]}'
+    def upstream(payload, deadline):
+        forwarded.append(payload)
+        assert 'LAST allowed model request for VALUATION_RO' in str(payload['system'])
+        assert 'LAST allowed model request for PREPARATION' not in str(payload['system'])
+        assert 'Allowed evidence.path values: ["public/contract.json"]' in str(payload['system'])
+        events=[
+            {'type':'message_start','message':{'type':'message','id':'msg_1',
+                'role':'assistant','model':'deepseek-flash','stop_reason':None,
+                'content':[],'usage':{'input_tokens':10,'output_tokens':0}}},
+            {'type':'content_block_start','index':0,'content_block':{'type':'text','text':''}},
+            {'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':malformed}},
+            {'type':'content_block_stop','index':0},
+            {'type':'message_delta','delta':{'stop_reason':'end_turn'},'usage':{'output_tokens':20}},
+            {'type':'message_stop'},
+        ]
+        return b''.join(b'data: '+json.dumps(event).encode()+b'\n\n' for event in events),'text/event-stream'
+    store=BudgetStore(tmp_path/'budget.sqlite');deadline=time.monotonic()+30
+    proxy=DeepSeekQuotaProxy(store,'wire:0:agent:VALUATION_RO','deepseek-flash',
+        deadline=deadline,max_calls=1,max_request_bytes=2*1024*1024,
+        max_output_tokens=1000,per_request_tokens=100,allowed_tool_names=(),
+        final_response_on_last_request=True,upstream=upstream)
+    proxy.bind_final_evidence_paths(lambda:('public/contract.json',))
+    client=CoralDeepSeekClient(model='deepseek-flash',work_root=tmp_path/'native',
+        executable=os.environ['MAESTRO_DSH_EXECUTABLE'],max_output_tokens=100,timeout=30)
+    try:
+        with pytest.raises(json.JSONDecodeError):
+            client.run_phase('Return one complete JSON object.',base_url=proxy.start(),
+                deadline=deadline,output_schema={'type':'object'})
+        proxy.assert_resolved()
+        assert len(forwarded)==1 and store.usage('wire:0:agent:VALUATION_RO')['calls']==1
+        cleanup=json.loads(next((tmp_path/'native').glob('*/cleanup.json')).read_text())
+        assert cleanup['local_process_group_reclaimed'] and cleanup['tool_service_reclaimed']
+    finally:client.close();proxy.close();store.close()
+
+
+@pytest.mark.skipif(os.environ.get('MAESTRO_RUN_NATIVE_WIRE')!='1'
+                   or not os.environ.get('MAESTRO_DSH_EXECUTABLE'),
+                   reason='Opt-in installed DSH local-only wire test')
 @pytest.mark.parametrize('cap', [0, 1, 4])
 def test_installed_dsh_final_preparation_request_is_tool_free(tmp_path, cap):
     from maestro.backends.coral.deepseek_gate import DeepSeekQuotaProxy,DEEPSEEK_TOOL
@@ -103,6 +203,45 @@ def test_actual_coral_deepseek_runtime_start_and_scrubbed_prefix(tmp_path,monkey
     assert result.text=='autonomous preparation result' and len(calls)==1
     cleanup=json.loads(next((tmp_path/'native').glob('*/cleanup.json')).read_text())
     assert cleanup['local_process_group_reclaimed'] and cleanup['tool_service_reclaimed']
+    client.close()
+
+
+def test_deepseek_cleanup_records_reclaimed_tool_listener_with_unknown_tool_call(tmp_path,monkeypatch):
+    import urllib.error
+    import urllib.request
+    from coral.agent.builtin.deepseek_harness import DeepSeekHarnessRuntime
+    from maestro.backends.coral.native_client import NativeCoralUnknown
+    from maestro.llm import InferenceRequestUnknown
+
+    client=CoralDeepSeekClient(model='offline-deepseek',work_root=tmp_path/'native',
+        executable='/bin/true',runtime=DeepSeekHarnessRuntime())
+    class Process:
+        pid=987654322;returncode=0;stdout=stderr=None
+        def poll(self):return 0
+    def popen(argv,**kwargs):
+        data=json.loads(Path(argv[argv.index('--scope')+1]).read_text())
+        patches=yaml.safe_load(Path(data['policy_patch']).read_text())
+        endpoint=patches[-1]['insert'][0]['config']['env']['MAESTRO_TOOL_ENDPOINT']
+        request=urllib.request.Request(endpoint,data=b'{}',headers={'Content-Type':'application/json'})
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request,timeout=3)
+        assert response.value.code==403
+        kwargs['stdout'].write('offline result\n');kwargs['stdout'].flush()
+        return Process()
+    monkeypatch.setattr('coral.agent.builtin.deepseek_harness.subprocess.Popen',popen)
+    monkeypatch.setattr('maestro.backends.coral.native_client.os.killpg',
+                        lambda *args:(_ for _ in ()).throw(ProcessLookupError()))
+    def unknown_tool(_name,_args):
+        raise InferenceRequestUnknown('Unresolved request',request_id='offline',scope_id='offline',context={})
+    with pytest.raises(NativeCoralUnknown):
+        client.run_phase('offline valuation',base_url='http://127.0.0.1:12345/scope/v1',
+            deadline=time.monotonic()+10,tools=unknown_tool)
+    cleanup=json.loads(next((tmp_path/'native').glob('*/cleanup.json')).read_text())
+    assert cleanup['local_process_group_reclaimed'] is True
+    assert cleanup.get('tool_service_reclaimed') is not True
+    assert cleanup['tool_service_close_receipt']['transport_reclaimed'] is True
+    assert cleanup['tool_service_close_receipt']['tool_error_type']=='InferenceRequestUnknown'
+    assert cleanup['tool_service_close_error']['exception_class']=='NativeCoralUnknown'
     client.close()
 
 

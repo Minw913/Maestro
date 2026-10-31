@@ -57,14 +57,16 @@ def test_pause_state_is_local_and_legacy_marker_still_honored(tmp_path):
     assert PauseController(old).requested
 
 
-def test_git_policy_allows_standard_outputs_and_ignores_local_runtime():
+def test_git_policy_publishes_only_reviewed_comparison_and_ignores_local_runtime():
     repo=Path(__file__).resolve().parents[2]
     def ignored(path):
         return subprocess.run(['git','check-ignore','--no-index','-q',path],cwd=repo).returncode==0
     assert ignored('runtime/runs/example/native/scope.json')
     assert ignored('artifacts/legacy-mixed/controller.log')
-    assert not ignored('artifacts/runs/example/reports/summary.json')
-    assert not ignored('artifacts/README.md')
+    assert ignored('artifacts/runs/example/reports/summary.json')
+    assert ignored('artifacts/README.md')
+    assert not ignored('artifacts/exports/warm-start-comparison-six-runs-20261029/results.json')
+    assert ignored('artifacts/exports/legacy-three-regimes-20261022T035531Z/results.json')
 
 
 def test_controller_logs_and_exit_are_local_only(tmp_path,capsys):

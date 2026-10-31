@@ -52,7 +52,7 @@ def engine(tmp_path):
     artifacts = ArtifactStore(tmp_path / "authority/cas")
     ledger = Ledger(tmp_path / "authority/ledger.sqlite")
     state = AgentState("agent-1", candidate_hash, 0.5)
-    ledger.create_episode("source", "first_price", config, {state.agent_id: state})
+    ledger.create_episode("source", "first_price_naive", config, {state.agent_id: state})
     ledger.record_candidate(candidate_hash, {"candidate_hash": candidate_hash, "candidate_path": str(candidate_path)})
     ledger.open_round("source", 0, {"test_fixture": True})
     ledger.set_round_phase("source", 0, "SETTLED")
@@ -100,6 +100,30 @@ def test_final_heldout_rejects_unfinished_source(engine):
     assert engine.backend.candidate_runner.calls == 0
 
 
+def test_final_heldout_detaches_layered_market_without_changing_source(engine):
+    from maestro.config import STAGE_FIELDS
+    manifest = write_panel(engine.root, "heldout", "p ds 4 3\n1 2\n1 3\n1 4\n", "heldout")
+    stage = {name: getattr(engine.config, name) for name in STAGE_FIELDS}
+    layered = replace(engine.config, experiment_stage="market",
+        stage_configs={"warm_start": dict(stage), "market": dict(stage)},
+        config_sources={"experiment": {"path": "frozen-experiment.yaml", "sha256": "a" * 64}})
+    assert layered.slots == 2
+    with engine.ledger.transaction() as db:
+        db.execute("UPDATE episodes SET config_json=?,config_hash=? WHERE id='source'",
+                       (canonical_json(layered.to_dict()), layered.hash))
+    engine.config = layered
+    result = evaluate_final(engine, "source", manifest)
+    db = engine.ledger.connection
+    heldout = json.loads(db.execute("SELECT config_json FROM episodes WHERE id=?",
+                                  (result["heldout_episode_id"],)).fetchone()[0])
+    assert heldout["n_agents"] == heldout["slots"] == heldout["rounds"] == 1
+    assert heldout["experiment_stage"] is None
+    assert heldout["stage_configs"] == heldout["config_sources"] == {}
+    source = db.execute("SELECT config_json,config_hash FROM episodes WHERE id='source'").fetchone()
+    assert source[0] == canonical_json(layered.to_dict()) and source[1] == layered.hash
+    assert engine.config == layered and result["valid"]
+
+
 def test_final_heldout_rejects_training_overlap(engine):
     manifest = write_panel(engine.root, "heldout", "p ds 3 2\n1 2\n2 3\n", "heldout")
     with pytest.raises(ManifestError, match="disjoint"):
@@ -133,3 +157,46 @@ def test_final_heldout_does_not_relaunch_unknown_job(engine):
     with pytest.raises(Exception, match="used|revoked|stale"):
         evaluate_final(engine, "source", manifest)
     assert engine.backend.candidate_runner.calls == 1
+
+
+@pytest.mark.parametrize('explicit',[False,True])
+def test_retired_source_cli_final_eval_never_constructs_search_backend(engine,monkeypatch,explicit):
+    """Simulated containment fixture only; validates the evaluation-only route."""
+    from dataclasses import asdict
+    from maestro.cli import main
+    from maestro.types import stable_hash
+    import maestro.tasks.pace.heldout as heldout_module
+    import maestro.execution.sandbox as sandbox
+    original=engine.ledger.connection.execute("SELECT config_json FROM episodes WHERE id='source'").fetchone()[0]
+    raw=json.loads(original)
+    raw.update(bid_cap='100',pace={'panel_manifest':str(engine.root/'train.json'),
+                                'contract':asdict(engine._live_contract)})
+    raw['coral']={'candidate_pipeline':'postbid_v1'} if explicit else {}
+    before=canonical_json(raw);digest=stable_hash(raw)
+    with engine.ledger.transaction() as db:
+        db.execute("UPDATE episodes SET config_json=?,config_hash=? WHERE id='source'",(before,digest))
+    # Existing helper fixture stores CAS one level higher; the CLI uses the
+    # production path. Copy the same immutable checkpoint, preserving its hash.
+    checkpoint=engine.ledger.connection.execute("SELECT payload FROM checkpoints WHERE episode_id='source'").fetchone()[0]
+    ArtifactStore(engine.root/'authority/cas/sha256').put_json(json.loads(checkpoint))
+    manifest=write_panel(engine.root,'heldout','p ds 4 3\n1 2\n1 3\n1 4\n','heldout')
+    def forbidden(*args,**kwargs):pytest.fail('evaluation-only route initialized a search/backend')
+    monkeypatch.setattr('maestro.loop.ExperimentEngine',forbidden)
+    monkeypatch.setattr(sandbox,'DockerRunner',lambda:engine.backend.candidate_runner)
+    # Allow this one-instance offline fixture; production still requires the
+    # unchanged standard 20-instance training contract and physical containment.
+    monkeypatch.setattr(EvaluationContract,'standard',classmethod(lambda cls,**kw:cls(**kw)))
+    class SimulatedEvaluator(PaceEvaluator):
+        def __init__(self,*args,**kwargs):
+            kwargs['simulate_containment']=True
+            super().__init__(*args,**kwargs)
+    monkeypatch.setattr(heldout_module,'PaceEvaluator',SimulatedEvaluator)
+    assert main(['--root',str(engine.root),'final-eval','--episode','source','--manifest',str(manifest)])==0
+    assert engine.backend.candidate_runner.calls==1
+    source=engine.ledger.connection.execute("SELECT config_json,config_hash FROM episodes WHERE id='source'").fetchone()
+    assert tuple(source)==(before,digest)
+    frozen=json.loads(engine.ledger.connection.execute("SELECT config_json FROM episodes WHERE policy='heldout'").fetchone()[0])
+    assert frozen['coral']['candidate_pipeline']=='postbid_v1'
+    assert frozen['stage_configs']=={}
+    assert not (engine.root/'deepseek-native-authority').exists()
+    assert not (engine.root/'codex-autonomous-authority').exists()

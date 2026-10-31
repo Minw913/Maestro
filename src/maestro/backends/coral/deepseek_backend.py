@@ -15,7 +15,7 @@ from .deepseek_gate import DeepSeekQuotaProxy,DeepSeekUpstream,DEEPSEEK_TOOL,pro
 from .native_backend import NativeCoralBackend
 from .runtime import verify_checkout
 from .workspace import WorkspaceStore
-from .deepseek_lifecycle import check_restart_ledgers
+from .deepseek_lifecycle import check_restart_ledgers,historical_artifacts_root
 from .deepseek_retry import RetryPolicy, DeepSeekRetryStore, RetryingDeepSeekProxy
 from maestro.execution.pause import PauseController
 
@@ -28,6 +28,7 @@ class LocalPhaseAbstention(RuntimeError):
 
 class NativeDeepSeekBackend(NativeCoralBackend):
     """Share stage/grant/ticket semantics, override only the provider boundary."""
+    valuation_output_retry=True
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         self._phase_proxies={}
@@ -44,6 +45,7 @@ class NativeDeepSeekBackend(NativeCoralBackend):
                     and self.budget_store.retry_policy.continue_after_network_failure)
 
     def _local_abstention(self,account,error):
+        if account.endswith(':VALUATION_RO'):return False
         if not self.failure_continuation_enabled:return False
         if getattr(error,'execution_unknown',False) or getattr(error,'local_quiescent',None) is False:return False
         proxy=self._phase_proxies.get(account)
@@ -72,28 +74,28 @@ class NativeDeepSeekBackend(NativeCoralBackend):
                 (account,__import__('json').dumps(proof,sort_keys=True)))
 
     def prepare_with_receipt(self,state,round_index,context,*,deadline):
-        account=f'{self.episode_id}:{round_index}:{state.agent_id}:PREPARATION'
+        account=f'{getattr(self,"request_episode_id",self.episode_id)}:{round_index}:{state.agent_id}:PREPARATION'
         try:return super().prepare_with_receipt(state,round_index,context,deadline=deadline)
         except Exception as error:
             if self._local_abstention(account,error):raise LocalPhaseAbstention('Preparation failed; local resources reclaimed') from error
             raise
 
     def plan_with_receipt(self,state,round_index,context,*,deadline):
-        account=f'{self.episode_id}:{round_index}:{state.agent_id}:PLAN_RO'
+        account=f'{getattr(self,"request_episode_id",self.episode_id)}:{round_index}:{state.agent_id}:PLAN_RO'
         try:return super().plan_with_receipt(state,round_index,context,deadline=deadline)
         except Exception as error:
             if self._local_abstention(account,error):raise LocalPhaseAbstention('Planning failed; local resources reclaimed') from error
             raise
 
     def generate_once(self,state,plan,round_index,deadline,*,grant,grant_authority):
-        account=f'{self.episode_id}:{round_index}:{state.agent_id}:GENERATION:{plan.version_id}'
+        account=f'{getattr(self,"request_episode_id",self.episode_id)}:{round_index}:{state.agent_id}:GENERATION:{plan.version_id}'
         try:return super().generate_once(state,plan,round_index,deadline,grant=grant,grant_authority=grant_authority)
         except Exception as error:
             if self._local_abstention(account,error):raise LocalPhaseAbstention('Generation failed; local resources reclaimed') from error
             raise
 
     def repair_runtime(self,state,plan,failed,evidence,round_index,repair_index,deadline,*,grant,grant_authority):
-        account=f'{self.episode_id}:{round_index}:{state.agent_id}:RUNTIME_REPAIR:{plan.version_id}:{repair_index}'
+        account=f'{getattr(self,"request_episode_id",self.episode_id)}:{round_index}:{state.agent_id}:RUNTIME_REPAIR:{plan.version_id}:{repair_index}'
         try:return super().repair_runtime(state,plan,failed,evidence,round_index,repair_index,deadline,grant=grant,grant_authority=grant_authority)
         except Exception as error:
             if self._local_abstention(account,error):raise LocalPhaseAbstention('Runtime repair request failed; local resources reclaimed') from error
@@ -110,11 +112,46 @@ class NativeDeepSeekBackend(NativeCoralBackend):
                 raise CodexPhaseUnknown('Unreclaimed native phase blocks retry continuation')
             for row in pending:
                 account=row[0];root=store.root_for_attempt(account)
-                if root in self._active_accounts or store.continuation_authorized(account):continue
+                # Valuation uses a directly metered account, while preparation,
+                # planning and generation use retry attempt subaccounts. Both
+                # are safe only while their owning phase is actively supervised.
+                if account in self._active_accounts or root in self._active_accounts or store.continuation_authorized(account):continue
                 raise CodexPhaseUnknown('Unrecovered DeepSeek attempt blocks continuation')
 
     def _blocking_requests(self,usage):
         return usage.get('continuation_blocking_requests',usage.get('unresolved_requests',0))
+
+    def _drain_native_exit(self,account,deadline):
+        """Wait for a sent request's terminal receipt after a reclaimed CLI exits.
+
+        No dispatch or deadline extension occurs. If the receipt never arrives,
+        the original UNKNOWN path remains mandatory.
+        """
+        proxy=self._phase_proxies.get(account)
+        if proxy is None or not hasattr(self.client,'cleanup_receipt'):
+            return
+        cleanup=self.client.cleanup_receipt(getattr(proxy,'url',None))
+        if not (cleanup.get('local_process_group_reclaimed')
+                and cleanup.get('tool_service_reclaimed')):
+            return
+        while True:
+            usage=self.budget_store.usage(account)
+            if not usage.get('logical_calls',usage.get('calls',0)):
+                return
+            if getattr(self.budget_store,'retry_policy',None):
+                with self.budget_store._lock:
+                    rows=self.budget_store.connection.execute(
+                        'SELECT status FROM deepseek_logical_requests WHERE account=?',(account,)).fetchall()
+                terminal=bool(rows) and all(row[0] in ('COMPLETED','FAILED') for row in rows)
+            else:
+                terminal=bool(usage.get('calls'))
+            if (terminal and usage.get('usage_complete') is True
+                    and not usage.get('unresolved_requests')
+                    and not usage.get('unknown_requests')):
+                return
+            remaining=deadline-time.monotonic()
+            if remaining<=0:return
+            time.sleep(min(.05,remaining))
 
     def _planning_provider_id(self,account):
         if not getattr(self.budget_store,'retry_policy',None):return super()._planning_provider_id(account)
@@ -127,6 +164,22 @@ class NativeDeepSeekBackend(NativeCoralBackend):
         pause=getattr(self,'pause',None)
         if pause:pause.check()
         return super()._dispatch_guard()
+
+    def _valuation_proxy(self,account,deadline):
+        # Physical request cap, no logical retries or UNKNOWN continuation.
+        # Preserve concise read turns; the final structured answer gets more
+        # room while retaining the same physical request count and deadline.
+        from .deepseek_gate import DeepSeekQuotaProxy,DEEPSEEK_TOOL
+        provider_limit=self.config.coral.get('deepseek_max_output_tokens',32000)
+        read_limit=min(8192,provider_limit)
+        final_limit=min(16384,provider_limit)
+        return DeepSeekQuotaProxy(self.budget_store,account,self.client.model,upstream=self._valuation_upstream,deadline=deadline,
+            max_calls=self.config.valuation_calls+1,max_request_bytes=16*1024*1024,
+            max_output_tokens=(self.config.valuation_calls-1)*read_limit+2*final_limit,
+            per_request_tokens=read_limit,final_request_tokens=final_limit,
+            reasoning_effort=self.config.coral.get('deepseek_reasoning_effort','low'),
+            allowed_tool_names=(DEEPSEEK_TOOL,),request_guard=self._dispatch_guard,
+            final_response_on_last_request=True,conditional_final_retry=True)
 
     def _proxy(self,account,deadline,calls,*,tools=False):
         proxy=self.proxy_factory(self.budget_store,account,self.client.model,deadline=deadline,
@@ -164,7 +217,10 @@ class NativeDeepSeekBackend(NativeCoralBackend):
 
 
 def native_factory(config,root=None):
+    from maestro.execution.pipeline import require_prebid,require_prebid_root
+    require_prebid(config)
     root=Path(root or 'artifacts/runs/deepseek-native').resolve()
+    require_prebid_root(root)
     from maestro.storage.paths import run_paths, require_separated_runtime
     require_separated_runtime(root)
     local=run_paths(root).local
@@ -184,7 +240,7 @@ def native_factory(config,root=None):
         raise BackendUnavailable('DeepSeek credential must name an environment variable')
     secret=os.environ.get(key_name)
     if not secret:raise BackendUnavailable('Set the configured DeepSeek API key in the controller environment; do not store it in YAML')
-    try:check_restart_ledgers(root,artifacts_root=Path(__file__).resolve().parents[4]/'artifacts',
+    try:check_restart_ledgers(root,artifacts_root=historical_artifacts_root(root),
         allow_recovered_transport=RetryPolicy.parse(settings.get('deepseek_transport_retry')) is not None)
     except RuntimeError as error:raise BackendUnavailable(str(error)) from error
     provenance=verify_checkout(settings.get('checkout_path'))
@@ -194,7 +250,7 @@ def native_factory(config,root=None):
         cli_version=settings.get('deepseek_cli_version',''),cli_sha256=settings.get('deepseek_cli_sha256',''),
         reasoning_effort=settings.get('deepseek_reasoning_effort','low'),
         max_output_tokens=settings.get('deepseek_max_output_tokens',32000),
-        timeout=max(config.preparation_window_seconds,config.planning_window_seconds,config.generation_window_seconds))
+        timeout=max(config.preparation_window_seconds,config.planning_window_seconds,config.generation_window_seconds,config.valuation_window_seconds))
     client.preflight()  # Version/help only, never inference.
     benchmark=benchmark_for(config.benchmark)
     image=benchmark.image(config);runner=DockerRunner(image);runner.preflight(image=image)
@@ -226,6 +282,7 @@ def native_factory(config,root=None):
     backend=NativeDeepSeekBackend(client,store,WorkspaceStore(local/'coral-workspaces',root/'coral-cas'),
         precheck=precheck,seed_solver=benchmark.seed_solver(config),candidate_runner=runner,image=image,
         config=config,provenance=provenance,proxy_factory=proxy)
+    backend._valuation_upstream=upstream
     backend.pause=pause
     client.pause=pause
     try:backend.preflight(config)

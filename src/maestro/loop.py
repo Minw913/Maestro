@@ -15,6 +15,7 @@ from collections.abc import Mapping
 import importlib
 import json
 import time
+import traceback
 import uuid
 
 from maestro.config import RunConfig, CORAL_REVISION
@@ -25,20 +26,21 @@ from maestro.seeds import derive_seed
 from maestro.storage import Ledger, ArtifactStore
 from maestro.market.credit import reward, money
 from maestro.market.policies import rank
-from maestro.agents.valuation import estimate_value
+from maestro.agents.valuation import estimate_value, estimate_legacy_value
 from maestro.agents.bidding import cooperative_bid
 from maestro.agents.planner import needs_refresh, mock_plan, validate_plan, PlanDecision, apply_decision
 from maestro.agents.retrieval import build_context
+from maestro.agents.visibility import agent_state_view
 from maestro.bootstrap.director import make_direction_briefs
 from maestro.bootstrap.warm_start import balanced_schedule, validate_warm_completion
 from maestro.execution.dispatcher import Dispatcher
-from maestro.execution.generation import precheck_mock
-from maestro.execution.grants import GrantAuthority, GrantError
+from maestro.execution.grants import GrantAuthority
 from maestro.execution.budgets import BudgetStore
 from maestro.execution.cpu_pool import GlobalCpuPool
 from maestro.backends.mock import MockEvaluator
 from maestro.tasks.base import benchmark_for
 from maestro.execution.pause import PauseController
+from maestro.execution.proposals import PrebidPipeline
 
 
 def _new_id(prefix):
@@ -49,8 +51,11 @@ def _receipt_value(receipt,name,default=None):
     return receipt.get(name,default) if isinstance(receipt,dict) else getattr(receipt,name,default)
 
 
-class ExperimentEngine:
+class ExperimentEngine(PrebidPipeline):
     def __init__(self, root, config: RunConfig, *, backend=None, evaluator=None):
+        from maestro.execution.pipeline import require_prebid,require_prebid_root
+        require_prebid(config)
+        require_prebid_root(root)
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.config = config
@@ -83,9 +88,9 @@ class ExperimentEngine:
         self.dispatcher = Dispatcher(self.ledger, self.evaluator)
         if getattr(self.backend,'pause',None) is not None:
             self.pause = self.backend.pause
-        (self.root / 'authority' / 'config.resolved.json').write_text(canonical_json(config),encoding='utf-8')
+        (self.root / 'authority' / 'config.resolved.json').write_text(canonical_json(config.to_dict()),encoding='utf-8')
         if config.experiment_stage:
-            (self.root / 'authority' / f'config.{config.experiment_stage}.resolved.json').write_text(canonical_json(config),encoding='utf-8')
+            (self.root / 'authority' / f'config.{config.experiment_stage}.resolved.json').write_text(canonical_json(config.to_dict()),encoding='utf-8')
 
     def _prepare_live(self):
         """Every production prerequisite is explicit; there is no mock fallback."""
@@ -101,6 +106,9 @@ class ExperimentEngine:
             module,name = factory.split(':',1)
             self.backend = getattr(importlib.import_module(module),name)(self.config,self.root)
         self.backend.preflight(self.config)
+        if (not getattr(self.backend,'supports_runtime_only_repair',False)
+                or not callable(getattr(self.backend,'activate_frozen_candidate',None))):
+            raise MaestroError('prebid_v2 requires separated implementation, frozen checking and runtime repair')
         if self.evaluator is None:
             runner = getattr(self.backend,'candidate_runner',None)
             self.evaluator = live.evaluator(runner=runner,artifact_store=self.artifacts.put,cpu_pool=self.cpu_pool)
@@ -163,12 +171,22 @@ class ExperimentEngine:
             'champion_artifact':champion.parent_hash,'panel_hash':self.panel_hash,
             'contract_hash':self.contract_hash,'results':list(summaries.values())}
 
-    def _state_payload(self,states):
-        return {a:to_jsonable(s) for a,s in states.items()}
+    def _agent_payload(self,state,purpose):
+        value=to_jsonable(state)
+        if purpose=='WARM':value.pop('wealth',None)
+        return value
+
+    def _state_payload(self,states,purpose='MAIN'):
+        return {a:self._agent_payload(s,purpose) for a,s in states.items()}
 
     def bootstrap(self):
+        from maestro.execution.pipeline import require_prebid
+        require_prebid(self.config)
         self._check_pause()
         c = self.config
+        warm_config=c if c.experiment_stage=='warm_start' else replace(c,experiment_stage='warm_start')
+        (self.root/'authority'/'config.warm_start.resolved.json').write_text(canonical_json(warm_config.to_dict()),encoding='utf-8')
+        (self.root/'authority'/'config.resolved.json').write_text(canonical_json(warm_config.to_dict()),encoding='utf-8')
         if c.stage_configs and (c.experiment_stage!='warm_start' or c.hash!=c.for_stage('warm_start').hash):
             raise IntegrityError('Bootstrap requires the frozen warm_start stage')
         warm_id = _new_id('warm')
@@ -180,8 +198,8 @@ class ExperimentEngine:
             assert self.backend is not None  # _prepare_live installs one for every real run
             seed_candidate = self.backend.prepare_seed(benchmark_for(c.benchmark).seed_solver(c))
             seed_hash = seed_candidate['candidate_hash']
-        states = {a:AgentState(a,seed_hash,0.0,c.initial_wealth) for a in agent_ids}
-        self.ledger.create_episode(warm_id,'warm',c,states)
+        states = {a:AgentState(a,seed_hash,0.0,Decimal(0)) for a in agent_ids}
+        self.ledger.create_episode(warm_id,'warm',warm_config,states)
         if self.backend and hasattr(self.backend,'begin_episode'):
             self.backend.begin_episode(warm_id,states)
         if self.backend and hasattr(self.backend,'register_parent'):
@@ -223,9 +241,9 @@ class ExperimentEngine:
         fallback_agents={a:{'reason':'NO_FORMAL_WARM_HISTORY','parent_hash':seed_hash,
             'parent_score':initial_score,'formal_warm_evaluations':0} for a,s in states.items() if not s.history}
         if fallback_agents:self.ledger.event('WARM_SEED_FALLBACK',{'agents':fallback_agents},warm_id)
-        payload = {'warm_id':warm_id,'schema_version':2,'config':c.to_dict(),
-            'config_hash':c.hash,'shared_config_hash':c.shared_config_hash,'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
-            'coral_revision':CORAL_REVISION,'states':self._state_payload(states),
+        payload = {'warm_id':warm_id,'schema_version':3,'config':warm_config.to_dict(),
+            'config_hash':warm_config.hash,'shared_config_hash':warm_config.shared_config_hash,'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
+            'coral_revision':CORAL_REVISION,'states':self._state_payload(states,'WARM'),
             'board':self._board(states,len(schedule)-1),'direction_briefs':briefs,
             'opportunities':dict(opportunities),'warm_waves':len(schedule),
             'seed_fallback_agents':fallback_agents}
@@ -266,32 +284,61 @@ class ExperimentEngine:
         self.ledger.usage(episode_id,-1,a,'setup',result.cpu_seconds,result.wall_seconds)
         return result.score
 
-    def run(self, checkpoint, policy='first_price', *, episode_id=None):
+    def run(self, checkpoint, policy='first_price_naive', *, episode_id=None,
+            legacy_warm_import=False):
+        from maestro.execution.pipeline import require_prebid
+        require_prebid(self.config)
         self._check_pause()
-        if policy not in ('first_price','uniform','ucb'):
-            raise ValueError('Unknown V1 policy')
+        from maestro.market.regimes import resolve_policy,contract
+        policy=resolve_policy(policy)
+        if policy in ('adjusted_valuation','agent_adjusted'):
+            if not self.prebid_pipeline or self.config.execution_mode!='real' or self.config.valuation_discount_factor is None:
+                raise ValueError('R4 requires real prebid_v2 and discounted actual-credit history')
+            caps=getattr(self.backend,'valuation_capabilities',{})
+            if (not callable(getattr(self.backend,'value_with_receipt',None))
+                    or not all(caps.get(k) is True for k in ('read_only','actual_request_gate','fresh_session','no_retry'))):
+                raise ValueError('R4 requires the qualified native Coral valuation interface')
         envelope = json.loads(Path(checkpoint).read_text(encoding='utf-8'))
         payload = envelope['payload']
-        if payload.get('schema_version') != 2:
-            raise IntegrityError('Incompatible warm checkpoint; old experiments are not supported')
-        warm_config = RunConfig.from_dict(payload['config'])
+        # Reject archives before rewriting any authority or creating a model scope.
+        provenance = None
+        if legacy_warm_import:
+            from maestro.execution.legacy_warm_import import validate_legacy_warm
+            provenance = validate_legacy_warm(checkpoint,envelope,self.config,self.contract_hash,self.panel_hash)
+        else:
+            require_prebid(payload['config'])
+            if payload.get('schema_version') != 3:
+                raise IntegrityError('Incompatible warm checkpoint; old experiments are not supported')
+            warm_config = RunConfig.from_dict(payload['config'])
         if stable_hash(payload) != envelope['artifact_hash']:
             raise IntegrityError('Warm checkpoint integrity failure')
         if payload['contract_hash'] != self.contract_hash or payload['panel_hash'] != self.panel_hash:
             raise IntegrityError('Warm contract/panel mismatch')
-        if payload['config_hash'] != warm_config.hash:
-            raise IntegrityError('Warm configuration hash mismatch')
-        if warm_config.stage_configs and payload.get('shared_config_hash') != warm_config.shared_config_hash:
-            raise IntegrityError('Warm shared configuration hash mismatch')
-        self.config.validate_warm_source(warm_config)
+        if not provenance:
+            if payload['config_hash'] != warm_config.hash:
+                raise IntegrityError('Warm configuration hash mismatch')
+            if warm_config.stage_configs and payload.get('shared_config_hash') != warm_config.shared_config_hash:
+                raise IntegrityError('Warm shared configuration hash mismatch')
+            self.config.validate_warm_source(warm_config)
+        (self.root/'authority'/'config.resolved.json').write_text(canonical_json(self.config.to_dict()),encoding='utf-8')
         states = {a:state_from_dict(s) for a,s in payload['states'].items()}
         for state in states.values():
-            state.wealth = self.config.initial_wealth
+            state.wealth = self.config.effective_initial_wealth
             state.pending_plan=None
             state.last_planning_round=-999
             state.needs_refresh=False
         episode_id = episode_id or _new_id(policy)
-        self.ledger.create_episode(episode_id,policy,self.config,states,payload['warm_id'])
+        regime_contract=contract(policy,self.config)
+        with self.ledger.transaction():
+            self.ledger.create_episode(episode_id,policy,self.config,states,payload['warm_id'])
+            if provenance:
+                self.ledger.event('LEGACY_WARM_SOURCE_IMPORTED',provenance,episode_id)
+            contract_artifact=self.artifacts.put_json(regime_contract['contract'])
+            self.ledger.event('REGIME_CONTRACT_FROZEN',{
+                **regime_contract,'artifact_hash':contract_artifact},episode_id)
+        contract_path=self.root/'arms'/episode_id/'regime-contract.json'
+        contract_path.parent.mkdir(parents=True,exist_ok=True)
+        contract_path.write_text(canonical_json(regime_contract)+'\n',encoding='utf-8')
         if self.backend and hasattr(self.backend,'restore_warm_memory'):
             self.backend.restore_warm_memory(payload.get('private_memory_manifest',{}))
         if self.backend and hasattr(self.backend,'begin_episode'):
@@ -306,7 +353,11 @@ class ExperimentEngine:
             if not db.execute('SELECT 1 FROM warm_checkpoints WHERE id=?',(payload['warm_id'],)).fetchone():
                 self.artifacts.put_json(payload)
                 db.execute('INSERT INTO warm_checkpoints VALUES(?,?,?)',(payload['warm_id'],canonical_json(payload),envelope['artifact_hash']))
-            db.execute('INSERT INTO arm_clones VALUES(?,?,?)',(episode_id,payload['warm_id'],canonical_json({'source_hash':envelope['artifact_hash'],'fresh_sessions':True,'wealth':str(self.config.initial_wealth)})))
+            db.execute('INSERT INTO arm_clones VALUES(?,?,?)',(episode_id,payload['warm_id'],canonical_json({
+                'source_hash':envelope['artifact_hash'],'fresh_sessions':True,
+                **({'legacy_warm_import':provenance} if provenance else {}),
+                'configured_credits':str(self.config.initial_wealth),
+                'wealth':str(self.config.effective_initial_wealth)})))
         if self.backend and hasattr(self.backend,'set_directions'):
             self.backend.set_directions(payload['direction_briefs'])
         for index in range(self.config.rounds):
@@ -337,6 +388,8 @@ class ExperimentEngine:
             'target':plan.target if plan else 'initialization',
             'mod_type':plan.mod_type if plan else 'other',
             'semantic_plan_key':stable_hash([plan.target,plan.mod_type,plan.change]) if plan else 'seed',
+            **({k:candidate[k] for k in ('proposal_hash','repair_chain')}
+               if 'proposal_hash' in candidate else {}),
             'reserved_cpu_seconds':self.config.reserved_cpu_seconds,**settings}
 
     def _assert_provider_available(self, e, r):
@@ -350,19 +403,21 @@ class ExperimentEngine:
         db = getattr(store, 'connection', None)
         if db is None:
             return
+        namespace=getattr(self.backend,'request_episode_id',e)
+        prefixes=(e+':',namespace+':')
         with getattr(store, '_lock', nullcontext()):
             failures = []
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='codex_gateway_transport'").fetchone():
                 failures = [dict(account=row[0],http_status=row[1],error_type=row[2],error_code=row[3])
                 for row in db.execute("""SELECT r.account,t.http_status,t.error_type,t.error_code
                     FROM codex_gateway_transport t JOIN inference_reservations r USING(reservation_id)
-                    WHERE t.known_rejected=1""") if row[0].startswith(e+':')]
+                    WHERE t.known_rejected=1""") if row[0].startswith(prefixes)]
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='deepseek_request_events'").fetchone():
                 failures += [dict(account=row[0],http_status=json.loads(row[1])['http_status'],
                                   error_type='known_provider_rejection',error_code='')
                     for row in db.execute('''SELECT r.account,t.data_json FROM deepseek_request_events t
                         JOIN inference_reservations r USING(reservation_id) WHERE t.kind='REJECTED' ''')
-                    if row[0].startswith(e+':')]
+                    if row[0].startswith(prefixes)]
             if getattr(store,'retry_policy',None):
                 failures=[f for f in failures if not store.replacement_complete(f['account'])
                     and not (f['http_status'] in (429,500,502,503,504) and store.abandonment_authorized(f['account']))]
@@ -391,7 +446,7 @@ class ExperimentEngine:
                     {'board':deepcopy(board)},deadline=deadline)
                 return evidence, usage, None, began, time.monotonic()
             except Exception as error:
-                scope=f'{e}:{r}:{agent}:PREPARATION'
+                scope=f'{getattr(self.backend,"request_episode_id",e)}:{r}:{agent}:PREPARATION'
                 usage=self.backend._usage(scope)
                 return None, usage, error, began, time.monotonic()
         futures={pool.submit(execute,a,s):a for a,s in states.items()}
@@ -414,7 +469,7 @@ class ExperimentEngine:
                 unknown |= uncertain
                 accepted=(evidence is not None and error is None
                           and evidence.get('accepted_monotonic',float('inf'))<deadline and returned<deadline)
-                payload={'scope':f'{e}:{r}:{agent}:PREPARATION','usage':usage,
+                payload={'scope':f'{getattr(self.backend,"request_episode_id",e)}:{r}:{agent}:PREPARATION','usage':usage,
                     'status':'PREPARED' if accepted else 'UNKNOWN' if uncertain else 'ABSTAIN',
                     'request_count_unknown':uncertain,'usage_complete':usage.get('usage_complete',False),
                     'cpu_measurement_scope':'sandbox-only; no sandbox allowed in preparation',
@@ -435,8 +490,13 @@ class ExperimentEngine:
             for future in pending:
                 agent=futures[future]
                 self.ledger.event('PREPARATION_OUTCOME',{'agent_id':agent,
-                    'scope':f'{e}:{r}:{agent}:PREPARATION','status':'UNKNOWN',
+                    'scope':f'{getattr(self.backend,"request_episode_id",e)}:{r}:{agent}:PREPARATION','status':'UNKNOWN',
                     'request_count_unknown':True,'reason':'CALLBACK_NOT_RECLAIMED_AT_DEADLINE'},e,r)
+            if any(isinstance(future.result()[2],FileExistsError) for future in done):
+                self.ledger.set_round_phase(e,r,'PREPARATION_FAILED')
+                with self.ledger.transaction() as db:
+                    db.execute("UPDATE episodes SET status='INCOMPLETE' WHERE id=?",(e,))
+                raise MaestroError('Preparation workspace collision; preserve evidence and reconcile before continuing')
             if unknown:
                 self.ledger.set_round_phase(e,r,'PREPARATION_UNKNOWN')
                 with self.ledger.transaction() as db:
@@ -449,6 +509,8 @@ class ExperimentEngine:
             pool.shutdown(wait=False,cancel_futures=True)
 
     def _round(self,e,r,states,policy,purpose='MAIN',warm_invite=None):
+        from maestro.execution.pipeline import require_prebid
+        require_prebid(self.config)
         self._check_pause()
         c = self.config
         admission_capacity = len(warm_invite) if warm_invite is not None else c.slots
@@ -456,20 +518,28 @@ class ExperimentEngine:
         autonomous_preparation = bool(self.backend and callable(getattr(self.backend,'prepare_with_receipt',None)))
         planning_deadline = time.monotonic()+c.planning_window_seconds
         planning_expires = time.time()+c.planning_window_seconds
-        frozen = self._state_payload(states)
+        frozen = self._state_payload(states,purpose)
         board = self._board(states,r-1)
+        agent_board = board if purpose=='MAIN' else {}
+        agent_states = {a:agent_state_view(state,purpose) for a,state in states.items()}
         if self.backend and hasattr(self.backend,'set_board'):
-            self.backend.set_board(board)
+            self.backend.set_board(agent_board)
         champion = board['champion_score']
         snapshot = {'purpose':purpose,'states':frozen,'board':board,'seed':c.seed,
             'contract_hash':self.contract_hash,'panel_hash':self.panel_hash,
             'planning_deadline':None if autonomous_preparation else planning_expires,
             'preparation_window_seconds':c.preparation_window_seconds if autonomous_preparation else None,
             'generation_window_seconds':c.generation_window_seconds,
+            'candidate_pipeline':c.coral.get('candidate_pipeline','postbid_v1'),
             'warm_invite':list(warm_invite) if warm_invite is not None else None,
             **evaluation_settings}
-        self.ledger.open_round(e,r,snapshot)
+        recovery_namespace=getattr(self,'_recovery_namespace',None)
+        if recovery_namespace:
+            self.ledger.restart_reconciled_round(e,r,snapshot,recovery_namespace)
+        else:
+            self.ledger.open_round(e,r,snapshot)
         submissions,plans = [],{}
+        plan_metadata={}
         plan_seed = derive_seed(c.seed,purpose,'planning')
         live_outcomes={}
         if c.execution_mode!='mock':
@@ -478,20 +548,21 @@ class ExperimentEngine:
                 and (warm_invite is None or a in warm_invite)}
             preparation_failures={}
             if autonomous_preparation:
-                refresh_states,preparation_failures=self._prepare_agents(e,r,refresh_states,board)
+                refresh_states,preparation_failures=self._prepare_agents(
+                    e,r,{a:agent_states[a] for a in refresh_states},agent_board)
                 self._check_pause()
                 planning_deadline=time.monotonic()+c.planning_window_seconds
                 self.ledger.event('PLANNING_WINDOW_OPENED',
                     {'deadline':time.time()+c.planning_window_seconds},e,r)
-            live_contexts={a:({'board':board,'episode_id':e,'purpose':purpose} if autonomous_preparation
-                else {**build_context(s,board),'episode_id':e,'purpose':purpose}) for a,s in refresh_states.items()}
-            live_outcomes=parallel_plans(refresh_states,live_contexts,self.backend,r,
+            live_contexts={a:({'board':agent_board,'episode_id':e,'purpose':purpose} if autonomous_preparation
+                else {**build_context(agent_states[a],agent_board),'episode_id':e,'purpose':purpose}) for a in refresh_states}
+            live_outcomes=parallel_plans({a:agent_states[a] for a in refresh_states},live_contexts,self.backend,r,
                 deadline=planning_deadline,
                 budget_unit='session_turn' if c.profile=='codex_session_pilot' else 'provider_request')
             live_outcomes={**preparation_failures,**live_outcomes}
             for a,outcome in live_outcomes.items():
                 receipt=outcome.receipt
-                scope=f'{e}:{r}:{a}:PLAN_RO'
+                scope=f'{getattr(self.backend,"request_episode_id",e)}:{r}:{a}:PLAN_RO'
                 measured={}
                 store=getattr(self.backend,'budget_store',None) or getattr(self.backend,'turn_store',None)
                 if store and hasattr(store,'usage'):
@@ -511,7 +582,8 @@ class ExperimentEngine:
                         'measurement':measured,'outcome_status':outcome.status})
                 if outcome.error:
                     self.ledger.event('PLANNING_OUTCOME',{'agent_id':a,'status':outcome.status,
-                        'error':outcome.error,'inflight_unknown':outcome.inflight_unknown},e,r)
+                        'error':outcome.error,'inflight_unknown':outcome.inflight_unknown,
+                        'diagnostic':outcome.diagnostic},e,r)
             if any(o.inflight_unknown for o in live_outcomes.values()):
                 self.ledger.set_round_phase(e,r,'PLANNING_UNKNOWN')
                 with self.ledger.transaction() as db:
@@ -522,8 +594,8 @@ class ExperimentEngine:
             if warm_invite is not None and a not in warm_invite:
                 continue
             refresh = bool(getattr(self.backend,'requires_fresh_plans',False) or needs_refresh(state,r,c.refresh_interval))
-            context = ({'agent_id':a,'parent_hash':state.parent_hash,'board':board}
-                       if autonomous_preparation else build_context(state,board))
+            context = ({'agent_id':a,'parent_hash':state.parent_hash,'board':agent_board}
+                       if autonomous_preparation else build_context(agent_states[a],agent_board))
             context_id = self.artifacts.put_json(context)
             with self.ledger.transaction() as db:
                 db.execute('INSERT OR IGNORE INTO context_manifests VALUES(?,?)',(context_id,canonical_json(context)))
@@ -565,39 +637,82 @@ class ExperimentEngine:
                 plan = state.pending_plan
             with self.ledger.transaction() as db:
                 db.execute('INSERT INTO phase_transitions VALUES(?,?)',
-                    (f'{e}:{r}:{a}:planning',canonical_json({'phase':'PLANNED','state':state})))
+                    (f'{e}:{r}:{a}:planning'+(':recovery-1' if recovery_namespace else ''),
+                     canonical_json({'phase':'PLANNED','state':self._agent_payload(state,purpose)})))
             if plan is None:
                 self.ledger.event('ABSTAIN',{'agent_id':a,'reason':'WITHDRAWN','agent_reason':withdraw_reason},e,r)
                 continue
             validate_plan(plan,state.parent_hash,[h.experiment_id for h in state.history])
             if plan.agent_id != a:
                 raise AuthorizationError('Plan owner mismatch')
-            if purpose == 'WARM':
-                value,bid,samples = Decimal(0),Decimal(0),[]
+            plans[a]=plan
+            plan_metadata[a]={'reused':not refresh,
+                'refresh_reason':'DUE' if refresh else 'ELIGIBLE_PENDING','context_hash':context_id}
+        self.ledger.set_round_phase(e,r,'IMPLEMENTATION')
+        deadline=time.monotonic()+c.generation_window_seconds
+        self.ledger.event('GENERATION_WINDOW_OPENED',{'deadline':time.time()+c.generation_window_seconds,
+            'covers':['implementation','bidding','auction','precheck','runtime_repair','cleanup'],
+            'paused_during':['valuation_ro'],
+            'pipeline':'prebid_v2'},e,r)
+        proposals=self._implement_all(e,r,agent_states,plans,purpose,deadline)
+        self._assert_provider_available(e,r)
+        self._check_pause()
+        adjusted={}
+        if policy in ('adjusted_valuation','agent_adjusted') and purpose=='MAIN' and proposals:
+            from maestro.execution.valuation_phase import run_valuations,resume_generation_deadline,retire_failed_valuations
+            valuation_started=time.monotonic()
+            pause_brokers=getattr(self.backend,'pause_generation_brokers',None)
+            resume_brokers=getattr(self.backend,'resume_generation_brokers',None)
+            paused_accounts=(pause_brokers(r,plans,proposals,valuation_started,deadline)
+                             if callable(pause_brokers) and callable(resume_brokers) else ())
+            adjusted=run_valuations(self,e,r,states,plans,proposals,champion)
+            retire_failed_valuations(self,e,r,states,proposals,adjusted)
+            valuation_finished=time.monotonic()
+            valuation_elapsed=valuation_finished-valuation_started
+            # Valuation has its own common wall window. Resume the remaining
+            # generation budget for bidding, precheck, repair, and cleanup.
+            deadline=resume_generation_deadline(deadline,valuation_started,valuation_finished)
+            if paused_accounts:
+                resume_brokers(paused_accounts,valuation_finished,deadline)
+            self.ledger.event('GENERATION_WINDOW_RESUMED',{
+                'valuation_elapsed_seconds':valuation_elapsed,
+                'deadline_monotonic':deadline,
+                'remaining_seconds':max(0.,deadline-time.monotonic())},e,r)
+            self._assert_provider_available(e,r)
+        self.ledger.set_round_phase(e,r,'BIDDING')
+        for a,plan in plans.items():
+            if a not in proposals:continue
+            state=states[a]
+            if purpose=='WARM':value,bid,samples=Decimal(0),Decimal(0),[]
+            elif not state.history and c.coral.get('deepseek_transport_retry',{}).get('warm_seed_fallback',False):
+                value,bid,samples=Decimal(0),Decimal(0),[]
+                self.ledger.event('COLD_START_ZERO_VALUATION',{'agent_id':a,'reason':'NO_FORMAL_HISTORY',
+                    'parent_hash':state.parent_hash,'value':'0','sample_ids':[]},e,r)
             else:
-                if not state.history and c.coral.get('deepseek_transport_retry',{}).get('warm_seed_fallback',False):
-                    value,samples=Decimal(0),[]
-                    self.ledger.event('COLD_START_ZERO_VALUATION',{'agent_id':a,'reason':'NO_FORMAL_HISTORY',
-                        'parent_hash':state.parent_hash,'value':'0','sample_ids':[]},e,r)
-                else:value,samples = estimate_value(state.history,plan.target,plan.mod_type,state.parent_score,champion,scale=c.reward_scale,catchup=c.catchup_fraction)
-                bid = cooperative_bid(value,c.bid_cap)
-            submission = Submission(a,plan.version_id,value,bid)
+                value,samples=(estimate_legacy_value(state.history,plan.target,plan.mod_type,state.parent_score,
+                    champion,scale=c.reward_scale,catchup=c.catchup_fraction) if c.valuation_discount_factor is None
+                    else estimate_value(state.history,gamma=c.valuation_discount_factor))
+                bid=self._funded_bid(e,a,state,value,policy)
+            if a in adjusted:
+                value=Decimal(adjusted[a]['value'])
+                bid=self._funded_bid(e,a,state,value,policy)
+            submission=Submission(a,plan.version_id,value,bid)
             submissions.append(submission)
-            plans[a] = plan
-            self.ledger.submit(e,r,plan,submission,{'reused':not refresh,'refresh_reason':'DUE' if refresh else 'ELIGIBLE_PENDING','sample_ids':samples,'context_hash':context_id})
-        order = list(warm_invite) if warm_invite is not None else rank(policy,submissions,states,r,c.seed,slots=c.slots)
-        order = [a for a in order if a in plans]
+            self.ledger.submit(e,r,plan,submission,{**plan_metadata[a],'sample_ids':samples,
+                'proposal_hash':proposals[a]['candidate_hash'],'candidate_pipeline':'prebid_v2'})
+        order = list(warm_invite) if warm_invite is not None else rank(policy,submissions,states,r,c.seed,
+            slots=c.slots,ucb_exploration_coefficient=c.ucb_exploration_coefficient,
+            valuation_discount_factor=c.valuation_discount_factor)
+        order = [a for a in order if a in plans and a in proposals]
         with self.ledger.transaction() as db:
             db.execute('INSERT INTO priority_orders VALUES(?,?,?)',(e,r,canonical_json({'policy':policy,'order':order})))
-        self.ledger.set_round_phase(e,r,'GENERATION')
+        self.ledger.set_round_phase(e,r,'CHECKING')
         bids = {s.agent_id:s.bid for s in submissions}
         successful = []
-        deadline = time.monotonic()+c.generation_window_seconds
-        self.ledger.event('GENERATION_WINDOW_OPENED',{'deadline':time.time()+c.generation_window_seconds},e,r)
         injected_deadline = purpose=='MAIN' and r in c.failures.get('deadline_rounds',[])
         if not injected_deadline:
             successful = self._generate_invited(e,r,states,plans,order,bids,purpose,
-                admission_capacity,deadline)
+                admission_capacity,deadline,proposals=proposals)
         self._assert_provider_available(e,r)
         self.ledger.set_round_phase(e,r,'ADMISSION')
         tickets=[]
@@ -620,10 +735,19 @@ class ExperimentEngine:
             results=[f.result() for f in futures]
         self._settle(e,r,states,frozen,champion,plans,results,purpose)
 
-    def _generate_invited(self,e,r,states,plans,order,bids,purpose,capacity,deadline):
+    def _funded_bid(self, episode_id, agent_id, state, value, policy):
+        if policy not in ('first_price_naive','first_price','adjusted_valuation','agent_adjusted'):
+            return cooperative_bid(value)
+        with self.ledger.transaction() as db:
+            held=sum((Decimal(row[0]) for row in db.execute(
+                "SELECT amount FROM holds WHERE episode_id=? AND agent_id=? AND status='HELD'",
+                (episode_id,agent_id))),Decimal(0))
+        return cooperative_bid(value,available_wealth=state.wealth-held)
+
+    def _generate_invited(self,e,r,states,plans,order,bids,purpose,capacity,deadline,*,proposals):
         """Backfill reclaimed failures immediately, preserving frozen priority.
 
-        A finished generation callback has closed its request/tool scopes and
+        A finished checking callback has closed its request/tool scopes and
         revoked its EditGrant. UNKNOWN callbacks never release a slot. Valid
         lower-priority candidates wait for earlier invitations before duplicate
         selection, so completion speed cannot change the priority winner.
@@ -654,7 +778,8 @@ class ExperimentEngine:
                 self.ledger.invite(e,r,a,amount,{'plan_version_id':plans[a].version_id,
                     'generation_deadline_monotonic':deadline,
                     'generation_dispatch_monotonic':time.monotonic()})
-                future=pool.submit(self._generate,e,r,a,deepcopy(states[a]),plans[a],purpose,deadline)
+                future=pool.submit(self._check_frozen_proposal,e,r,a,agent_state_view(states[a],purpose),plans[a],
+                                   purpose,deadline,proposals[a])
                 active[future]=a
                 self._generation_futures.add(future)
                 occupied+=1
@@ -690,7 +815,7 @@ class ExperimentEngine:
             # Uniform/UCB invitations hold zero, just as before this change.
             if purpose=='MAIN':
                 policy=self.ledger.connection.execute('SELECT policy FROM episodes WHERE id=?',(e,)).fetchone()[0]
-                if policy!='first_price':
+                if policy not in ('first_price_naive','first_price','adjusted_valuation','agent_adjusted'):
                     bids={a:Decimal(0) for a in bids}
             self._generation_futures={f for f in self._generation_futures if not f.done()}
             invite_available()
@@ -750,114 +875,16 @@ class ExperimentEngine:
             # cannot establish that its running CLI or sandbox stopped.
             pool.shutdown(wait=False,cancel_futures=True)
 
-    def _generate(self,e,r,a,state,plan,purpose,deadline):
-        c=self.config
-        if c.execution_mode == 'real' and getattr(self.backend,'supports_runtime_only_repair',False):
-            return self._generate_once_runtime_only(e,r,a,state,plan,purpose,deadline)
-        account=f'{e}:{r}:{a}:generation'
-        expires=time.time()+max(0.01,deadline-time.monotonic())
-        self.budgets.create(account,max_calls=c.generation_calls,max_request_bytes=1024*1024,
-            max_output_tokens=32000,deadline=expires)
-        last_reason='DEADLINE'
-        max_attempts=min(c.generation_calls,c.max_candidate_revisions)
-        for revision in range(max_attempts):
-            if time.monotonic()>=deadline:
-                break
-            grant=self.grants.issue(episode_id=e,round_index=r,agent_id=a,
-                plan_version_id=plan.version_id,parent_hash=plan.parent_hash,
-                epoch=revision,expires_at=expires)
-            with self.ledger.transaction() as db:
-                db.execute('INSERT INTO edit_grants VALUES(?,?)',(grant.grant_id,canonical_json(grant)))
-            try:
-                self.grants.verify(grant,agent_id=a,plan_version_id=plan.version_id,
-                    parent_hash=plan.parent_hash,epoch=revision)
-            except GrantError:
-                self.grants.revoke(grant)
-                # Persisting the grant can cross the common window boundary.
-                # That is a no-dispatch deadline, not an authorization failure
-                # that should interrupt late callback accounting/cleanup.
-                if time.monotonic() >= deadline or time.time() >= grant.expires_at:
-                    break
-                raise
-            start=time.monotonic()
-            candidate=None
-            passed=False
-            calls,tokens,cpu,wall=0,0,0.0,0.0
-            from maestro.execution.budgets import BudgetExceeded
-            try:
-                if c.execution_mode=='mock':
-                    reservation=self.budgets.reserve(account,f'revision-{revision}',request_bytes=512,output_tokens=4096)
-                    body={'execution_mode':'mock','benchmark':c.benchmark,'agent_id':a,'round_index':r,'purpose':purpose,
-                        'parent_hash':plan.parent_hash,'target':plan.target,'mod_type':plan.mod_type,
-                        'change':plan.change,'revision':revision,'seed':c.seed}
-                    if purpose=='MAIN' and r in c.failures.get('duplicate_candidate_rounds',[]):
-                        body={'execution_mode':'mock','benchmark':c.benchmark,'forced_duplicate_round':r,'seed':c.seed}
-                    digest=self.artifacts.put_json(body)
-                    candidate={'candidate_hash':digest,'source':body,'kind':'mock'}
-                    failure_cases=c.failures if purpose=='MAIN' else c.failures.get('warm',{})
-                    passed,last_reason=precheck_mock(a,r,failure_cases,revision)
-                    self.budgets.finish(reservation,actual_output_tokens=256)
-                    calls,tokens,cpu,wall=1,256,0.02,0.025
-                else:
-                    if hasattr(self.backend,'last_generation_usage'):
-                        self.backend.last_generation_usage={}
-                    grant_args={'grant':grant,'grant_authority':self.grants} if getattr(self.backend,'require_edit_grant',False) else {}
-                    candidate=self.backend.generate(state,plan,r,revision=revision,deadline=deadline,**grant_args)
-                    passed,last_reason=self.backend.precheck(candidate)
-            except (AuthorizationError,IntegrityError):
-                raise
-            except (TimeoutError,OSError,RuntimeError,BudgetExceeded) as error:
-                if (getattr(error,'inflight_unknown',False)
-                        or getattr(error,'execution_unknown',False)
-                        or getattr(error,'local_quiescent',None) is False):
-                    raise
-                last_reason=f'{type(error).__name__}: {error}'
-                self.ledger.event('GENERATION_ATTEMPT_FAILED',{'agent_id':a,'revision':revision,'reason':last_reason},e,r)
-            finally:
-                self.grants.revoke(grant)
-                if c.execution_mode!='mock':
-                    measured=getattr(self.backend,'last_generation_usage',{})
-                    calls=int(measured.get('calls') or 0)
-                    tokens=int(measured.get('known_input_tokens',measured.get('input_tokens')) or 0)+int(measured.get('known_output_tokens',measured.get('output_tokens')) or 0)
-                    cpu=float(measured.get('cpu_seconds') or 0)
-                    measured_wall=measured.get('wall_seconds')
-                    wall=float(measured_wall if measured_wall is not None else time.monotonic()-start)
-                self.ledger.usage(e,r,a,'generation',cpu,wall,calls=calls,tokens=tokens,
-                    payload={'revision':revision,'simulated':c.execution_mode=='mock','grant_id':grant.grant_id,
-                             'usage':getattr(self.backend,'last_generation_usage',None) if self.backend else None,
-                             'session_turns':measured.get('session_turns',0) if c.execution_mode!='mock' else 0,
-                             'request_count_unknown':bool(measured.get('request_count_unknown',measured.get('calls') is None)) if c.execution_mode!='mock' else False,
-                             'usage_complete':c.execution_mode=='mock' or bool(measured.get('usage_complete',False))})
-            if candidate is None:
-                continue
-            if time.monotonic()>=deadline:
-                passed,last_reason=False,'DEADLINE'
-            with self.ledger.transaction() as db:
-                db.execute('INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)',
-                    (f'{e}:{r}:{a}:{revision}',e,r,a,candidate['candidate_hash'],int(passed),canonical_json({'reason':last_reason,'revision':revision,'toy_only':True})))
-            if passed:
-                # Peer generation callbacks share this SQLite connection. Keep
-                # the lookup, first publication and canonical-path read under
-                # the same lock used by every authority transaction.
-                with self.ledger._lock:
-                    old=self.ledger.connection.execute('SELECT 1 FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
-                    if not old:
-                        self.ledger.record_candidate(candidate['candidate_hash'],candidate)
-                    elif c.execution_mode!='mock':
-                        canonical=self.ledger.connection.execute('SELECT payload FROM candidates WHERE hash=?',(candidate['candidate_hash'],)).fetchone()
-                        candidate={**candidate,'candidate_path':json.loads(canonical[0])['candidate_path']}
-                return candidate
-        self.ledger.event('GENERATION_FAILED',{'agent_id':a,'reason':last_reason},e,r)
-        return None
-
-    def _generate_once_runtime_only(self,e,r,a,state,plan,purpose,deadline):
-        """One initial response; only controller-classified runtime errors repair.
+    def _generate_once_runtime_only(self,e,r,a,state,plan,purpose,deadline,*,initial_candidate):
+        """Check an existing frozen proposal; only classified runtime errors repair.
 
         This is pre-admission checking. Formal outcomes never reenter this loop
         and no EvalTicket/evaluation budget is refunded or silently rerun.
         """
         from maestro.tasks.runtime_failure import RuntimePrecheckFailure
-        candidate=None
+        from maestro.execution.budgets import BudgetExceeded
+        candidate=initial_candidate
+        repair_chain=[candidate['candidate_hash']]
         failure=None
         last_reason='DEADLINE'
         for attempt in range(1+self.config.runtime_repair_calls):
@@ -867,7 +894,9 @@ class ExperimentEngine:
                             or not hasattr(self.backend,'repair_runtime')):break
             grant=self.grants.issue(episode_id=e,round_index=r,agent_id=a,
                 plan_version_id=plan.version_id,parent_hash=plan.parent_hash,epoch=attempt,
-                expires_at=time.time()+max(.001,deadline-time.monotonic()))
+                expires_at=time.time()+max(.001,deadline-time.monotonic()),
+                purpose='postauction_check' if attempt==0 else 'runtime_repair',
+                source_candidate_hash=candidate['candidate_hash'])
             with self.ledger.transaction() as db:
                 db.execute('INSERT INTO edit_grants VALUES(?,?)',(grant.grant_id,canonical_json(grant)))
             started=time.monotonic()
@@ -875,14 +904,21 @@ class ExperimentEngine:
             outcome=None
             try:
                 if attempt==0:
-                    candidate=self.backend.generate(state,plan,r,revision=0,deadline=deadline,
+                    self.backend.activate_frozen_candidate(state,plan,candidate,r,deadline,
                         grant=grant,grant_authority=self.grants)
                 else:
                     self.ledger.event('RUNTIME_REPAIR_STARTED',{'agent_id':a,'repair_index':attempt-1,
                         'failed_candidate_hash':candidate['candidate_hash'],
                         'exception_type':failure.evidence.exception_type},e,r)
+                    failed_hash=candidate['candidate_hash']
                     candidate=self.backend.repair_runtime(state,plan,candidate,failure.evidence,r,attempt-1,
                         deadline,grant=grant,grant_authority=self.grants)
+                    candidate=self._register_source_candidate(candidate)
+                    repair_chain.append(candidate['candidate_hash'])
+                    self.ledger.event('RUNTIME_REPAIR_FROZEN',{'agent_id':a,
+                        'plan_version_id':plan.version_id,'source_candidate_hash':failed_hash,
+                        'candidate_hash':candidate['candidate_hash'],'repair_index':attempt-1,
+                        'grant_id':grant.grant_id},e,r)
                 self._check_pause()
                 outcome=self.backend.precheck(candidate)
                 passed,last_reason=outcome
@@ -894,26 +930,28 @@ class ExperimentEngine:
                         or getattr(error,'local_quiescent',None) is False):raise
                 last_reason=type(error).__name__
                 self.ledger.event('GENERATION_ATTEMPT_FAILED',{'agent_id':a,'revision':attempt,
-                    'reason':last_reason,'runtime_repair_eligible':False},e,r)
+                    'reason':last_reason,'message':str(error),'traceback':traceback.format_exc(),
+                    'runtime_repair_eligible':False},e,r)
                 break
             finally:
                 self.grants.revoke(grant)
                 usage=getattr(self.backend,'last_generation_usage',{})
-                self.ledger.usage(e,r,a,'generation' if attempt==0 else 'runtime_repair',
+                self.ledger.usage(e,r,a,'precheck' if attempt==0 else 'runtime_repair',
                     float(usage.get('cpu_seconds') or 0),
-                    float(usage.get('wall_seconds',time.monotonic()-started)),
+                    float(usage.get('wall_seconds') or time.monotonic()-started),
                     calls=int(usage.get('calls') or 0),
                     tokens=int(usage.get('known_input_tokens') or 0)+int(usage.get('known_output_tokens') or 0),
                     payload={'revision':attempt,'repair_index':attempt-1 if attempt else None,
                         'usage':usage,'grant_id':grant.grant_id,'simulated':False,
                         'usage_complete':bool(usage.get('usage_complete',False)),
-                        'request_count_unknown':bool(usage.get('continuation_blocking_requests',usage.get('unresolved_requests',0))),
+                        'request_count_unknown':usage.get('calls') is None or bool(usage.get('continuation_blocking_requests',usage.get('unresolved_requests',0))),
                         'cost_usage_unknown':not bool(usage.get('usage_complete',False))})
             if time.monotonic()>=deadline:passed,last_reason=False,'DEADLINE';outcome=None
             with self.ledger.transaction() as db:
                 db.execute('INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)',
                     (f'{e}:{r}:{a}:{attempt}',e,r,a,candidate['candidate_hash'],int(passed),
                      canonical_json({'reason':last_reason,'revision':attempt,'toy_only':True,
+                         'runtime_evidence':to_jsonable(outcome.evidence) if isinstance(outcome,RuntimePrecheckFailure) else None,
                          'runtime_repair_eligible':isinstance(outcome,RuntimePrecheckFailure)})))
             if passed:
                 with self.ledger._lock:
@@ -922,7 +960,7 @@ class ExperimentEngine:
                     if old:
                         candidate={**candidate,'candidate_path':json.loads(old[0])['candidate_path']}
                     else:self.ledger.record_candidate(candidate['candidate_hash'],candidate)
-                return candidate
+                return {**candidate,'proposal_hash':initial_candidate['candidate_hash'],'repair_chain':repair_chain}
             failure=outcome
         self.ledger.event('GENERATION_FAILED',{'agent_id':a,'reason':last_reason,
             'runtime_only_repairs':True},e,r)
@@ -971,7 +1009,7 @@ class ExperimentEngine:
                     raise IntegrityError('Settlement plan content differs from the frozen version')
                 by_agent[a]=result
             for a,state in settled_states.items():
-                before=Decimal(frozen[a]['wealth'])
+                before=Decimal(frozen[a]['wealth']) if purpose=='MAIN' else Decimal(0)
                 allocation=db.execute('SELECT * FROM final_allocations WHERE episode_id=? AND round_index=? AND agent_id=?',(e,r,a)).fetchone()
                 payment=Decimal(allocation['payment']) if allocation else Decimal(0)
                 result=by_agent.get(a)
@@ -1003,23 +1041,27 @@ class ExperimentEngine:
                         'agent_id':a,'score':result.score,'valid':result.valid,'status':result.status,'verified':True})
                     self.ledger.event('FORMAL_EVIDENCE',{'agent_id':a,'experiment_id':result.job_id,
                         'artifact_hash':artifact_hash,'gain':record.gain},e,r)
-                after=money(before-payment+earned)
+                after=money(before-payment+earned) if purpose=='MAIN' else Decimal(0)
                 state.wealth=after
                 if not allocation:
                     db.execute('INSERT INTO final_allocations VALUES(?,?,?,?,?,?,?)',(e,r,a,None,0,'0','NOT_ADMITTED'))
-                db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',
-                    (f'{e}:{r}:{a}:reward',e,a,'REWARD',str(earned),r))
-                if money(self.ledger.balance(e,a))!=after:
+                if purpose=='MAIN':
+                    db.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',
+                        (f'{e}:{r}:{a}:reward',e,a,'REWARD',str(earned),r))
+                if purpose=='MAIN' and money(self.ledger.balance(e,a))!=after:
                     raise IntegrityError('Wallet balance disagrees with frozen settlement')
                 settlement={'parent_before':parent_before,'champion_before':champion,
                     'parent_after':state.parent_score,'parent_hash_after':state.parent_hash,
                     'result_job_id':result.job_id if result else None,'purpose':purpose}
                 db.execute('INSERT INTO settlements VALUES(?,?,?,?,?,?,?,?)',
-                    (e,r,a,str(payment),str(earned),str(before),str(after),canonical_json(settlement)))
-                db.execute('UPDATE agents SET state_json=? WHERE episode_id=? AND agent_id=?',(canonical_json(state),e,a))
+                    (e,r,a,str(payment),str(earned),
+                     str(before) if purpose=='MAIN' else 'NOT_APPLICABLE',
+                     str(after) if purpose=='MAIN' else 'NOT_APPLICABLE',canonical_json(settlement)))
+                db.execute('UPDATE agents SET state_json=? WHERE episode_id=? AND agent_id=?',
+                    (canonical_json(self._agent_payload(state,purpose)),e,a))
                 db.execute('INSERT OR REPLACE INTO policy_statistics VALUES(?,?,?)',(e,a,canonical_json({'n':state.ucb_n,'sum_credit':state.ucb_total})))
             board=self._board(settled_states,r,public_results)
-            checkpoint={'states':self._state_payload(settled_states),'board':board,'round_index':r}
+            checkpoint={'states':self._state_payload(settled_states,purpose),'board':board,'round_index':r}
             if self.backend and hasattr(self.backend,'export_checkpoint_memory'):
                 checkpoint['private_memory_manifest']=self.backend.export_checkpoint_memory()
             checkpoint_hash=self.artifacts.put_json(checkpoint)
@@ -1045,8 +1087,39 @@ class ExperimentEngine:
         row=db.execute('SELECT * FROM episodes WHERE id=?',(episode_id,)).fetchone()
         if not row:
             raise ValueError('Unknown episode')
-        if row['config_hash']!=self.config.hash:
-            raise IntegrityError('Resume config hash mismatch')
+        from maestro.execution.pipeline import require_prebid
+        require_prebid(self.config)
+        require_prebid(json.loads(row['config_json']))
+        from maestro.market.round_extension import latest_config, validate_extension, extension_payload
+        previous_config, extension_events = latest_config(db,row)
+        extending = previous_config.hash != self.config.hash
+        if extending:
+            funding_delta = validate_extension(previous_config,self.config)
+            if row['policy']=='warm' or row['status']!='COMPLETED':
+                raise IntegrityError('Market rounds can extend only at a completed episode boundary')
+            boundary = db.execute('SELECT round_index FROM checkpoints WHERE episode_id=? ORDER BY round_index DESC LIMIT 1',
+                                  (episode_id,)).fetchone()
+            if not boundary or boundary['round_index']!=previous_config.rounds-1:
+                raise IntegrityError('Market round extension needs the completed final checkpoint')
+            if db.execute("SELECT 1 FROM rounds WHERE episode_id=? AND status!='SETTLED' LIMIT 1",(episode_id,)).fetchone():
+                raise IntegrityError('Market round extension has an unsettled round')
+            if db.execute("SELECT 1 FROM publication_outbox WHERE episode_id=? AND status!='DONE' LIMIT 1",(episode_id,)).fetchone():
+                raise IntegrityError('Market round extension has unpublished results')
+        else:
+            funding_delta=Decimal(0)
+        # A clean round boundary must replay before any further model dispatch.
+        # An interrupted evaluation follows the separate physical reconciliation
+        # path below and cannot be replayed as a fully settled episode yet.
+        if not db.execute("SELECT 1 FROM rounds WHERE episode_id=? AND status!='SETTLED' LIMIT 1",
+                          (episode_id,)).fetchone():
+            from maestro.replay import verify_ledger
+            verify_ledger(self.root,episode_id)
+        if row['policy']!='warm' and previous_config.initial_wealth==0:
+            clone=db.execute('SELECT manifest FROM arm_clones WHERE episode_id=?',(episode_id,)).fetchone()
+            funding_manifest=json.loads(clone[0]) if clone else {}
+            if (funding_manifest.get('configured_credits')!='0'
+                    or Decimal(str(funding_manifest.get('wealth','-1')))!=RunConfig.from_dict(json.loads(row['config_json'])).effective_initial_wealth):
+                raise IntegrityError('Legacy zero-wallet episode cannot resume under sufficient-funding semantics')
         if self.backend:
             if hasattr(self.backend,'begin_episode'):
                 self.backend.begin_episode(episode_id)
@@ -1068,16 +1141,18 @@ class ExperimentEngine:
                 if hasattr(self.backend,'restore_checkpoint_memory'):
                     self.backend.restore_checkpoint_memory(saved.get('private_memory_manifest',{}))
         unfinished=db.execute("SELECT * FROM rounds WHERE episode_id=? AND status!='SETTLED' ORDER BY round_index",(episode_id,)).fetchall()
-        if unfinished:
-            if len(unfinished)!=1 or unfinished[0]['status'] not in ('EVALUATING','SETTLING'):
-                raise MaestroError('Interrupted preparation/generation requires explicit containment reconciliation; no work is silently replayed')
+        if len(unfinished)>1 or (unfinished and unfinished[0]['status'] not in ('EVALUATING','SETTLING','RESTART_AUTHORIZED')):
+            raise MaestroError('Interrupted preparation/generation requires explicit containment reconciliation; no work is silently replayed')
+        if unfinished and unfinished[0]['status']!='RESTART_AUTHORIZED':
             interrupted=unfinished[0]
             r=interrupted['round_index']
             snapshot=json.loads(interrupted['snapshot_json'])
             states={a:state_from_dict(s) for a,s in snapshot['states'].items()}
             plans={}
+            restarted=db.execute("SELECT payload FROM events WHERE episode_id=? AND round_index=? AND kind='ROUND_RESTARTED' ORDER BY id DESC LIMIT 1",(episode_id,r)).fetchone()
+            phase_suffix=':recovery-1' if restarted else ''
             for a in states:
-                decision=db.execute('SELECT payload FROM phase_transitions WHERE id=?',(f'{episode_id}:{r}:{a}:planning',)).fetchone()
+                decision=db.execute('SELECT payload FROM phase_transitions WHERE id=?',(f'{episode_id}:{r}:{a}:planning'+phase_suffix,)).fetchone()
                 if decision:
                     states[a]=state_from_dict(json.loads(decision[0])['state'])
                     if states[a].pending_plan:
@@ -1111,12 +1186,69 @@ class ExperimentEngine:
                 if not candidate:
                     raise IntegrityError('Resume parent source missing')
                 self.backend.register_parent(state.parent_hash,json.loads(candidate[0])['candidate_path'])
+        # A completed episode still has its original agent workspaces. Each
+        # continuation needs a fresh local namespace while restoring code and
+        # private memory from the verified checkpoint above. Keep the old files
+        # as evidence and fail closed if this continuation was already used.
+        if (not unfinished and checkpoint['round_index']+1 < self.config.rounds
+                and self.backend and callable(getattr(self.backend,'isolate_recovered_workspaces',None))):
+            namespace=f'{episode_id}-continuation-r{checkpoint["round_index"]+1}-to{self.config.rounds}'
+            self.backend.isolate_recovered_workspaces(namespace)
         for publication in db.execute("SELECT round_index FROM publication_outbox WHERE episode_id=? AND status='PENDING' ORDER BY round_index",(episode_id,)).fetchall():
             saved=db.execute('SELECT payload FROM checkpoints WHERE episode_id=? AND round_index=?',(episode_id,publication[0])).fetchone()
             data=json.loads(saved[0])
             self._publish(episode_id,publication[0],{a:state_from_dict(s) for a,s in data['states'].items()},data['board'])
+        if extending:
+            event=extension_payload(previous_config,self.config,states)
+            with self.ledger.transaction() as conn:
+                for agent_id,state in states.items():
+                    state.wealth=money(state.wealth+funding_delta)
+                    if funding_delta:
+                        conn.execute('INSERT INTO wallet_entries VALUES(?,?,?,?,?,?)',
+                                     (f'{episode_id}:round-extension:{self.config.rounds}:{agent_id}',
+                                      episode_id,agent_id,'ROUND_EXTENSION',str(funding_delta),None))
+                    conn.execute('UPDATE agents SET state_json=? WHERE episode_id=? AND agent_id=?',
+                                 (canonical_json(self._agent_payload(state,'MAIN')),episode_id,agent_id))
+                self.ledger.event('MARKET_ROUNDS_EXTENDED',event,episode_id,previous_config.rounds-1)
+                conn.execute("UPDATE episodes SET status='RUNNING' WHERE id=?",(episode_id,))
+        else:
+            # A process can restart after the extension event and before its
+            # first new round. Apply its committed funding to checkpoint state.
+            for extension in extension_events:
+                record=json.loads(extension['payload'])
+                if record['checkpoint_round_index']==checkpoint['round_index']:
+                    extra=Decimal(record['funding_per_agent'])
+                    for state in states.values():
+                        state.wealth=money(state.wealth+extra)
+        if row['status']=='PAUSED':
+            with self.ledger.transaction() as conn:
+                conn.execute("UPDATE episodes SET status='RUNNING' WHERE id=?",(episode_id,))
+                self.ledger.event('ROUND_BOUNDARY_RESUMED',{
+                    'checkpoint_round_index':checkpoint['round_index'],
+                    'next_round_index':checkpoint['round_index']+1},episode_id)
         for index in range(checkpoint['round_index']+1,self.config.rounds):
-            self._round(episode_id,index,states,row['policy'])
+            recovery=db.execute('SELECT status FROM rounds WHERE episode_id=? AND round_index=?',(episode_id,index)).fetchone()
+            if recovery:
+                if recovery['status']!='RESTART_AUTHORIZED':
+                    raise MaestroError('Unfinished round has not passed explicit containment reconciliation')
+                namespace=f'{episode_id}-recovery-r{index}-a1'
+                authorization=db.execute("SELECT payload FROM events WHERE episode_id=? AND round_index=? "
+                    "AND kind='PREBID_RECOVERY_AUTHORIZED' ORDER BY id DESC LIMIT 1",(episode_id,index)).fetchone()
+                if (not authorization or json.loads(authorization[0]).get('request_namespace')!=namespace):
+                    raise IntegrityError('Recovery authority event or request namespace missing')
+                if self.backend is None:
+                    raise MaestroError('Recovery requires a real backend with isolated request accounting')
+                if not callable(getattr(self.backend,'isolate_recovered_workspaces',None)):
+                    raise MaestroError('Recovery backend cannot isolate prior workspaces')
+                self.backend.isolate_recovered_workspaces(namespace)
+                self.backend.request_episode_id=namespace
+                self._recovery_namespace=namespace
+            try:
+                self._round(episode_id,index,states,row['policy'])
+            finally:
+                if recovery:
+                    self._recovery_namespace=None
+                    self.backend.request_episode_id=episode_id
         with self.ledger.transaction() as conn:
             conn.execute("UPDATE episodes SET status='COMPLETED' WHERE id=?",(episode_id,))
         return {'episode_id':episode_id,'status':'COMPLETED','rounds':self.config.rounds}

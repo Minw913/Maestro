@@ -5,7 +5,6 @@ rounds: 4
 refresh_interval: 3
 reward_scale: '100'
 catchup_fraction: '0.25'
-bid_cap: '100'
 initial_wealth: '400'
 preparation_calls: 4
 preparation_window_seconds: 300

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # One MAESTRO experiment: Warm Start, then each market policy from the same frozen checkpoint.
-# usage: scripts/run_experiment.sh EXPERIMENT.yaml OUTPUT_ROOT [POLICY ...]   (default: uniform ucb first_price)
+# usage: scripts/run_experiment.sh EXPERIMENT.yaml OUTPUT_ROOT [POLICY ...]   (default: uniform ucb first_price_naive)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 config=$1 root=$2; shift 2
-policies=("$@"); [ ${#policies[@]} -gt 0 ] || policies=(uniform ucb first_price)
+policies=("$@"); [ ${#policies[@]} -gt 0 ] || policies=(uniform ucb first_price_naive)
 maestro() { uv run --no-sync python -m maestro --root "$root" "$@" < /dev/null; }
 mkdir -p "$root"
 maestro bootstrap --config "$config" > "$root/bootstrap.json"

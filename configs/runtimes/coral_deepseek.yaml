@@ -1,8 +1,9 @@
-# Opt-in runtime. No credentials are stored here. Not yet live-qualified.
+# Opt-in runtime. Credentials remain in the controller environment.
 kind: runtime
 schema_version: 1
 profile: v1_cooperative
 coral:
+  candidate_pipeline: prebid_v2
   backend_factory: maestro.backends.coral.deepseek_backend:native_factory
   runtime: dsh
   revision: '0123dfb939b35228cf2c1fde224cd0561e727408'
@@ -18,6 +19,5 @@ coral:
     backoff_seconds: 10.0
     continue_after_network_failure: true
     warm_seed_fallback: true
-  # Install and audit dsh, then freeze its full --version output and binary SHA256.
-  deepseek_cli_version: UNQUALIFIED
-  deepseek_cli_sha256: ''
+  deepseek_cli_version: 0.2.1-rc.2
+  deepseek_cli_sha256: 5cc35f6234183ab7725a1a6ab4c9bd8cea2c7b02b7b8e05030657332950eee61

@@ -2,6 +2,7 @@
 import json
 import shutil
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -47,8 +48,58 @@ def test_composition_and_roundtrip(manifest,monkeypatch,tmp_path):
     assert Path(warm.pace['panel_manifest'])==manifest.parent.parent.parent/'data/training/panel.json'
     assert warm.coral['backend_factory']=='maestro.backends.coral.native_backend:native_factory'
     assert warm.reserved_cpu_seconds==620
-    assert RunConfig.from_dict(json.loads(json.dumps(warm.to_dict())))==warm
+    assert RunConfig.from_dict(json.loads(json.dumps(warm.to_dict()))).to_dict()==warm.to_dict()
+    assert 'initial_wealth' not in warm.to_dict()
+    assert all('initial_wealth' not in stage for stage in warm.to_dict()['stage_configs'].values())
     market.validate_warm_source(warm)
+
+
+def test_layered_market_round_extension_accepts_only_horizon_and_source_digest(manifest):
+    from maestro.market.round_extension import validate_extension
+    previous=load_config(manifest,stage='market')
+    edit(fragment(manifest,'benchmarks/pace/market.yaml'),rounds=3)
+    extended=load_config(manifest,stage='market')
+    assert extended.rounds==3 and previous.rounds==1
+    assert validate_extension(previous,extended)==Decimal(0)
+    with pytest.raises(IntegrityError,match='beyond Market rounds'):
+        validate_extension(previous,replace(extended,slots=1))
+
+
+def test_warm_checkpoint_can_start_shorter_market_with_only_rounds_changed(manifest,tmp_path):
+    from maestro.replay import verify_ledger
+    market_file=fragment(manifest,'benchmarks/pace/market.yaml')
+    edit(market_file,rounds=20)
+    warm=load_config(manifest,stage='warm_start')
+    with ExperimentEngine(tmp_path/'short-market',warm) as engine:
+        checkpoint=engine.bootstrap()['checkpoint']
+    edit(market_file,rounds=10)
+    market=load_config(manifest,stage='market').with_market_credits(0)
+    market.validate_warm_source(warm)
+    with ExperimentEngine(tmp_path/'short-market',market) as engine:
+        result=engine.run(checkpoint,'uniform',episode_id='short-market')
+        assert result['status']=='COMPLETED' and result['rounds']==10
+    assert verify_ledger(tmp_path/'short-market')['verified']
+    for target in (12,14,16):
+        edit(market_file,rounds=target)
+        extended=load_config(manifest,stage='market').with_market_credits(0)
+        with ExperimentEngine(tmp_path/'short-market',extended) as engine:
+            assert engine.resume('short-market')['rounds']==target
+        assert verify_ledger(tmp_path/'short-market')['verified']
+
+
+def test_prebid_pipeline_is_explicit_frozen_and_cannot_reuse_legacy_warm():
+    configs=Path(__file__).resolve().parents[2]/'configs/experiments'
+    old=load_config(configs/'pace_remote_deepseek.yaml')
+    new=load_config(configs/'pace_remote_deepseek_prebid.yaml')
+    market=new.for_stage('market')
+    assert old.coral['candidate_pipeline']=='prebid_v2'
+    assert new.coral['candidate_pipeline']=='prebid_v2'
+    assert new.hash!=old.hash  # source-file identities still distinguish aliases
+    assert (new.generation_calls,new.runtime_repair_calls,new.generation_window_seconds)==(1,3,360)
+    market.validate_warm_source(new)
+    retired=replace(old,coral={**old.coral,'candidate_pipeline':'postbid_v1'})
+    with pytest.raises(IntegrityError):market.validate_warm_source(retired)
+    with pytest.raises(ValueError):replace(new,coral={**new.coral,'candidate_pipeline':'unknown'})
 
 
 @pytest.mark.parametrize('name,changes',[
@@ -95,7 +146,9 @@ def test_source_and_active_drift_rejected(manifest):
     with pytest.raises(IntegrityError,match='shared configuration'):
         replace(market,seed=7).validate_warm_source(warm)
     path=fragment(manifest,'benchmarks/pace/market.yaml')
-    path.write_text(path.read_text()+'\n# changed source\n')
+    edit(path,rounds=2)
+    load_config(manifest,stage='market').validate_warm_source(warm)
+    edit(path,planning_window_seconds=151)
     with pytest.raises(IntegrityError,match='shared configuration'):
         load_config(manifest,stage='market').validate_warm_source(warm)
     with pytest.raises(IntegrityError,match='layout mismatch'):
@@ -111,18 +164,93 @@ def test_cli_stage_and_overrides(manifest):
     assert market.seed==7 and market.execution_mode=='real'
 
 
+def test_cli_round_horizon_override_preserves_warm_stage(manifest):
+    parser=build_parser()
+    warm=_config(parser.parse_args(['bootstrap','--config',str(manifest)]))
+    market=_config(parser.parse_args(['run','--bootstrap','unused','--config',str(manifest),
+                                      '--rounds','10','--credits','0']))
+    assert market.rounds==market.stage_configs['market']['rounds']==10
+    assert market.stage_configs['warm_start']==warm.stage_configs['warm_start']
+    assert market.config_sources==warm.config_sources
+    market.validate_warm_source(warm)
+    with pytest.raises(ValueError,match='positive integer'):
+        _config(parser.parse_args(['run','--bootstrap','unused','--config',str(manifest),'--rounds','0']))
+
+
+def test_credits_override_freezes_market_stage_before_bootstrap(manifest):
+    parser=build_parser()
+    warm=_config(parser.parse_args(['bootstrap','--config',str(manifest)]))
+    market=_config(parser.parse_args(['run','--bootstrap','unused','--config',str(manifest),'--credits','0']))
+    with pytest.raises(SystemExit):parser.parse_args(['bootstrap','--config',str(manifest),'--credits','0'])
+    assert market.initial_wealth==0
+    assert market.effective_initial_wealth==market.rounds*125
+    market.validate_warm_source(warm)
+    edit(fragment(manifest,'benchmarks/pace/market.yaml'),initial_wealth='7')
+    load_config(manifest,stage='market').validate_warm_source(warm)
+    with pytest.raises(ValueError):
+        _config(parser.parse_args(['run','--bootstrap','unused','--config',str(manifest),'--credits','-1']))
+
+
+def test_zero_credits_checkpoint_run_and_resume_guard(manifest,tmp_path):
+    parser=build_parser();root=tmp_path/'ample'
+    warm=_config(parser.parse_args(['bootstrap','--config',str(manifest)]))
+    with ExperimentEngine(root,warm) as engine:
+        checkpoint=engine.bootstrap()['checkpoint']
+    with pytest.raises(ValueError,match='Select Market credits'):
+        _config(parser.parse_args(['run','--bootstrap',checkpoint]))
+    market=_config(parser.parse_args(['run','--bootstrap',checkpoint,'--credits','0']))
+    assert market.initial_wealth==0
+    market.validate_warm_source(warm)
+    with ExperimentEngine(root,market) as engine:
+        assert engine.run(checkpoint,'first_price_naive',episode_id='ample-market')['status']=='COMPLETED'
+    finite=load_config(manifest,stage='market')
+    finite.validate_warm_source(warm)
+    with ExperimentEngine(root,finite) as engine:
+        assert engine.run(checkpoint,'first_price_naive',episode_id='finite-market')['status']=='COMPLETED'
+    import sqlite3
+    with sqlite3.connect(root/'authority/ledger.sqlite') as db:
+        assert db.execute("SELECT count(*) FROM wallet_entries WHERE episode_id=?",
+            (json.loads(Path(checkpoint).read_text())['payload']['warm_id'],)).fetchone()[0]==0
+        assert {row[0] for row in db.execute("SELECT DISTINCT wealth_before FROM settlements WHERE episode_id=?",
+            (json.loads(Path(checkpoint).read_text())['payload']['warm_id'],))}=={'NOT_APPLICABLE'}
+        assert {row[0] for row in db.execute("SELECT episode_id FROM arm_clones")}=={'ample-market','finite-market'}
+        assert {row[0] for row in db.execute("SELECT amount FROM wallet_entries WHERE episode_id='ample-market' AND kind='INITIAL'")}=={'125.000000'}
+        assert {row[0] for row in db.execute("SELECT amount FROM wallet_entries WHERE episode_id='finite-market' AND kind='INITIAL'")}=={'5'}
+    frozen=json.loads(Path(checkpoint).read_text())['payload']
+    assert 'initial_wealth' not in frozen['config']
+    assert all('initial_wealth' not in stage for stage in frozen['config']['stage_configs'].values())
+    assert all('wealth' not in state for state in frozen['states'].values())
+    from maestro.replay import verify_ledger
+    assert verify_ledger(root)['verified']
+    from maestro.search_tree import load_search_tree
+    tree=load_search_tree(root,'first_price_naive',episode='ample-market')
+    assert tree['metadata']['boundary']['warm_has_wallet'] is False
+    assert _config(parser.parse_args(['--root',str(root),'resume','--episode','ample-market'])).hash==market.hash
+    changed=_config(parser.parse_args(['--root',str(root),'resume','--episode','ample-market','--credits','1']))
+    assert changed.hash!=market.hash
+    from maestro.cli import main
+    assert main(['--root',str(root),'resume','--episode','ample-market','--credits','1'])==2
+
+
+def test_zero_credits_covers_larger_warm_reward_units(manifest):
+    edit(fragment(manifest,'benchmarks/pace/market.yaml'),reward_scale='10')
+    market=load_config(manifest,stage='market').with_market_credits(0)
+    assert market.effective_initial_wealth==market.rounds*Decimal('125.000000')
+
+
 def test_mock_stage_transition_and_resume(manifest,tmp_path):
     root=tmp_path/'artifacts'
     warm=load_config(manifest)
     with ExperimentEngine(root,warm) as engine:
         result=engine.bootstrap()
-    args=build_parser().parse_args(['--root',str(root),'run','--bootstrap',result['checkpoint']])
+    args=build_parser().parse_args(['--root',str(root),'run','--bootstrap',result['checkpoint'],
+                                    '--config',str(manifest)])
     market=_config(args)
     assert market==warm.for_stage('market')
     with ExperimentEngine(root,market) as engine:
         engine.run(result['checkpoint'],episode_id='market-test')
     args=build_parser().parse_args(['--root',str(root),'resume','--episode','market-test'])
-    assert _config(args)==market
+    assert _config(args).to_dict()==market.to_dict()
     assert (root/'authority/config.warm_start.resolved.json').exists()
     assert (root/'authority/config.market.resolved.json').exists()
     from maestro.replay import verify_ledger
@@ -135,7 +263,7 @@ def test_cli_drift_rejected_before_backend(manifest,tmp_path,monkeypatch):
     root=tmp_path/'run'
     with ExperimentEngine(root,warm) as engine:
         checkpoint=engine.bootstrap()['checkpoint']
-    edit(fragment(manifest,'benchmarks/pace/market.yaml'),rounds=2)
+    edit(fragment(manifest,'benchmarks/pace/market.yaml'),rounds=2,planning_window_seconds=151)
     def forbidden(*args,**kwargs):
         pytest.fail('Drift must be rejected before backend creation')
     monkeypatch.setattr('maestro.loop.ExperimentEngine',forbidden)
@@ -148,7 +276,7 @@ def test_cli_resume_rejects_changed_manifest_before_backend(manifest,tmp_path,mo
     root=tmp_path/'resume'
     config=load_config(manifest,stage='market')
     with Ledger(root/'authority/ledger.sqlite') as ledger:
-        ledger.create_episode('e','first_price',config,{})
+        ledger.create_episode('e','first_price_naive',config,{})
     edit(fragment(manifest,'benchmarks/pace/market.yaml'),planning_window_seconds=180)
     def forbidden(*args,**kwargs):
         pytest.fail('Resume drift must be rejected before backend creation')

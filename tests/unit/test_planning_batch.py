@@ -178,6 +178,21 @@ class ParallelPlanningTests(unittest.TestCase):
         self.assertEqual(accounted, [outcome.receipt])
         self.assertEqual(outcome.receipt.actual_requests, 1)
 
+    def test_safe_rejection_diagnostic_survives_parallel_planning(self):
+        class Backend:
+            planning_capabilities = CAPABILITIES
+            def plan_with_receipt(self, state, round_index, context, *, deadline):
+                receipt = response(state, round_index)[1]
+                raise PlanningResponseError('Coral plan was not accepted', receipt=receipt,
+                    context={'agent_id':state.agent_id}, diagnostic={
+                        'category':'PLAN_VALIDATION','code':'INVALID_ACTION',
+                        'exception_type':'ValueError'})
+        outcome = parallel_plans({'a':AgentState('a','p',.5)}, {'a':{}}, Backend(),
+                                 0,time.monotonic()+1)['a']
+        self.assertEqual(outcome.status,'ABSTAIN')
+        self.assertEqual(outcome.diagnostic['code'],'INVALID_ACTION')
+        self.assertEqual(outcome.receipt.actual_requests,1)
+
     def test_completed_late_response_keeps_usage_receipt_but_no_decision(self):
         accounted = []
         def provider(_):

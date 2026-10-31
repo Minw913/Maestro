@@ -18,7 +18,7 @@ def prepare_admission(tmp_path, *, agents=2, rounds=1):
     config = RunConfig(n_agents=agents, slots=1, rounds=rounds, warm_opportunities_per_agent=1)
     states = {f"a{i}": AgentState(f"a{i}", "a" * 64, .6) for i in range(agents)}
     ledger = Ledger(tmp_path / "ledger.sqlite")
-    ledger.create_episode("review", "first_price", config, states)
+    ledger.create_episode("review", "first_price_naive", config, states)
     snapshot = {"purpose": "MAIN", "states": to_jsonable(states),
                 "board": {"champion_score": .6}, "contract_hash": "b" * 64,
                 "panel_hash": "d" * 64}
@@ -113,7 +113,7 @@ def test_replay_checks_immutable_payload_hashes_not_only_existing_cas_blobs(tmp_
     config = RunConfig(rounds=1, warm_opportunities_per_agent=1)
     with ExperimentEngine(tmp_path, config) as engine:
         warm = engine.bootstrap()
-        engine.run(warm["checkpoint"], "first_price")
+        engine.run(warm["checkpoint"], "first_price_naive")
         row = engine.ledger.connection.execute(f"SELECT rowid,{column} FROM {table} LIMIT 1").fetchone()
         payload = json.loads(row[column])
         if table == "checkpoints":
@@ -131,7 +131,7 @@ def test_next_round_context_retains_public_verified_formal_summaries(tmp_path):
     config = RunConfig(rounds=2, warm_opportunities_per_agent=1)
     with ExperimentEngine(tmp_path, config) as engine:
         warm = engine.bootstrap()
-        run = engine.run(warm["checkpoint"], "first_price")
+        run = engine.run(warm["checkpoint"], "first_price_naive")
         submission = engine.ledger.connection.execute(
             "SELECT payload FROM round_submissions WHERE episode_id=? AND round_index=1 LIMIT 1",
             (run["episode_id"],)).fetchone()
@@ -154,7 +154,7 @@ def test_confirmed_not_started_compensates_once_without_new_formal_samples(tmp_p
             raise RuntimeError("confirmed isolated executor never launched")
         engine.dispatcher.evaluator = type("Offline", (), {"evaluate": staticmethod(unavailable)})()
         with pytest.raises(RuntimeError):
-            engine.run(warm["checkpoint"], "first_price", episode_id="never-started")
+            engine.run(warm["checkpoint"], "first_price_naive", episode_id="never-started")
         tickets = engine.ledger.connection.execute(
             "SELECT id FROM eval_tickets WHERE episode_id='never-started'").fetchall()
         for row in tickets:
@@ -179,7 +179,7 @@ def test_replay_uses_frozen_round_baseline_even_when_zero_reward_is_self_consist
     config = RunConfig(rounds=1, warm_opportunities_per_agent=1, failures=failures)
     with ExperimentEngine(tmp_path, config) as engine:
         warm = engine.bootstrap()
-        run = engine.run(warm["checkpoint"], "first_price")
+        run = engine.run(warm["checkpoint"], "first_price_naive")
         row = engine.ledger.connection.execute(
             "SELECT rowid,payload FROM settlements WHERE episode_id=? LIMIT 1",
             (run["episode_id"],)).fetchone()
@@ -195,7 +195,7 @@ def test_replay_anchors_round_snapshot_to_round_opened_event(tmp_path):
     config = RunConfig(rounds=1, warm_opportunities_per_agent=1)
     with ExperimentEngine(tmp_path, config) as engine:
         warm = engine.bootstrap()
-        run = engine.run(warm["checkpoint"], "first_price")
+        run = engine.run(warm["checkpoint"], "first_price_naive")
         row = engine.ledger.connection.execute(
             "SELECT rowid,snapshot_json FROM rounds WHERE episode_id=? AND round_index=0",
             (run["episode_id"],)).fetchone()
@@ -239,7 +239,7 @@ def test_past_evaluated_candidate_cannot_consume_another_formal_slot(tmp_path):
                 db.execute("INSERT INTO prechecks VALUES(?,?,?,?,?,?,?)", (
                     f"repeat-{e}-{r}-{a}", e, r, a, existing["candidate_hash"], 1, "{}"))
             return existing
-        engine._generate = repeat_candidate
-        run = engine.run(warm["checkpoint"], "first_price")
+        engine._implement_proposal = repeat_candidate
+        run = engine.run(warm["checkpoint"], "first_price_naive")
         assert engine.ledger.connection.execute(
             "SELECT count(*) FROM eval_tickets WHERE episode_id=?", (run["episode_id"],)).fetchone()[0] == 0

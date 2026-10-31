@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+import sys, heapq, time, os
+from array import array
+MASK64=(1<<64)-1
+HASH_MUL=0x9E3779B97F4A7C15
+ORDERS=('parent','total','asc','desc','hash')
+WALL=9.0
+try:
+    _w=os.environ.get('MDS_TIME_LIMIT')
+    if _w: WALL=float(_w)
+except Exception: pass
+class RNG:
+    __slots__=('s',)
+    def __init__(self,seed):
+        s=seed&MASK64
+        if s==0: s=HASH_MUL
+        self.s=s
+    def next(self):
+        x=self.s
+        x^=(x<<13)&MASK64
+        x^=x>>7
+        x^=(x<<17)&MASK64
+        self.s=x&MASK64
+        return self.s
+class Work:
+    __slots__=('c','l')
+    def __init__(self,l): self.c=0; self.l=l
+    def add(self,k=1): self.c+=k
+    def done(self): return self.c>=self.l
+def prune(adj,n,sel,work):
+    if not sel: return sel
+    if work is not None: work.add(len(sel))
+    cnt=array('i',[0])*(n+1)
+    for s in sel:
+        cnt[s]+=1
+        if work is not None: work.add(1)
+        for u in adj[s]: cnt[u]+=1
+    rem=bytearray(n+1)
+    for v in sorted(sel):
+        if work is not None: work.add(1)
+        if cnt[v]<2: continue
+        ok=True
+        for u in adj[v]:
+            if cnt[u]<2: ok=False; break
+        if ok:
+            rem[v]=1; cnt[v]-=1
+            for u in adj[v]: cnt[u]-=1
+    return [v for v in sel if not rem[v]]
+def add_vertex(v,adj,dom,gain,sel,sf,work):
+    if work is not None: work.add(1)
+    sf[v]=1; sel.append(v); newly=0
+    if not dom[v]:
+        dom[v]=1; newly+=1; gain[v]-=1
+        for w in adj[v]: gain[w]-=1
+    for u in adj[v]:
+        if not dom[u]:
+            dom[u]=1; newly+=1; gain[u]-=1
+            for w in adj[u]: gain[w]-=1
+    return newly
+def greedy(adj,n,deg,ndsum,forced,order,seed,work):
+    gain=array('i',(deg[v]+1 for v in range(n+1))); gain[0]=0
+    dom=bytearray(n+1); sf=bytearray(n+1); sel=[]; rem=n
+    for v in forced:
+        if 1<=v<=n and not sf[v]: rem-=add_vertex(v,adj,dom,gain,sel,sf,work)
+    heap=[]
+    if order=='parent':
+        for v in range(1,n+1):
+            if not sf[v] and gain[v]>0: heap.append((-gain[v],v))
+            if work is not None: work.add(1)
+        heapq.heapify(heap)
+        while rem>0 and heap:
+            if work is not None:
+                if work.c>=work.l: break
+                work.add(1)
+            item=heapq.heappop(heap); v=item[1]
+            if sf[v]: continue
+            g=-item[0]
+            if g!=gain[v]:
+                if gain[v]>0: heapq.heappush(heap,(-gain[v],v))
+                continue
+            if g<=0: continue
+            rem-=add_vertex(v,adj,dom,gain,sel,sf,work)
+        return sel
+    for v in range(1,n+1):
+        if not sf[v] and gain[v]>0:
+            if order=='total': heap.append((-gain[v],-deg[v],-ndsum[v],v))
+            elif order=='asc': heap.append((-gain[v],deg[v],ndsum[v],v))
+            elif order=='desc': heap.append((-gain[v],-v,v))
+            else: heap.append((-gain[v],((v*HASH_MUL)^seed)&MASK64,v))
+        if work is not None: work.add(1)
+    heapq.heapify(heap)
+    while rem>0 and heap:
+        if work is not None:
+            if work.c>=work.l: break
+            work.add(1)
+        item=heapq.heappop(heap); v=item[-1]
+        if sf[v]: continue
+        g=-item[0]
+        if g!=gain[v]:
+            if gain[v]>0:
+                if order=='total': heapq.heappush(heap,(-gain[v],-deg[v],-ndsum[v],v))
+                elif order=='asc': heapq.heappush(heap,(-gain[v],deg[v],ndsum[v],v))
+                elif order=='desc': heapq.heappush(heap,(-gain[v],-v,v))
+                else: heapq.heappush(heap,(-gain[v],((v*HASH_MUL)^seed)&MASK64,v))
+            continue
+        if g<=0: continue
+        rem-=add_vertex(v,adj,dom,gain,sel,sf,work)
+    return sel
+def is_valid(adj,n,c):
+    if n==0: return not c
+    prev=0
+    for v in c:
+        if v<=prev or v>n: return False
+        prev=v
+    cov=bytearray(n+1); got=0
+    for v in c:
+        if not cov[v]: cov[v]=1; got+=1
+        for u in adj[v]:
+            if not cov[u]: cov[u]=1; got+=1
+    return got==n
+def finalize(adj,n,raw,work):
+    cand=sorted(set(raw)) if raw else []
+    if not cand:
+        return cand if is_valid(adj,n,cand) else None
+    p=prune(adj,n,cand,work); p.sort()
+    if is_valid(adj,n,p): return p
+    if is_valid(adj,n,cand): return cand
+    return None
+def sol_key(c,deg):
+    t=0
+    for v in c: t+=deg[v]
+    return (len(c),-t,tuple(c))
+def make_extras(n,deg):
+    ex=[]
+    if n==0: return ex
+    top=heapq.nlargest(3,(v for v in range(1,n+1) if deg[v]>0),key=lambda v:(deg[v],-v))
+    if top:
+        ex.append([top[0]])
+        if len(top)>=2: ex.append(top[:2])
+        if len(top)>=3: ex.append(top[:3])
+    minv=0
+    for v in range(1,n+1):
+        if deg[v]>0 and (minv==0 or (deg[v],v)<(deg[minv],minv)): minv=v
+    if minv: ex.append([minv])
+    for s in (0x9E3779B97F4A7C15,0xD1B54A32D192ED03,0x94D049BB133111EB,0x2545F4914F6CDD1D,0x6A09E667F3BCC909,0xBB67AE8584CAA73B):
+        r=RNG(s); v=1+(r.next()%n)
+        if deg[v]>0: ex.append([v])
+    return ex
+def local_improve(adj,n,deg,ndsum,base_forced,best,deadline,work,seed):
+    if best is None: return best
+    forced=set(base_forced)
+    cur=finalize(adj,n,best,None)
+    if cur is None: return best
+    best=cur
+    seen={tuple(cur)}
+    passes=0
+    idle=0
+    while passes<24 and time.monotonic()<deadline:
+        passes+=1
+        p=finalize(adj,n,cur,None)
+        if p is None: break
+        cur=p
+        L=len(cur)
+        if L<=1: break
+        cands=[v for v in cur if v not in forced]
+        if not cands: cands=list(cur)
+        cands.sort(key=lambda v:(-deg[v],v))
+        total=len(cands)
+        if total==0: break
+        limit=min(total,64)
+        start=((passes-1)*19)%total
+        improved=False
+        for j in range(limit):
+            if time.monotonic()>=deadline: break
+            if work is not None and work.done(): break
+            v=cands[(start+j)%total]
+            rem=[x for x in cur if x!=v]
+            if not rem: continue
+            rs=(seed^((v*HASH_MUL)&MASK64)^((passes*0xD1B54A32D192ED03)&MASK64))&MASK64
+            order=ORDERS[(passes+j)%len(ORDERS)]
+            raw=greedy(adj,n,deg,ndsum,rem,order,rs,work)
+            c=finalize(adj,n,raw,work)
+            if c is None: continue
+            t=tuple(c)
+            if len(c)<len(best):
+                best=c; cur=c
+                if len(seen)<1000: seen.add(t)
+                improved=True
+                break
+            if len(c)==len(cur) and t not in seen:
+                if sol_key(c,deg)<sol_key(cur,deg) or len(seen)<400:
+                    cur=c
+                    if len(seen)<1000: seen.add(t)
+                    improved=True
+                    break
+        if not improved:
+            idle+=1
+            if idle>=2 or total<=limit: break
+        else:
+            idle=0
+    return best
+def two_for_one(adj,n,S,deadline):
+    if not S or len(S)<=2: return S
+    cur=finalize(adj,n,S,None)
+    if cur is None or len(cur)<=2: return cur if cur is not None else S
+    S=cur
+    L=len(S)
+    Sflag=bytearray(n+1)
+    for v in S: Sflag[v]=1
+    cnt=array('i',[0])*(n+1)
+    who=array('i',[0])*(n+1)
+    for s in S:
+        cnt[s]+=1
+        if cnt[s]==1: who[s]=s
+        for u in adj[s]:
+            cnt[u]+=1
+            if cnt[u]==1: who[u]=s
+    if time.monotonic()>=deadline: return S
+    crit=[None]*(n+1)
+    for u in range(1,n+1):
+        if cnt[u]==1:
+            a=who[u]
+            if crit[a] is None: crit[a]=[u]
+            else: crit[a].append(u)
+    if time.monotonic()>=deadline: return S
+    cover_count=array('i',[0])*(n+1)
+    own1=array('i',[0])*(n+1)
+    own2=array('i',[0])*(n+1)
+    own3=array('i',[0])*(n+1)
+    for a in S:
+        cl=crit[a]
+        if not cl: continue
+        if time.monotonic()>=deadline: return S
+        u0=cl[0]; bl=len(adj[u0])+1
+        for u in cl[1:]:
+            t=len(adj[u])+1
+            if t<bl: bl=t; u0=u
+        cand=set(); cand.add(u0)
+        for x in adj[u0]: cand.add(x)
+        for u in cl:
+            if u==u0: continue
+            if len(cand)<=1: break
+            nxt=set(); nxt.add(u)
+            for x in adj[u]: nxt.add(x)
+            cand.intersection_update(nxt)
+            if not cand: break
+        if len(cand)<=1: continue
+        for c in cand:
+            cover_count[c]+=1
+            if cover_count[c]==1: own1[c]=a
+            elif cover_count[c]==2: own2[c]=a
+            elif cover_count[c]==3: own3[c]=a
+    if time.monotonic()>=deadline: return S
+    for c in range(1,n+1):
+        if Sflag[c]: continue
+        if cover_count[c]>=2:
+            pairs=((own1[c],own2[c]),)
+            if cover_count[c]>=3:
+                pairs=((own1[c],own2[c]),(own1[c],own3[c]),(own2[c],own3[c]))
+            for a,b in pairs:
+                if a and b and a!=b:
+                    cand=[x for x in S if x!=a and x!=b]
+                    cand.append(c)
+                    p=finalize(adj,n,cand,None)
+                    if p is not None and len(p)<L: return p
+        if time.monotonic()>=deadline: break
+    return S
+def read_graph():
+    st=sys.stdin.buffer; n=0; m=0; found=False
+    for line in st:
+        s=line.lstrip()
+        if s.startswith(b'p'):
+            parts=s.split()
+            if parts and parts[0]==b'p' and len(parts)>=4:
+                try: n=int(parts[2]); m=int(parts[3]); found=True
+                except ValueError: found=False
+            break
+    if not found: return 0,0,[array('I')]
+    adj=[array('I') for _ in range(n+1)]
+    for line in st:
+        s=line.strip()
+        if not s or s.startswith(b'c') or s.startswith(b'#') or s.startswith(b'%'): continue
+        parts=s.split()
+        if not parts: continue
+        if parts[0] in (b'e',b'E',b'a',b'A'):
+            if len(parts)<3: continue
+            try: u=int(parts[1]); v=int(parts[2])
+            except ValueError: continue
+        else:
+            if len(parts)<2: continue
+            try: u=int(parts[0]); v=int(parts[1])
+            except ValueError: continue
+        if u==v: continue
+        if 1<=u<=n and 1<=v<=n: adj[u].append(v); adj[v].append(u)
+    return n,m,adj
+def write_answer(ans):
+    ans=sorted(ans); nl=chr(10); parts=[str(len(ans))]
+    parts.extend(str(v) for v in ans)
+    sys.stdout.write(nl.join(parts)+nl)
+def main():
+    start_time=time.monotonic()
+    n,m,adj=read_graph()
+    if n<=0: write_answer([]); return
+    deg=array('i',(len(a) for a in adj))
+    ndsum=array('q',[0])*(n+1)
+    for v in range(1,n+1):
+        s=0
+        for w in adj[v]: s+=deg[w]
+        ndsum[v]=s
+    iso=[v for v in range(1,n+1) if deg[v]==0]
+    if len(iso)==n: write_answer(iso); return
+    forced_set=set(iso)
+    for v in range(1,n+1):
+        if deg[v]==1:
+            u=adj[v][0]
+            if deg[u]==1:
+                if v<u: forced_set.add(v)
+            else: forced_set.add(u)
+    base_forced=sorted(forced_set)
+    size_est=n+(m//4); op=12*size_est+80000
+    if op<1500000: op=1500000
+    elif op>4000000: op=4000000
+    work=Work(op)
+    best=None; elite=[]; elite_keys=set(); ELITE_MAX=12
+    def key(c): return sol_key(c,deg)
+    def add_elite(c):
+        t=tuple(c)
+        if t in elite_keys: return
+        if len(elite)<ELITE_MAX:
+            elite.append(c); elite_keys.add(t); return
+        wi=0; wk=key(elite[0])
+        for i in range(1,len(elite)):
+            k=key(elite[i])
+            if k>wk: wk=k; wi=i
+        if key(c)<wk:
+            old=elite[wi]; elite[wi]=c; elite_keys.discard(tuple(old)); elite_keys.add(t)
+    def register(raw):
+        nonlocal best
+        c=finalize(adj,n,raw,work)
+        if c is None: return None
+        add_elite(c)
+        if best is None or key(c)<key(best): best=c
+        return c
+    for order in ORDERS:
+        register(greedy(adj,n,deg,ndsum,base_forced,order,0,work))
+        if work.done(): break
+    extras=make_extras(n,deg)
+    if not work.done():
+        for i,extra in enumerate(extras):
+            if work.done(): break
+            f=list(base_forced); f.extend(extra)
+            order=ORDERS[(i+1)%len(ORDERS)]
+            register(greedy(adj,n,deg,ndsum,f,order,0,work))
+    if best is None:
+        c=finalize(adj,n,list(range(1,n+1)),None)
+        if c is not None: best=c; add_elite(c)
+    if best is not None and len(best)<=1: write_answer(best); return
+    search_deadline=start_time+max(0.05,WALL*0.72)
+    base_seed=(0xD1B54A32D192ED03^(n&MASK64)^((m<<1)&MASK64))&MASK64
+    MAX_RESTARTS=512; STAG=160; restart=0; stale=0
+    while restart<MAX_RESTARTS and not work.done() and time.monotonic()<search_deadline:
+        restart+=1
+        rs=(base_seed^((restart*HASH_MUL)&MASK64))&MASK64
+        if rs==0: rs=HASH_MUL
+        rng=RNG(rs)
+        before=key(best) if best is not None else None
+        did=False
+        if best is not None and len(best)>1:
+            if elite and restart%7==0:
+                base=elite[rng.next()%len(elite)]
+            else:
+                base=best
+            L=len(base)
+            if L>1:
+                idx=(restart-1)%L
+                v=base[idx]
+                remaining=[x for x in base if x!=v]
+                f=list(base_forced)
+                f.extend(x for x in remaining if deg[x]>0)
+                order=ORDERS[(restart-1)%len(ORDERS)]
+                register(greedy(adj,n,deg,ndsum,f,order,rs,work))
+                did=True
+        if restart%29==0:
+            order='hash' if restart%2==0 else ORDERS[(restart+1)%len(ORDERS)]
+            f=list(base_forced)
+            for _ in range(1+(restart%3)):
+                v=1+(rng.next()%n)
+                if deg[v]>0: f.append(v)
+            register(greedy(adj,n,deg,ndsum,f,order,rs,work))
+            did=True
+        if not did:
+            order='hash' if restart%2==0 else ORDERS[(restart+1)%len(ORDERS)]
+            f=list(base_forced)
+            if extras and restart%5==0:
+                f.extend(extras[(restart//5)%len(extras)])
+            register(greedy(adj,n,deg,ndsum,f,order,rs,work))
+        after=key(best) if best is not None else None
+        if before is not None and after==before: stale+=1
+        else: stale=0
+        if stale>=STAG and restart>=48: break
+    hard=start_time+max(0.05,WALL*0.96)
+    if best is not None:
+        fixed=finalize(adj,n,best,None)
+        if fixed is not None: best=fixed
+        if len(best)>1 and time.monotonic()<hard:
+            tnow=time.monotonic()
+            two_deadline=min(hard,tnow+max(0.08,WALL*0.18))
+            nb=two_for_one(adj,n,best,two_deadline)
+            if nb is not None and len(nb)<len(best): best=nb
+            if time.monotonic()<hard:
+                w2=Work(max(400000,(n+m)*6))
+                nb=local_improve(adj,n,deg,ndsum,base_forced,best,hard,w2,base_seed)
+                if nb is not None and len(nb)<len(best): best=nb
+            if time.monotonic()<hard:
+                nb=two_for_one(adj,n,best,hard)
+                if nb is not None and len(nb)<len(best): best=nb
+        fixed=finalize(adj,n,best,None)
+        if fixed is not None: best=fixed
+    if best is None or not is_valid(adj,n,best):
+        best=list(range(1,n+1))
+        if not is_valid(adj,n,best): best=[]
+    write_answer(best)
+if __name__=='__main__': main()

@@ -1,0 +1,214 @@
+{
+  "group": "old-warm",
+  "regime": "R1",
+  "source_root": "artifacts/runs/pace-ds/deepseek-flash/uniform/legacywarm-restart-20261029T085402Z",
+  "source_report_sha256": "474f53a57178ca591e2c3c22d22ee998c7b3715441db0227d323dd8d1e7b355f",
+  "episode_id": "legacywarm-r1-restart-20-20261029t085402z",
+  "warm_id": "warm-5e4162c13d3149ff",
+  "warm_checkpoint_hash": "a2ad1c6e7d0f7223077ad24154cdaad336eefa45cb7bedd6a815706aabfee48d",
+  "warm_schema": 2,
+  "warm_pipeline": "postbid_v1",
+  "warm_start_score": 0.9414633933509519,
+  "final_training_score": 0.9415265043905962,
+  "market_gain": 6.311103964429243e-05,
+  "final_champion_hash": "d1a39356877dbf6242c3023441a76b6c221f699f4342edf1d6d59499b67e74ef",
+  "effective_config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+  "panel_hash": "40ef4b92cfde83a1dc01f39050d499a5721e16d4d2a7a67c3f07a8198192552d",
+  "contract_hash": "7892e7e4138f9e4970e13a30104c1594873bf815422e45918da76a4b8dfb07a8",
+  "settled_rounds": 20,
+  "request_failure_counts": {
+    "unknown_requests": 4,
+    "failed_or_unknown_requests": 4,
+    "affected_logical_requests": 4,
+    "affected_phase_scopes": 4,
+    "unknown_with_completed_replacement": 4,
+    "unknown_with_phase_abstention": 0,
+    "unknown_without_traceback": 0
+  },
+  "source_summary": {
+    "admitted_slots": 40,
+    "benchmark": "pace",
+    "calibration_scope": "funded_only_selection_biased",
+    "candidate_pipeline": "prebid_v2",
+    "common_prefix_cost": {
+      "cpu_seconds": 0,
+      "llm_calls": 0,
+      "model_request_measurement": "confirmed_requests",
+      "session_turns": 0,
+      "tokens": 0,
+      "usage_complete": true
+    },
+    "comparison_eligible": true,
+    "config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+    "config_sources": {
+      "benchmark": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/benchmarks/pace/benchmark.yaml",
+        "sha256": "ce282208f3e5f1a6186525470792c313fa1641161c99a6223b3ca3c8b31db78c"
+      },
+      "deployment": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/deployments/remote.yaml",
+        "sha256": "45211c82c180a41e370c1df2d034a9db1c18d11d3c79e39e86013f691a512a75"
+      },
+      "experiment": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/experiments/pace_remote_deepseek_prebid.yaml",
+        "sha256": "14d7d35e302e863a06b6af5b7ff2c9aeafbfa63366de77d6e2ca77bcd8e2bf00"
+      },
+      "runtime": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/runtimes/coral_deepseek_prebid.yaml",
+        "sha256": "e7d4f1e1703ef32c0bacaff21762932dbfd4042fa25bbb8071bb0b5a6da097b3"
+      },
+      "warm_start": {
+        "path": "/home/zijianzhou/Maestro/runtime/prebid-isolated-20261026T172059Z/repo/configs/benchmarks/pace/warm_start.yaml",
+        "sha256": "979864cbfebbe25838258c39b10c2e6ee25c75d8cab40c4c81fd6e8f2e4ad72d"
+      }
+    },
+    "costs": {
+      "formal": {
+        "cpu_seconds": 7231.718186,
+        "llm_calls": 0,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 0,
+        "usage_complete": true,
+        "wall_seconds": 1467.3623018846847
+      },
+      "generation": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 79,
+        "model_request_measurement": "confirmed_lower_bound",
+        "session_turns": 0,
+        "token_measurement": "known_lower_bound_with_unresolved_usage",
+        "tokens": 2467216,
+        "usage_complete": false,
+        "wall_seconds": 9616.470854002982
+      },
+      "planning": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 80,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 410143,
+        "usage_complete": true,
+        "wall_seconds": 0.0
+      },
+      "precheck": {
+        "cpu_seconds": 1.743947,
+        "llm_calls": 0,
+        "model_request_measurement": "confirmed_requests",
+        "session_turns": 0,
+        "token_measurement": "actual_or_explicit_simulation",
+        "tokens": 0,
+        "usage_complete": true,
+        "wall_seconds": 21.01939548784867
+      },
+      "preparation": {
+        "cpu_seconds": 0.0,
+        "llm_calls": 322,
+        "model_request_measurement": "confirmed_lower_bound",
+        "session_turns": 0,
+        "token_measurement": "known_lower_bound_with_unresolved_usage",
+        "tokens": 2604703,
+        "usage_complete": false,
+        "wall_seconds": 1919.0531743364409
+      }
+    },
+    "effective_rounds": 20,
+    "episode_id": "legacywarm-r1-restart-20-20261029t085402z",
+    "execution_mode": "real",
+    "experiment_stage": "market",
+    "failure_policy": {
+      "backoff_seconds": 10.0,
+      "continue_after_network_failure": true,
+      "max_extra_requests": 20,
+      "max_retries_per_request": 1,
+      "warm_seed_fallback": true
+    },
+    "final_training_score": 0.9415265043905962,
+    "forecast_mae": 0.366983125,
+    "forecast_mse": 0.229136994144525,
+    "generation_nonadmissions": 0,
+    "heldout_score": null,
+    "heldout_status": "NOT_RUN",
+    "inference_budget_unit": "provider_request",
+    "initial_rounds": 20,
+    "invitations": 40,
+    "outcome_label": "pace_style_internal",
+    "policy": "uniform",
+    "prebid_proposals": 78,
+    "prebid_proposals_without_formal_evaluation": 38,
+    "profile": "v1_cooperative",
+    "regime_contract": {
+      "artifact_hash": "350e4d0d6e840b113eff71556214403bd5fa2a4ee9a8e018ec2fb8ff3cc8cff4",
+      "content_hash": "350e4d0d6e840b113eff71556214403bd5fa2a4ee9a8e018ec2fb8ff3cc8cff4",
+      "contract": {
+        "benchmark": "pace",
+        "candidate_pipeline": "prebid_v2",
+        "config_hash": "5db761352165069e345b93e9fb0a210e2c8d165b1da0d453258914b08af36e31",
+        "execution_mode": "real",
+        "regime": {
+          "allocation": "seeded balanced round-robin",
+          "id": "R1",
+          "name": "Uniform",
+          "number": 1,
+          "payment": "zero",
+          "policy": "uniform"
+        },
+        "registry_revision": 5,
+        "requires_prebid": false,
+        "schema_version": 1,
+        "settings": {
+          "catchup_fraction": "0.25",
+          "cpu_seconds_per_instance": 30,
+          "cpu_workers": 20,
+          "evaluation_instance_count": 20,
+          "generation_calls": 1,
+          "generation_cpu_seconds": 30,
+          "generation_window_seconds": 360,
+          "initial_wealth": "0",
+          "instance_workers": 10,
+          "memory_bytes": 1073741824,
+          "n_agents": 4,
+          "output_bytes": 1048576,
+          "pids_max": 32,
+          "planning_calls": 1,
+          "planning_window_seconds": 120,
+          "preparation_calls": 4,
+          "preparation_window_seconds": 300,
+          "refresh_interval": 3,
+          "reward_scale": "100",
+          "rounds": 20,
+          "runtime_repair_calls": 3,
+          "seed": 0,
+          "slots": 2,
+          "ucb_exploration_coefficient": 0.0,
+          "valuation_calls": 4,
+          "valuation_discount_factor": 0.8,
+          "valuation_window_seconds": 300,
+          "verification_cpu_seconds": 20
+        },
+        "ucb_exploration_active": false,
+        "valuation": "discounted_actual_credit_per_own_settled_attempt",
+        "wallet_funding": {
+          "configured_credits": "0",
+          "effective_initial_wealth": "2500.000000",
+          "mode": "sufficient"
+        },
+        "wealth_limited_bidding": false
+      }
+    },
+    "reserved_cpu_seconds": 24800,
+    "round_extensions": [],
+    "seed_fallback_agents": {},
+    "status": "COMPLETED",
+    "total_cpu_seconds_with_prefix": 7233.462133,
+    "ucb_exploration_coefficient": 0.0,
+    "valuation_discount_factor": 0.8,
+    "valuation_method": "discounted_actual_credit",
+    "valuation_results": [],
+    "warm_history_complete": true,
+    "warm_id": "warm-5e4162c13d3149ff",
+    "workspace_collision_rounds": []
+  }
+}

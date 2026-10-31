@@ -1,7 +1,7 @@
 """Shared, explicit wire types. Monetary values always use Decimal."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -103,9 +103,11 @@ class EvaluationResult:
 
 def to_jsonable(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
-        # A dataclass may own its serialized form (RunConfig omits empty optional sections).
-        own = getattr(value, 'to_dict', None)
-        return own() if own is not None else to_jsonable(asdict(value))
+        # New optional contract fields may preserve historical wire identities
+        # at their old default. Traverse fields directly so this also works for
+        # configurations nested inside frozen checkpoints.
+        return to_jsonable({f.name:getattr(value,f.name) for f in fields(value)
+            if not ('omit_value' in f.metadata and getattr(value,f.name)==f.metadata['omit_value'])})
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, (Path, Enum)):
@@ -129,7 +131,7 @@ def stable_hash(value: Any) -> str:
 
 def state_from_dict(value: dict) -> AgentState:
     item = dict(value)
-    item['wealth'] = Decimal(str(item.get('wealth', '2000')))
+    item['wealth'] = Decimal(str(item.get('wealth', '0')))
     item['ucb_total'] = Decimal(str(item.get('ucb_total', '0')))
     item['history'] = [HistoryRecord(**{**r, 'credit': Decimal(str(r.get('credit', '0')))}) for r in item.get('history', [])]
     if item.get('pending_plan'):

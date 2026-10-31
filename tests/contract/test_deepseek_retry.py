@@ -35,6 +35,86 @@ def make(tmp_path,upstream,*,policy=None,account='e:0:a:PLAN_RO',calls=1,tools=F
     return store,gate
 
 
+def test_direct_valuation_budget_is_allowed_only_during_its_active_phase(tmp_path):
+    from maestro.backends.coral.deepseek_backend import NativeDeepSeekBackend
+    from maestro.backends.codex_session.autonomous_backend import CodexPhaseUnknown
+
+    store=DeepSeekRetryStore(tmp_path/'requests.sqlite')
+    store.enable_retries(RetryPolicy())
+    account='episode:0:agent-1:VALUATION_RO'
+    store.connection.execute('CREATE TABLE codex_phase_scopes(account TEXT PRIMARY KEY,status TEXT NOT NULL)')
+    store.connection.execute("INSERT INTO codex_phase_scopes VALUES(?,'DISPATCHING')",(account,))
+    store.create(account,max_calls=1,max_request_bytes=1000,max_output_tokens=100,
+                 deadline=time.time()+60)
+    reservation=store.reserve(account,'one',request_bytes=10,output_tokens=10)
+    backend=object.__new__(NativeDeepSeekBackend)
+    backend.budget_store=store
+    backend._active_accounts={account}
+    try:
+        backend._assert_clear()
+        backend._active_accounts.clear()
+        with pytest.raises(CodexPhaseUnknown):backend._assert_clear()
+        store.finish(reservation)
+        store.connection.execute("UPDATE codex_phase_scopes SET status='COMPLETED' WHERE account=?",(account,))
+        backend._assert_clear()
+    finally:store.close()
+
+
+def test_four_concurrent_valuation_requests_pass_guard_and_settle(tmp_path):
+    from maestro.backends.coral.deepseek_backend import NativeDeepSeekBackend
+    from maestro.backends.coral.deepseek_gate import DeepSeekQuotaProxy
+
+    store=DeepSeekRetryStore(tmp_path/'requests.sqlite')
+    store.enable_retries(RetryPolicy())
+    accounts=[f'episode:0:agent-{i}:VALUATION_RO' for i in range(1,5)]
+    store.connection.execute('CREATE TABLE codex_phase_scopes(account TEXT PRIMARY KEY,status TEXT NOT NULL)')
+    store.connection.executemany("INSERT INTO codex_phase_scopes VALUES(?,'DISPATCHING')",
+                                 [(account,) for account in accounts])
+    backend=object.__new__(NativeDeepSeekBackend)
+    backend.budget_store=store
+    backend._phase_lock=threading.RLock()
+    backend._active_accounts=set(accounts)
+    backend.pause=None
+    all_reserved=threading.Barrier(4)
+    upstream_calls=[]
+    calls_lock=threading.Lock()
+
+    def guarded_dispatch():
+        # Reproduce the Market boundary: all four direct budgets are active
+        # before any request is allowed to reach the provider.
+        all_reserved.wait(timeout=5)
+        backend._dispatch_guard()
+
+    def upstream(value,deadline):
+        with calls_lock:upstream_calls.append(value)
+        return message()
+
+    def request(account):
+        gate=DeepSeekQuotaProxy(store,account,'offline',deadline=time.monotonic()+10,
+            max_calls=1,max_request_bytes=100000,max_output_tokens=100,
+            per_request_tokens=100,upstream=upstream,request_guard=guarded_dispatch,
+            final_response_on_last_request=True)
+        gate.bind_final_evidence_paths(lambda:['public/contract.json'])
+        try:
+            gate.complete(payload())
+            gate.assert_resolved()
+            return gate.usage()
+        finally:gate.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            usages=list(pool.map(request,accounts))
+        assert len(upstream_calls)==4
+        assert all(usage['calls']==1 and usage['usage_complete'] for usage in usages)
+        assert all('LAST allowed model request for VALUATION_RO' in str(value['system'])
+                   for value in upstream_calls)
+        store.connection.execute("UPDATE codex_phase_scopes SET status='COMPLETED'")
+        audit=audit_ledger(tmp_path/'requests.sqlite')
+        assert audit['status']=='CLEAR'
+        assert [row['state'] for row in audit['requests']].count('COMPLETED')==4
+    finally:store.close()
+
+
 def test_lost_stream_retries_identical_input_and_retains_unknown_cost(tmp_path):
     seen=[]
     def upstream(value,deadline):
@@ -207,7 +287,8 @@ def test_native_preparation_plan_generation_recover_without_duplicate_apply(tmp_
         assert outcome.receipt.provider_request_id=='accepted-message'
         authority=GrantAuthority();plan=outcome.decision.plan
         grant=authority.issue(episode_id='offline',round_index=0,agent_id='a',plan_version_id=plan.version_id,
-            parent_hash=state.parent_hash,epoch=0,expires_at=time.time()+5)
+            parent_hash=state.parent_hash,epoch=0,expires_at=time.time()+5,
+            purpose='prebid_implementation',source_candidate_hash=state.parent_hash)
         candidate=backend.generate(state,plan,0,deadline=time.monotonic()+5,grant=grant,grant_authority=authority)
         assert ( __import__('pathlib').Path(candidate['candidate_path'])/'run').read_text()=='#!/bin/sh\necho changed\n'
         assert backend.last_generation_usage['calls']==2 and backend.last_generation_usage['logical_calls']==1

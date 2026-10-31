@@ -14,3 +14,6 @@ memory_bytes: 1073741824
 pids_max: 32
 output_bytes: 1048576
 max_candidate_revisions: 3
+
+valuation_calls: 4
+valuation_window_seconds: 300  # R4 only; independent common valuation window

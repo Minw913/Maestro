@@ -86,10 +86,10 @@ def test_unknown_session_planning_remains_visible_in_resource_costs(tmp_path):
         engine.config=replace(engine.config,execution_mode='real',profile='codex_session_pilot')
         engine.backend=Backend()
         states={'a':AgentState('a','p',.5)}
-        engine.ledger.create_episode('pilot','first_price',engine.config,states)
+        engine.ledger.create_episode('pilot','first_price_naive',engine.config,states)
         from maestro.types import MaestroError
         with pytest.raises(MaestroError,match='Unresolved planning'):
-            engine._round('pilot',0,states,'first_price')
+            engine._round('pilot',0,states,'first_price_naive')
         usage=engine.ledger.connection.execute("SELECT * FROM resource_usage WHERE phase='planning'").fetchone()
         payload=json.loads(usage['payload'])
         assert usage['llm_calls']==0  # Only the confirmed lower bound.

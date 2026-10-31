@@ -16,6 +16,25 @@ def rows(engine,sql,*params):
     return engine.ledger.connection.execute(sql,params).fetchall()
 
 
+def test_warm_agent_context_hides_champion_until_market(tmp_path):
+    config=RunConfig(rounds=1,warm_opportunities_per_agent=2)
+    with ExperimentEngine(tmp_path,config) as engine:
+        warm=engine.bootstrap()
+        warm_contexts=[json.loads(row['payload']) for row in rows(engine,'SELECT payload FROM context_manifests')]
+        assert warm_contexts
+        assert all(context['board']=={} for context in warm_contexts)
+        assert all('champion_score' not in record and 'credit' not in record
+                   for context in warm_contexts for record in context.get('history',[]))
+        checkpoint=json.loads((tmp_path/'bootstrap'/warm['warm_id']/'checkpoint.json').read_text())['payload']
+        assert checkpoint['board']['champion_score'] >= 0
+        assert any(record['champion_score'] is not None for state in checkpoint['states'].values()
+                   for record in state['history'])
+        engine.run(warm['checkpoint'],'first_price_naive')
+        contexts=[json.loads(row['payload']) for row in rows(engine,'SELECT payload FROM context_manifests')]
+        assert any('champion_score' in context['board'] for context in contexts)
+    assert verify_ledger(tmp_path)['verified']
+
+
 def test_full_paired_v1_and_replay(tmp_path):
     config=RunConfig()
     with ExperimentEngine(tmp_path,config) as engine:
@@ -24,7 +43,7 @@ def test_full_paired_v1_and_replay(tmp_path):
         assert set(warm['opportunities'].values())=={5}
         initial=json.loads((tmp_path/'bootstrap'/warm['warm_id']/'checkpoint.json').read_text())['payload']
         assert all(s['ucb_n']==5 for s in initial['states'].values())
-        runs=[engine.run(warm['checkpoint'],p) for p in ('uniform','ucb','first_price')]
+        runs=[engine.run(warm['checkpoint'],p) for p in ('uniform','ucb','first_price_naive')]
         for run in runs:
             e=run['episode_id']
             settled=rows(engine,'SELECT * FROM settlements WHERE episode_id=?',e)
@@ -45,13 +64,105 @@ def test_full_paired_v1_and_replay(tmp_path):
     assert all(r['outcome_label']=='simulated' for r in output['episodes'])
 
 
+def test_completed_market_extends_from_checkpoint_without_changing_prior_contract(tmp_path):
+    config=RunConfig(rounds=2,warm_opportunities_per_agent=1,initial_wealth=Decimal(0))
+    with ExperimentEngine(tmp_path,config) as engine:
+        warm=engine.bootstrap()
+        finished=engine.run(warm['checkpoint'],'uniform',episode_id='boundary-test')
+        assert finished['status']=='COMPLETED' and finished['rounds']==2
+        original=rows(engine,'SELECT config_json,config_hash FROM episodes WHERE id=?','boundary-test')[0]
+        original_contract=rows(engine,"SELECT payload FROM events WHERE episode_id=? AND kind='REGIME_CONTRACT_FROZEN'",'boundary-test')[0][0]
+    assert verify_ledger(tmp_path)['verified']
+    with ExperimentEngine(tmp_path,replace(config,rounds=4)) as engine:
+        finished=engine.resume('boundary-test')
+        assert finished['status']=='COMPLETED'
+        assert [r['round_index'] for r in rows(engine,'SELECT round_index FROM rounds WHERE episode_id=? ORDER BY round_index','boundary-test')]==[0,1,2,3]
+        assert tuple(rows(engine,'SELECT config_json,config_hash FROM episodes WHERE id=?','boundary-test')[0])==tuple(original)
+        assert rows(engine,"SELECT payload FROM events WHERE episode_id=? AND kind='REGIME_CONTRACT_FROZEN'",'boundary-test')[0][0]==original_contract
+        extension=json.loads(rows(engine,"SELECT payload FROM events WHERE episode_id=? AND kind='MARKET_ROUNDS_EXTENDED'",'boundary-test')[0][0])
+        assert extension['previous_rounds']==2 and extension['rounds']==4
+        assert Decimal(extension['funding_per_agent'])==Decimal('250')
+    assert verify_ledger(tmp_path)['verified']
+    from maestro.search_tree import load_search_tree
+    tree=load_search_tree(tmp_path,'uniform',episode='boundary-test')
+    assert tree['metadata']['status']=='COMPLETED'
+    assert len([row for row in tree['rounds'] if row['stage']=='market'])==4
+    summary=report(tmp_path,episode_id='boundary-test')['episodes'][0]
+    assert (summary['initial_rounds'],summary['effective_rounds'])==(2,4)
+
+
+def test_market_extension_rejects_other_setting_changes(tmp_path):
+    config=RunConfig(rounds=2,warm_opportunities_per_agent=1)
+    with ExperimentEngine(tmp_path,config) as engine:
+        warm=engine.bootstrap()
+        engine.run(warm['checkpoint'],'uniform',episode_id='boundary-test')
+    with ExperimentEngine(tmp_path,replace(config,rounds=4,slots=1)) as engine:
+        with pytest.raises(IntegrityError,match='beyond Market rounds'):
+            engine.resume('boundary-test')
+    assert verify_ledger(tmp_path)['verified']
+
+
+def test_market_extension_survives_exit_before_next_round(tmp_path):
+    config=RunConfig(rounds=1,warm_opportunities_per_agent=1,initial_wealth=Decimal(0))
+    with ExperimentEngine(tmp_path,config) as engine:
+        warm=engine.bootstrap()
+        engine.run(warm['checkpoint'],'uniform',episode_id='extension-crash')
+    extended=replace(config,rounds=2)
+    with ExperimentEngine(tmp_path,extended) as engine:
+        def interrupted(*args,**kwargs):
+            raise RuntimeError('stop before the first extended round')
+        engine._round=interrupted
+        with pytest.raises(RuntimeError,match='stop before'):
+            engine.resume('extension-crash')
+        assert len(rows(engine,"SELECT * FROM events WHERE episode_id=? AND kind='MARKET_ROUNDS_EXTENDED'",'extension-crash'))==1
+    assert verify_ledger(tmp_path)['verified']
+    with ExperimentEngine(tmp_path,extended) as engine:
+        assert engine.resume('extension-crash')['status']=='COMPLETED'
+        assert len(rows(engine,"SELECT * FROM events WHERE episode_id=? AND kind='MARKET_ROUNDS_EXTENDED'",'extension-crash'))==1
+    assert verify_ledger(tmp_path)['verified']
+
+
+def test_cli_resume_uses_larger_rounds_from_config_file(tmp_path,capsys):
+    from maestro.cli import main
+    config=RunConfig(rounds=1,warm_opportunities_per_agent=1,initial_wealth=Decimal(0))
+    root=tmp_path/'run'
+    with ExperimentEngine(root,config) as engine:
+        warm=engine.bootstrap()
+        engine.run(warm['checkpoint'],'uniform',episode_id='cli-extension')
+    config_path=tmp_path/'extended.json'
+    config_path.write_text(json.dumps({'rounds':2,'warm_opportunities_per_agent':1,
+                                       'initial_wealth':0,'execution_mode':'mock','benchmark':'pace'}))
+    assert main(['--root',str(root),'resume','--episode','cli-extension','--config',str(config_path)])==0
+    capsys.readouterr()
+    assert verify_ledger(root)['verified']
+    assert main(['--root',str(root),'resume','--episode','cli-extension'])==0
+    assert verify_ledger(root)['verified']
+
+
+def test_market_horizon_can_extend_more_than_once(tmp_path):
+    config=RunConfig(rounds=1,warm_opportunities_per_agent=1,initial_wealth=Decimal(0))
+    with ExperimentEngine(tmp_path,config) as engine:
+        warm=engine.bootstrap()
+        engine.run(warm['checkpoint'],'uniform',episode_id='many-extensions')
+    for target in (3,4,5):
+        with ExperimentEngine(tmp_path,replace(config,rounds=target)) as engine:
+            assert engine.resume('many-extensions')['rounds']==target
+        assert verify_ledger(tmp_path)['verified']
+    with ExperimentEngine(tmp_path,replace(config,rounds=5)) as engine:
+        events=[json.loads(row['payload']) for row in rows(engine,
+            "SELECT payload FROM events WHERE episode_id=? AND kind='MARKET_ROUNDS_EXTENDED' ORDER BY id",
+            'many-extensions')]
+        assert [(row['previous_rounds'],row['rounds']) for row in events]==[(1,3),(3,4),(4,5)]
+        assert [Decimal(row['funding_per_agent']) for row in events]==[Decimal(250),Decimal(125),Decimal(125)]
+
+
 def test_precheck_replacement_payment_and_no_fake_observation(tmp_path):
     config=RunConfig(rounds=2,warm_opportunities_per_agent=2)
     with ExperimentEngine(tmp_path,config) as engine:
         warm=engine.bootstrap()
     broken=replace(config,failures={'agent-1':'precheck','agent-2':'precheck'})
     with ExperimentEngine(tmp_path,broken) as engine:
-        run=engine.run(warm['checkpoint'],'first_price')
+        run=engine.run(warm['checkpoint'],'first_price_naive')
         e=run['episode_id']
         for failed in ('agent-1','agent-2'):
             for allocation in rows(engine,'SELECT * FROM final_allocations WHERE episode_id=? AND agent_id=?',e,failed):
@@ -67,11 +178,11 @@ def test_precheck_replacement_payment_and_no_fake_observation(tmp_path):
 
 
 def test_repair_stays_in_one_invitation(tmp_path):
-    # Historical mock repair loop has an explicit three-call envelope.
+    # One frozen initial program; only a runtime failure authorizes a repair.
     config=RunConfig(rounds=1,warm_opportunities_per_agent=1,generation_calls=3)
     with ExperimentEngine(tmp_path,config) as engine:
         warm=engine.bootstrap()
-    repair=replace(config,failures={a:['precheck',None] for a in ('agent-1','agent-2','agent-3','agent-4')})
+    repair=replace(config,failures={a:['runtime',None] for a in ('agent-1','agent-2','agent-3','agent-4')})
     with ExperimentEngine(tmp_path,repair) as engine:
         run=engine.run(warm['checkpoint'],'uniform')
         e=run['episode_id']
@@ -86,7 +197,7 @@ def test_formal_failure_consumes_slot_and_no_backfill(tmp_path):
         warm=engine.bootstrap()
     failed=replace(config,failures={f'agent-{i}:0':{'formal':'invalid'} for i in range(1,5)})
     with ExperimentEngine(tmp_path,failed) as engine:
-        run=engine.run(warm['checkpoint'],'first_price')
+        run=engine.run(warm['checkpoint'],'first_price_naive')
         e=run['episode_id']
         assert len(rows(engine,'SELECT * FROM invitations WHERE episode_id=?',e))==2
         paid=rows(engine,'SELECT * FROM settlements WHERE episode_id=? AND payment!=?',e,'0')
@@ -101,7 +212,7 @@ def test_deadline_leaves_unused_slots_and_eligible_pending_reuse(tmp_path):
         warm=engine.bootstrap()
     blocked=replace(config,failures={'deadline_rounds':list(range(5))})
     with ExperimentEngine(tmp_path,blocked) as engine:
-        run=engine.run(warm['checkpoint'],'first_price')
+        run=engine.run(warm['checkpoint'],'first_price_naive')
         e=run['episode_id']
         assert not rows(engine,'SELECT * FROM eval_tickets WHERE episode_id=?',e)
         submissions=rows(engine,'SELECT * FROM round_submissions WHERE episode_id=? ORDER BY round_index',e)

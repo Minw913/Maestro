@@ -28,7 +28,7 @@ def serialize_state(state):
 
 def deserialize_state(payload):
     data = deepcopy(payload)
-    data["wealth"] = money(data.get("wealth", "2000"))
+    data["wealth"] = money(data.get("wealth", "0"))
     data["ucb_total"] = money(data.get("ucb_total", "0"))
     histories = []
     for row in data.get("history", []):
@@ -82,7 +82,7 @@ def clone_states(snapshot, initial_wealth=Decimal("2000"), *, fresh_main=True):
     return states
 
 
-def clone_arms(snapshot, policies=("uniform", "ucb", "first_price"),
+def clone_arms(snapshot, policies=("uniform", "ucb", "first_price_naive"),
                initial_wealth=Decimal("2000")):
     if len(set(policies)) != len(policies):
         raise ValueError("duplicate policy arm")

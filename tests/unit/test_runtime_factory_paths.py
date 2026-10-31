@@ -29,7 +29,8 @@ def test_factories_keep_native_and_workspaces_out_of_outputs(tmp_path,monkeypatc
         def preflight(self,*args):return {}
         def close(self):self.store.close()
     root=tmp_path/'artifacts/runs/example';local=tmp_path/'runtime/runs/example'
-    settings={'model':'offline','director_mode':'predeclared'}
+    (tmp_path/'artifacts').mkdir()
+    settings={'model':'offline','director_mode':'predeclared',**({'runtime':'dsh'} if provider=='deepseek' else {})}
     config=RunConfig(execution_mode='real',coral=settings,pace={'panel_manifest':'unused'})
     if provider=='codex':
         import maestro.backends.codex_session.autonomous_backend as module

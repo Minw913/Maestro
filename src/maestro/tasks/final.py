@@ -26,3 +26,36 @@ def champion_path(engine: ExperimentEngine, episode_id: str) -> tuple[str, Path]
     if candidate is None:
         raise IntegrityError('champion has no recorded candidate')
     return champion, Path(fields.text(fields.parse_object(candidate[0], 'candidate'), 'candidate_path'))
+
+
+def evaluate_frozen_final(root: str | Path, episode_id: str, manifest_path: str) -> dict[str, object]:
+    """Dispatch final evaluation from the frozen task contract without an agent backend."""
+    import json
+    from types import SimpleNamespace
+    from maestro.config import RunConfig
+    from maestro.execution.pipeline import read_episode
+    from maestro.storage import Ledger
+    from maestro.tasks.base import benchmark_for
+    from maestro.types import stable_hash
+
+    source = read_episode(root, episode_id)
+    raw = json.loads(source['config_json'])
+    if (source['status'] != 'COMPLETED' or source['execution_mode'] != 'real'
+            or source['policy'] in ('warm', 'heldout')):
+        raise MaestroError('final evaluation requires a completed real main episode')
+    if stable_hash(raw) != source['config_hash']:
+        raise IntegrityError('source episode configuration is corrupted')
+    if raw.get('benchmark', 'pace') == 'pace':
+        from maestro.tasks.pace.heldout import evaluate_frozen_final as evaluate_pace
+        return evaluate_pace(root, episode_id, manifest_path)
+    # Scheduling and wallet fields from retired searches do not govern task-only
+    # evaluation. Keep the original record untouched, as in the PACE entry.
+    wanted = {'benchmark', 'task', 'pace', 'coral', 'cpu_workers', 'instance_workers',
+              'evaluation_instance_count', 'cpu_seconds_per_instance',
+              'verification_cpu_seconds', 'memory_bytes', 'pids_max', 'output_bytes', 'seed'}
+    config = RunConfig(**{key: value for key, value in raw.items() if key in wanted},
+                       execution_mode='real')
+    root = Path(root).resolve()
+    with Ledger(root / 'authority' / 'ledger.sqlite') as ledger:
+        context = SimpleNamespace(root=root, config=config, ledger=ledger)
+        return benchmark_for(config.benchmark).evaluate_final(context, episode_id, manifest_path)

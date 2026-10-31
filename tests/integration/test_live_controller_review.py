@@ -21,10 +21,11 @@ def controller(tmp_path, backend_factory):
 
 def test_generation_resource_report_uses_actual_provider_usage_not_one_call_per_revision(tmp_path):
     class ProviderBacked:
+        supports_runtime_only_repair = True
         def __init__(self, engine):
             self.engine = engine
         def generate(self, *args, **kwargs):
-            self.last_generation_usage = {"calls": 2, "output_tokens": 11,
+            self.last_generation_usage = {"calls": 2, "known_output_tokens": 11,
                 "cpu_seconds": .2, "wall_seconds": .4, "measurement": "trusted_provider"}
             digest = self.engine.artifacts.put_json({"unit": "candidate"})
             return {"candidate_hash": digest, "kind": "injected-test"}
@@ -32,7 +33,7 @@ def test_generation_resource_report_uses_actual_provider_usage_not_one_call_per_
             return True, "PASS"
     engine, state, plan = controller(tmp_path, ProviderBacked)
     try:
-        candidate = engine._generate("test-live", 0, "a", state, plan, "MAIN", time.monotonic() + 5)
+        candidate = engine._implement_proposal("test-live", 0, "a", state, plan, "MAIN", time.monotonic() + 5)
         assert candidate
         usage = engine.ledger.connection.execute(
             "SELECT * FROM resource_usage WHERE phase='generation'").fetchone()
@@ -45,6 +46,7 @@ def test_generation_resource_report_uses_actual_provider_usage_not_one_call_per_
 
 def test_known_generation_timeout_revokes_all_edit_grants_and_returns_pre_eval_failure(tmp_path):
     class TimeoutBeforeCandidate:
+        supports_runtime_only_repair = True
         def __init__(self, engine):
             pass
         def generate(self, *args, **kwargs):
@@ -55,7 +57,7 @@ def test_known_generation_timeout_revokes_all_edit_grants_and_returns_pre_eval_f
             raise AssertionError("no candidate exists")
     engine, state, plan = controller(tmp_path, TimeoutBeforeCandidate)
     try:
-        result = engine._generate("test-live", 0, "a", state, plan, "MAIN", time.monotonic() + 5)
+        result = engine._implement_proposal("test-live", 0, "a", state, plan, "MAIN", time.monotonic() + 5)
         assert result is None
         grants = [json.loads(row[0])["grant_id"] for row in engine.ledger.connection.execute(
             "SELECT payload FROM edit_grants")]

@@ -5,6 +5,7 @@ instance_workers: 10
 coral:
   checkout_path: ../../vendor/coral
   codex_executable: /home/zijianzhou/.local/bin/codex
+  deepseek_executable: /home/zijianzhou/.local/bin/maestro-dsh
 pace:
   panel_manifest: ../../data/training/panel.json
   seed_solver: ../../data/seed_solver

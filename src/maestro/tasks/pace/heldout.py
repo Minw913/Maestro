@@ -18,6 +18,56 @@ if TYPE_CHECKING:
     from maestro.loop import ExperimentEngine
 
 
+def evaluate_frozen_final(root,source_episode_id,manifest_path,*,runner=None):
+    """Evaluation-only entry, including retired searches; never starts an agent.
+
+    Archive configuration is checked as raw wire data. Only task/runner fields
+    are adapted for evaluation, without rewriting the source episode identity.
+    ``runner`` injection is for isolated containment tests, never mock mode.
+    """
+    from types import SimpleNamespace
+    from maestro.config import RunConfig
+    from maestro.execution.pipeline import read_episode,pipeline_version
+    from maestro.execution.sandbox import DockerRunner
+    from maestro.storage import Ledger,ArtifactStore
+    from .manifest import EvaluationContract
+    root=Path(root).resolve()
+    source=read_episode(root,source_episode_id)
+    raw=json.loads(source['config_json'])
+    if (source['status']!='COMPLETED' or source['execution_mode']!='real'
+            or source['policy'] in ('warm','heldout')):
+        raise MaestroError('held-out evaluation requires a completed real main episode')
+    if stable_hash(raw)!=source['config_hash']:
+        raise IntegrityError('source episode configuration is corrupted')
+    # Do not deserialize retired scheduling/wealth schemas as a new experiment.
+    wanted={'cpu_workers','instance_workers','evaluation_instance_count','cpu_seconds_per_instance',
+            'verification_cpu_seconds','pace','seed','benchmark'}
+    options={k:v for k,v in raw.items() if k in wanted}
+    options.update(execution_mode='real',coral={'candidate_pipeline':pipeline_version(raw),**raw.get('coral',{})},
+        stage_configs={},config_sources={},experiment_stage=None)
+    config=RunConfig(**options)
+    training=load_panel(config.pace['panel_manifest'],expected_split='training')
+    settings=dict(config.pace.get('contract',{}))
+    for key in ('cpu_workers','instance_workers'):
+        if key in settings and settings[key]!=getattr(config,key):raise IntegrityError('Frozen worker contract mismatch')
+        settings[key]=getattr(config,key)
+    contract=EvaluationContract.standard(**settings)
+    if len(training.instances)!=contract.instances or config.evaluation_instance_count!=contract.instances:
+        raise IntegrityError('Frozen training contract mismatch')
+    physical=runner if runner is not None else DockerRunner()
+    # Validate manifests before opening a writer or asking Docker for anything.
+    heldout=load_panel(manifest_path,expected_split='heldout');training.assert_disjoint(heldout)
+    assert_smoke_disjoint(heldout,config.coral.get('smoke_graph') or default_sanity_graph_path())
+    with Ledger(root/'authority/ledger.sqlite') as ledger:
+        artifacts=ArtifactStore(root/'authority/cas/sha256',ledger.register_artifact)
+        evaluator=PaceEvaluator(training,contract,physical,artifact_store=artifacts.put,
+            cpu_workers=config.cpu_workers,instance_workers=config.instance_workers)
+        evaluator.preflight()
+        context=SimpleNamespace(root=root,config=config,ledger=ledger,artifacts=artifacts,
+            _live_panel=training,_live_contract=contract,dispatcher=Dispatcher(ledger,evaluator))
+        return evaluate_final(context,source_episode_id,manifest_path)
+
+
 def _summary(source_episode_id, heldout_episode_id, ticket, result, contract):
     return {
         "source_episode_id": source_episode_id,
@@ -129,7 +179,11 @@ def evaluate_final(engine: 'ExperimentEngine', source_episode_id: str, manifest_
     if candidate_tree_hash(candidate["candidate_path"]) != candidate_hash:
         raise IntegrityError("frozen final champion source changed before held-out execution")
     heldout_config = replace(engine.config, n_agents=1, slots=1, rounds=1,
-        warm_opportunities_per_agent=1, initial_wealth=Decimal(0), bid_cap=Decimal(0),
+        warm_opportunities_per_agent=1,
+        # Held-out authority has its own single-candidate lifecycle. Retaining
+        # the source's frozen Market stage would revalidate slots=2 against
+        # n_agents=1, and would misidentify this as another Market experiment.
+        experiment_stage=None, stage_configs={}, config_sources={},
         evaluation_instance_count=len(panel.instances), pace={**engine.config.pace,
             "panel_manifest": str(Path(manifest_path).resolve()), "contract": asdict(contract)})
     with ledger.transaction():

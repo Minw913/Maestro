@@ -68,11 +68,16 @@ def build_context(state, board, token_budget=8192):
         0 if preferred == (pair[1].target, pair[1].mod_type) else 1,
         0 if not pair[1].valid or pair[1].gain <= 0 else 1,
         -pair[0]))
-    own = [{"kind": "measured", **_jsonable(record)} for _, record in indexed]
+    own = []
+    for _, record in indexed:
+        visible = _jsonable(record)
+        if record.champion_score is None:
+            visible.pop('champion_score', None)
+            visible.pop('credit', None)
+        own.append({'kind': 'measured', **visible})
     evidence_catalog = {}
     for record in records:
-        category = f"{record.target}/{record.mod_type}"
-        evidence_catalog.setdefault(category, []).append(record.experiment_id)
+        evidence_catalog.setdefault(record.target, {}).setdefault(record.mod_type, []).append(record.experiment_id)
     lessons = _jsonable(state.lessons[-5:])
     public = _public_board(board)
     history_hash = hashlib.sha256(_encode(records)).hexdigest()

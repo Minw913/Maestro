@@ -15,4 +15,3 @@ planning_calls: 1
 initial_wealth: '2000'
 reward_scale: '100'
 catchup_fraction: '0.25'
-bid_cap: '100'

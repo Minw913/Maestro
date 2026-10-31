@@ -41,9 +41,10 @@ class PlanningResponseError(ValueError):
     """A completed provider request failed schema or deadline admission checks."""
     inflight_unknown = False
 
-    def __init__(self, message, *, receipt, context):
+    def __init__(self, message, *, receipt, context, diagnostic=None):
         super().__init__(message)
         self.receipt, self.context = receipt, context
+        self.diagnostic = diagnostic
         self.request_id, self.scope_id = receipt.request_id, receipt.scope_id
 
 

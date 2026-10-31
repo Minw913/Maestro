@@ -1,11 +1,17 @@
 /runtime/
 /docs/
 /Overleaf/
-# Historical mixed records stay local; new standard outputs are shareable.
+# Local development notes and implementation reading material.
+/IMPLEMENTATION_REPORT.md
+/INTERFACE_CONTRACT.md
+/maestro_plan_V1.md
+# Execution and test logs stay local, including logs under shareable outputs.
+*.log
+# Keep experiment records local; publish only the retained pilot results.
 /artifacts/*
-!/artifacts/README.md
-!/artifacts/runs/
 !/artifacts/exports/
+/artifacts/exports/*
+!/artifacts/exports/warm-start-comparison-six-runs-20261029/
 data/
 __pycache__/
 *.py[cod]
@@ -30,3 +36,5 @@ auth.json
 
 # Third-party benchmark checkouts, each with its own venv.
 /repos/
+# Keep the New Warm comparison group local only.
+/artifacts/exports/warm-start-comparison-six-runs-20261029/new-warm/

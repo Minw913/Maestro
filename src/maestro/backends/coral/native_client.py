@@ -37,6 +37,7 @@ class ToolService:
     def __init__(self, callback, deadline):
         self.callback, self.deadline = callback, deadline
         self.error = None
+        self.close_receipt = None
         self.calls = 0
         self.pending = 0
         self.condition = threading.Condition()
@@ -92,6 +93,12 @@ class ToolService:
         with self.condition:
             self.condition.wait_for(lambda: self.pending == 0, timeout=5)
             pending = self.pending
+        self.close_receipt = {
+            'server_thread_reclaimed': not self.thread.is_alive(),
+            'pending_calls': pending,
+            'transport_reclaimed': not self.thread.is_alive() and pending == 0,
+            'tool_error_type': type(self.error).__name__ if self.error else None,
+        }
         if pending or self.thread.is_alive():
             raise NativeCoralUnknown('Coral MCP service termination not established')
         if self.error:
@@ -108,8 +115,13 @@ class CoralCodexClient(AutonomousCodexClient):
             from .runtime import resolve_runtime
             runtime = resolve_runtime('codex')
         self.runtime = runtime
+        self._cleanup_paths = {}
         self._active = set()
         self._lock = threading.RLock()
+
+    def cleanup_receipt(self, base_url):
+        with self._lock:path=self._cleanup_paths.get(base_url)
+        return json.loads(path.read_text()) if path and path.is_file() else {}
 
     def preflight(self, **kwargs):
         report = super().preflight(**kwargs)
@@ -135,6 +147,7 @@ class CoralCodexClient(AutonomousCodexClient):
             raise ValueError('Coral native phases are ephemeral; resume is not enabled')
         phase = self.root/uuid.uuid4().hex
         phase.mkdir(mode=0o700)
+        with self._lock:self._cleanup_paths[base_url]=phase/'cleanup.json'
         workdir = Path(tempfile.mkdtemp(prefix='maestro-coral-'))
         identity = agent_id or 'coral-native'
         if not identity or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in identity):

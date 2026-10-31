@@ -97,15 +97,15 @@ def test_seed_fallback_keeps_empty_history_and_zero_evidence_bid_then_replays(tm
     policy=RetryPolicy(continue_after_network_failure=True,warm_seed_fallback=True)
     config=RunConfig(rounds=2,warm_opportunities_per_agent=2,coral={'deepseek_transport_retry':policy.__dict__})
     with ExperimentEngine(tmp_path,config) as engine:
-        original=engine._generate
+        original=engine._implement_proposal
         def generate(e,r,a,state,plan,purpose,deadline):
             if purpose=='WARM' and a=='agent-3':return None
             return original(e,r,a,state,plan,purpose,deadline)
-        engine._generate=generate
+        engine._implement_proposal=generate
         warm=engine.bootstrap();payload=json.loads(Path(warm['checkpoint']).read_text())['payload']
         assert list(payload['seed_fallback_agents'])==['agent-3']
         assert payload['states']['agent-3']['history']==[] and payload['states']['agent-3']['ucb_n']==0
-        result=engine.run(warm['checkpoint'],'first_price');assert result['status']=='COMPLETED'
+        result=engine.run(warm['checkpoint'],'first_price_naive');assert result['status']=='COMPLETED'
         events=engine.ledger.connection.execute("SELECT payload FROM events WHERE kind='COLD_START_ZERO_VALUATION'").fetchall()
         assert events and all(json.loads(row[0])['agent_id']=='agent-3' for row in events)
     assert verify_ledger(tmp_path)['verified']

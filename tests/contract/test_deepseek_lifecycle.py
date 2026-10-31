@@ -456,3 +456,173 @@ def test_historical_cascade_quarantine_requires_exact_scopes_and_cleanup(tmp_pat
     assert not _historical_exception(new,old/'requests.sqlite',audit)
     assert ledger_fingerprint(old/'requests.sqlite')==before
     store.close()
+
+
+def test_historical_valuation_quarantine_keeps_unknown_and_requires_native_log(tmp_path):
+    import hashlib
+    from maestro.backends.coral.deepseek_lifecycle import _historical_exception,ledger_fingerprint
+
+    old=tmp_path/'old/deepseek-native-authority';old.mkdir(parents=True)
+    store=BudgetStore(old/'requests.sqlite')
+    store.connection.execute('CREATE TABLE codex_phase_scopes(account TEXT PRIMARY KEY,status TEXT)')
+    accounts=['episode:0:agent-1:VALUATION_RO','episode:0:agent-2:VALUATION_RO']
+    for account in accounts:
+        store.create(account,max_calls=1,max_request_bytes=100,max_output_tokens=20,deadline=time.time()+30)
+    completed=store.reserve(accounts[0],'complete',request_bytes=1,output_tokens=20)
+    store.save_receipt(completed,{'input_tokens':10,'output_tokens':3},'a'*64,'terminal-id',protocol='/v1/messages')
+    store.finish(completed,actual_output_tokens=3)
+    lost=store.reserve(accounts[1],'unknown',request_bytes=1,output_tokens=20)
+    store.finish(lost,failed=True)
+    store.connection.executemany('INSERT INTO codex_phase_scopes VALUES(?,?)',
+                                 [(account,'UNKNOWN') for account in accounts])
+    supervisor=tmp_path/'supervisor.json'
+    supervisor.write_text(json.dumps({'kind':'systemd_cgroup_empty','MainPID':0,'ControlGroup':'',
+        'ActiveState':'failed','remaining_native_processes':0,'running_rootless_containers':0}))
+    proofs=[]
+    for account in accounts:
+        agent=account.split(':')[2];phase=tmp_path/agent;logs=phase/'public/logs';logs.mkdir(parents=True)
+        prompt='VALUATION_RO: read-only estimate'
+        scope=phase/'scope.json';scope.write_text(json.dumps({'prompt':prompt}))
+        cleanup=phase/'cleanup.json';cleanup.write_text(json.dumps({'local_process_group_reclaimed':True}))
+        log=logs/f'{agent}.0.log';log.write_text(json.dumps({'type':'coral','subtype':'prompt',
+            'source':'maestro:deepseek','agent_id':agent,'prompt':prompt})+'\n')
+        proof={'account':account}
+        for role,path in [('scope',scope),('cleanup',cleanup),('supervisor',supervisor),('log',log)]:
+            proof[role+'_path']=str(path);proof[role+'_sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        proofs.append(proof)
+    entry={'ledger':str(old/'requests.sqlite'),'reservation_ids':[lost],
+           'ledger_fingerprint':ledger_fingerprint(old/'requests.sqlite'),'reclaimed_scopes':proofs}
+    new=tmp_path/'new';(new/'authority').mkdir(parents=True)
+    manifest=new/'authority/deepseek-historical-exceptions.json'
+    value={'new_run_root':str(new),'user_authorization':'Explicit fresh run with old cost quarantined',
+           'remote_termination_confirmed':False,'retain_historical_budget':True,'entries':[entry]}
+    manifest.write_text(json.dumps(value));audit=audit_ledger(old/'requests.sqlite')
+    before=ledger_fingerprint(old/'requests.sqlite')
+    assert _historical_exception(new,old/'requests.sqlite',audit)
+    assert audit['status']=='BLOCKED' and store.snapshot(accounts[1])['active']==1
+    entry['reclaimed_scopes']=proofs[:1];manifest.write_text(json.dumps(value))
+    assert not _historical_exception(new,old/'requests.sqlite',audit)
+    entry['reclaimed_scopes']=proofs;manifest.write_text(json.dumps(value))
+    (tmp_path/'agent-1/public/logs/agent-1.0.log').write_text('altered')
+    assert not _historical_exception(new,old/'requests.sqlite',audit)
+    assert ledger_fingerprint(old/'requests.sqlite')==before
+    store.close()
+
+
+def test_terminal_failed_generation_exception_requires_exact_no_artifact_proof(tmp_path):
+    import hashlib
+    from maestro.backends.coral.deepseek_lifecycle import (
+        RequestJournal,_historical_exception,ledger_fingerprint)
+    from maestro.backends.coral.workspace import candidate_tree_hash
+
+    episode='market-old';agent='agent-4';account=f'{episode}:2:{agent}:GENERATION:version'
+    old=tmp_path/'artifacts/runs/old';authority=old/'deepseek-native-authority'
+    authority.mkdir(parents=True)
+    store=BudgetStore(authority/'requests.sqlite')
+    store.connection.executescript('''
+        CREATE TABLE codex_phase_scopes(account TEXT PRIMARY KEY,status TEXT);
+        CREATE TABLE deepseek_logical_requests(id TEXT PRIMARY KEY,account TEXT,status TEXT,payload_hash TEXT,final_reservation TEXT);
+        CREATE TABLE deepseek_request_attempts(logical_id TEXT,attempt_index INTEGER,account TEXT,status TEXT);
+        CREATE TABLE deepseek_phase_cleanup(account TEXT PRIMARY KEY,cleanup_json TEXT);
+    ''')
+    attempt=account+':TRANSPORT_ATTEMPT:logical:0'
+    store.create(attempt,max_calls=1,max_request_bytes=100,max_output_tokens=100,
+                 deadline=time.time()+60)
+    reservation=store.reserve(attempt,'request',request_bytes=1,output_tokens=100)
+    journal=RequestJournal(store,reservation,'a'*64)
+    store.save_receipt(reservation,{'input_tokens':20,'output_tokens':30},'a'*64,
+                       'provider-terminal',protocol='/v1/messages')
+    store.finish(reservation,actual_output_tokens=30)
+    journal.emit('TERMINAL',provider_message_id='provider-terminal',
+                 usage={'input_tokens':20,'output_tokens':30})
+    terminal=time.monotonic()
+    journal.emit('TRANSPORT_CLOSED',reason='terminal_or_eof')
+    store.connection.execute('INSERT INTO codex_phase_scopes VALUES(?,?)',(account,'UNKNOWN'))
+    store.connection.execute('INSERT INTO deepseek_logical_requests VALUES(?,?,?,?,?)',
+                             ('logical',account,'COMPLETED','a'*64,reservation))
+    store.connection.execute('INSERT INTO deepseek_request_attempts VALUES(?,?,?,?)',
+                             ('logical',0,attempt,'COMPLETED'))
+    experiment=old/'authority/ledger.sqlite';experiment.parent.mkdir()
+    db=sqlite3.connect(experiment)
+    db.executescript('''
+        CREATE TABLE rounds(episode_id TEXT,round_index INTEGER,status TEXT);
+        CREATE TABLE checkpoints(episode_id TEXT,round_index INTEGER,payload TEXT);
+        CREATE TABLE eval_tickets(episode_id TEXT,round_index INTEGER);
+        CREATE TABLE round_submissions(episode_id TEXT,round_index INTEGER);
+        CREATE TABLE events(episode_id TEXT,round_index INTEGER,kind TEXT,payload TEXT);
+    ''')
+    local=tmp_path/'runtime/runs/old';phase=local/'deepseek-native-authority/native/phase'
+    logs=phase/'public/logs';logs.mkdir(parents=True)
+    workspace=local/'coral-workspaces'/episode/agent/'solver';workspace.mkdir(parents=True)
+    (workspace/'run').write_text('print(1)\n')
+    parent=candidate_tree_hash(workspace)
+    db.execute('INSERT INTO rounds VALUES(?,?,?)',(episode,2,'IMPLEMENTATION_UNKNOWN'))
+    db.execute('INSERT INTO checkpoints VALUES(?,?,?)',
+               (episode,1,json.dumps({'states':{agent:{'parent_hash':parent}}})))
+    db.execute('INSERT INTO events VALUES(?,?,?,?)',
+               (episode,2,'IMPLEMENTATION_STOPPED',json.dumps({
+                   'agent_id':agent,'error_type':'InferenceRequestUnknown'})))
+    db.commit();db.close()
+    prompt='ONE INITIAL IMPLEMENTATION ONLY. Return code.'
+    scope=phase/'scope.json';scope.write_text(json.dumps({'prompt':prompt}))
+    cleanup=phase/'cleanup.json';cleanup.write_text(json.dumps({
+        'local_process_group_reclaimed':True,'tool_service_reclaimed':True,
+        'cleanup_finished_monotonic':terminal-1,'phase_deadline_monotonic':terminal+10}))
+    store.connection.execute('INSERT INTO deepseek_phase_cleanup VALUES(?,?)',
+        (account,json.dumps({**json.loads(cleanup.read_text()),'phase_path':str(phase),
+                             'proxy_reclaimed':True})))
+    log=logs/f'{agent}.0.log';log.write_text(json.dumps({
+        'type':'coral','subtype':'prompt','source':'maestro:deepseek',
+        'agent_id':agent,'prompt':prompt})+'\n')
+    supervisor=tmp_path/'supervisor.json';supervisor.write_text(json.dumps({
+        'kind':'systemd_cgroup_empty','MainPID':0,'ControlGroup':'','ActiveState':'failed',
+        'remaining_native_processes':0,'running_rootless_containers':0}))
+    proof={'account':account,'experiment_ledger_path':str(experiment),
+           'experiment_ledger_fingerprint':ledger_fingerprint(experiment),
+           'workspace_path':str(workspace),'parent_hash':parent}
+    for role,file in [('scope',scope),('cleanup',cleanup),('log',log),('supervisor',supervisor)]:
+        proof[role+'_path']=str(file);proof[role+'_sha256']=hashlib.sha256(file.read_bytes()).hexdigest()
+    path=authority/'requests.sqlite'
+    entry={'kind':'terminal_failed_generation','ledger':str(path),
+           'ledger_fingerprint':ledger_fingerprint(path),'reservation_ids':[reservation],
+           'terminal_generation_proof':proof}
+    new=tmp_path/'new';(new/'authority').mkdir(parents=True)
+    manifest=new/'authority/deepseek-historical-exceptions.json'
+    value={'new_run_root':str(new),'user_authorization':'Fresh run explicitly authorized',
+           'remote_termination_confirmed':False,'retain_historical_budget':True,'entries':[entry]}
+    def accepted():
+        manifest.write_text(json.dumps(value))
+        return _historical_exception(new,path,audit_ledger(path))
+    before=ledger_fingerprint(path)
+    assert accepted()
+    entry['reservation_ids']=['wrong'];assert not accepted()
+    entry['reservation_ids']=[reservation]
+    log.write_text(log.read_text()+'{"files":[]}\n');assert not accepted()
+    log.write_text(json.dumps({'type':'coral','subtype':'prompt','source':'maestro:deepseek',
+        'agent_id':agent,'prompt':prompt})+'\n')
+    (workspace/'run').write_text('print(2)\n');assert not accepted()
+    (workspace/'run').write_text('print(1)\n')
+    supervisor.write_text(json.dumps({'kind':'systemd_cgroup_empty','MainPID':99,
+        'ControlGroup':'','ActiveState':'failed','remaining_native_processes':0,
+        'running_rootless_containers':0}))
+    proof['supervisor_sha256']=hashlib.sha256(supervisor.read_bytes()).hexdigest()
+    assert not accepted()
+    assert ledger_fingerprint(path)==before
+    store.close()
+
+
+def test_nested_runtime_uses_shared_artifacts_for_restart_audit(tmp_path):
+    from maestro.backends.coral.deepseek_lifecycle import historical_artifacts_root
+
+    shared=tmp_path/'artifacts';shared.mkdir()
+    nested=tmp_path/'runtime/frozen-qualification/runtime'
+    nested.mkdir(parents=True)
+    assert historical_artifacts_root(nested)==shared
+    old=shared/'runs/pace-ds/deepseek-flash/market/old/deepseek-native-authority';old.mkdir(parents=True)
+    store=BudgetStore(old/'requests.sqlite')
+    store.create('old',max_calls=1,max_request_bytes=100,max_output_tokens=20,deadline=time.time()+30)
+    store.reserve('old','pending',request_bytes=1,output_tokens=20)
+    try:
+        with pytest.raises(RuntimeError,match='restart blocked'):
+            check_restart_ledgers(nested,artifacts_root=historical_artifacts_root(nested))
+    finally:store.close()

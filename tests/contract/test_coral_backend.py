@@ -231,9 +231,15 @@ def test_warm_private_docs_clone_across_process_not_sessions(tmp_path):
 
 def test_public_champion_resolves_hash_to_readonly_artifact(tmp_path):
     driver, runtime, boundary, state = backend(tmp_path)
+    driver.set_board({"champion_hash": state.parent_hash, "champion_score": 0.2})
+    warm = driver._workspace(state)
+    assert json.loads((warm.public / "board.json").read_text()) == {}
+    assert not (warm.public / "champion").exists()
+    driver.begin_episode("market-test", {"a": state})
     driver.set_board({"champion_hash": state.parent_hash, "champion_artifact": state.parent_hash, "champion_score": 0.2})
     workspace = driver._workspace(state)
     assert (workspace.public / "champion" / "solver.py").is_file()
+    assert json.loads((workspace.public / "board.json").read_text())["champion_score"] == 0.2
     assert (workspace.solver / ".git").is_dir()
     assert not (workspace.solver / ".git" / "objects" / "info" / "alternates").exists()
     driver.close()
@@ -242,6 +248,7 @@ def test_public_champion_resolves_hash_to_readonly_artifact(tmp_path):
 def test_new_workspace_does_not_replace_a_running_peers_public_tree(tmp_path,monkeypatch):
     import maestro.backends.coral.workspace as workspace_module
     driver, runtime, boundary, state = backend(tmp_path)
+    driver.begin_episode("market-test", {"a": state})
     driver.set_board({'champion_hash':state.parent_hash,'champion_score':.2})
     active = driver._workspace(state)
     remove = workspace_module.remove_private_path

@@ -265,7 +265,7 @@ def test_toy_precheck_shares_debug_cpu_capacity_and_wait_deadline(setup):
     assert forwarded==[]
 
 
-def test_strict_requests_flow_through_first_price_ticket_and_settlement(setup,tmp_path):
+def test_legacy_strict_protocol_cannot_enter_prebid_market(setup,tmp_path):
     from decimal import Decimal
     from maestro.loop import ExperimentEngine
     from maestro.types import HistoryRecord
@@ -287,16 +287,13 @@ def test_strict_requests_flow_through_first_price_ticket_and_settlement(setup,tm
         # simulated fixture. No model, benchmark or warm run is launched.
         engine.config=replace(config,execution_mode='real')
         engine.backend=backend
-        engine.ledger.create_episode('unit','first_price',engine.config,{'a':state})
+        engine.ledger.create_episode('unit','first_price_naive',engine.config,{'a':state})
         parent=backend.prepare_seed()
         engine.ledger.record_candidate(parent['candidate_hash'],parent)
         states={'a':state}
-        engine._round('unit',0,states,'first_price')
-        ticket=engine.ledger.connection.execute('SELECT * FROM eval_tickets').fetchone()
-        settled=engine.ledger.connection.execute('SELECT * FROM settlements').fetchone()
-        assert ticket['status']=='SETTLED' and Decimal(settled['payment'])>0
-        assert states['a'].wealth==Decimal(settled['wealth_before'])-Decimal(settled['payment'])+Decimal(settled['reward'])
-        assert engine.evaluator.calls==[ticket['job_id']]
-        rows=engine.ledger.connection.execute("SELECT llm_calls,payload FROM resource_usage WHERE phase IN('planning','generation')").fetchall()
-        assert sorted(row['llm_calls'] for row in rows)==[1,2]
-        assert all(not json.loads(row['payload']).get('request_count_unknown',False) for row in rows)
+        from maestro.types import MaestroError
+        with pytest.raises(MaestroError,match='separated implementation/runtime repair'):
+            engine._round('unit',0,states,'first_price_naive')
+        assert not engine.ledger.connection.execute('SELECT * FROM eval_tickets').fetchone()
+        assert not engine.ledger.connection.execute('SELECT * FROM invitations').fetchone()
+        assert not engine.ledger.connection.execute('SELECT * FROM settlements').fetchone()

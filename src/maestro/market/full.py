@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
 import math
-from maestro.market.credit import DEFAULT_CREDIT, decimal, money
+from maestro.market.credit import decimal, money
 from maestro.market.reputation import TrackRecord, metrics, require_full_profile
 from maestro.market.audits import audit_slots, sample_audits
 
@@ -45,7 +45,7 @@ class FullAllocation:
 
 def allocate(plans, records, wealth, *, slots, rule="M_0", gamma=Decimal(1),
              a0=Decimal(1), epsilon=Decimal(0), seed=0, payment_rule="first_price",
-             bid_cap=DEFAULT_CREDIT.bid_cap, q_max=None, profile):
+             q_max=None, profile):
     """Fill priority slots sequentially, then draw audits from unselected plans.
 
     ``records`` are frozen A/B/N snapshots; only virtual exploration counts change
@@ -59,8 +59,8 @@ def allocate(plans, records, wealth, *, slots, rule="M_0", gamma=Decimal(1),
         raise ValueError("unknown payment rule")
     if payment_rule == "uniform_price" and rule != "M_0":
         raise ValueError("uniform critical pricing is only defined for M_0")
-    if not isinstance(slots, int) or slots < 0 or decimal(gamma) < 0 or decimal(bid_cap) < 0:
-        raise ValueError("invalid slot/exploration/bid cap")
+    if not isinstance(slots, int) or slots < 0 or decimal(gamma) < 0:
+        raise ValueError("invalid slot/exploration")
     items = list(plans)
     if len({p.plan_id for p in items}) != len(items):
         raise ValueError("plan IDs must be distinct")
@@ -70,7 +70,7 @@ def allocate(plans, records, wealth, *, slots, rule="M_0", gamma=Decimal(1),
     for plan in items:
         if not plan.plan_id or plan.agent_id not in wealth:
             raise ValueError("plan identity/owner missing")
-        if not 0 <= decimal(plan.bid) <= decimal(bid_cap) or not 0 <= decimal(plan.q) <= 1:
+        if decimal(plan.bid) < 0 or not 0 <= decimal(plan.q) <= 1:
             raise ValueError("bid or credibility outside contract")
         identity = (plan.agent_id, plan.target, plan.change)
         if identity in seen:

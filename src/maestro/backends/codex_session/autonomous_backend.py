@@ -147,7 +147,8 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
                 "strict_v1_request_quota": True, "actual_inference_request_quota": True,
                 "budget_unit": "provider_request",
                 "generation_mode": "one_implementation" if self.supports_runtime_only_repair else "native_codex_dynamic_tools",
-                "runtime_repair_mode": "fresh_context_local_runtime_patch" if self.supports_runtime_only_repair else "legacy_shared_generation",
+                "candidate_pipeline": config.coral.get('candidate_pipeline','postbid_v1'),
+                "runtime_repair_mode": "fresh_context_structural_runtime_patch" if self.supports_runtime_only_repair else "legacy_shared_generation",
                 "formal_ticket_required": True, "simulation": self.simulation}
 
     def begin_episode(self, episode_id, states=None):
@@ -191,7 +192,7 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
     def plan_with_receipt(self, state, round_index, context, *, deadline):
         assembled = build_context(state, context.get("board", context))
         assembled["harness_context"] = self._planning_view(state)
-        account = f"{self.episode_id}:{round_index}:{state.agent_id}:PLAN_RO"
+        account = f"{self.request_episode_id}:{round_index}:{state.agent_id}:PLAN_RO"
         prompt = ("Return one JSON plan decision matching the output schema. Plan before editing. "
                   "Use only your supplied evidence. No tool calls or code changes in planning.\n" +
                   json.dumps(assembled, ensure_ascii=False, sort_keys=True, allow_nan=False))
@@ -221,7 +222,7 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
             try:
                 if usage["calls"] != 1 or time.monotonic() >= deadline:
                     raise ValueError("Planning requires exactly one timely metered request")
-                decision = parse_plan_decision(response.text, state, round_index, namespace=self.episode_id)
+                decision = parse_plan_decision(response.text, state, round_index, namespace=self.request_episode_id)
             except ValueError as error:
                 raise PlanningResponseError(str(error), receipt=receipt, context=assembled) from error
         return decision, receipt, assembled
@@ -274,7 +275,7 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
                                    parent_hash=plan.parent_hash, epoch=revision)
 
         verify_grant()
-        account = f"{self.episode_id}:{round_index}:{state.agent_id}:GENERATION:{plan.version_id}"
+        account = f"{self.request_episode_id}:{round_index}:{state.agent_id}:GENERATION:{plan.version_id}"
         with self.budget_store._lock:
             previous_scope = self.budget_store.connection.execute(
                 "SELECT status FROM codex_phase_scopes WHERE account=?", (account,)).fetchone()
@@ -330,7 +331,7 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
                 "Implement it using the external maestro_tool workspace service. Its virtual paths are "
                 "separate from the read-only Codex host: authorized service write/batch operations are "
                 "permitted here, while native host writes remain forbidden. Its virtual roots are solver/, "
-                "private/ (your durable notes/skills), public/ (verified shared board/champion, read-only). "
+                "private/ (your durable notes/skills), public/ (read-only; global champion and peer board are unavailable during Warm Start). "
                 "Use read/list/search/write and isolated shell for bounded debugging. Use action=batch with "
                 "operations=[{action:read,path:...},...] for related file reads, and one batch for related file writes. "
                 "Each batch permits at most eight file operations, checks the grant for every operation, and stops "
@@ -404,6 +405,10 @@ class StrictCodexBackend(OneShotRuntimeRepairMixin, CoralBackend):
 
 
 def strict_factory(config, root=None, *, client_factory=None, backend_class=None):
+    from maestro.execution.pipeline import require_prebid,require_prebid_root
+    require_prebid(config)
+    root = Path(root or "artifacts/runs/strict-codex").resolve()
+    require_prebid_root(root)
     from .autonomous_client import AutonomousCodexClient
     from maestro.backends.coral.runtime import verify_checkout
     from maestro.execution.sandbox import DockerRunner
@@ -417,7 +422,6 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
     if settings.get("director_mode", "predeclared") != "predeclared":
         raise BackendUnavailable("Strict Codex currently uses declared distinct startup directions")
     provenance = verify_checkout(settings.get("checkout_path", settings.get("checkout")))
-    root = Path(root or "artifacts/runs/strict-codex").resolve()
     from maestro.storage.paths import run_paths, require_separated_runtime
     require_separated_runtime(root)
     local = run_paths(root).local
@@ -433,7 +437,7 @@ def strict_factory(config, root=None, *, client_factory=None, backend_class=None
     client = (client_factory or AutonomousCodexClient)(model=settings["model"], work_root=local/"codex-autonomous-authority"/"native",
                                   executable=settings.get("codex_executable"),
                                   reasoning_effort=settings.get("codex_reasoning_effort", "low"),
-                                  timeout=max(config.preparation_window_seconds, config.planning_window_seconds, config.generation_window_seconds))
+                                  timeout=max(config.preparation_window_seconds, config.planning_window_seconds, config.generation_window_seconds, config.valuation_window_seconds))
     smoke = benchmark.smoke_check(config)
     store = BudgetStore(authority/"requests.sqlite")
     def precheck(candidate):
