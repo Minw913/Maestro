@@ -34,6 +34,8 @@ def evaluate_frozen_final(root: str | Path, episode_id: str, manifest_path: str)
     from types import SimpleNamespace
     from maestro.config import RunConfig
     from maestro.execution.pipeline import read_episode
+    from maestro.execution.cpu_pool import GlobalCpuPool
+    from maestro.execution.sandbox import DockerRunner
     from maestro.storage import Ledger
     from maestro.tasks.base import benchmark_for
     from maestro.types import stable_hash
@@ -55,7 +57,15 @@ def evaluate_frozen_final(root: str | Path, episode_id: str, manifest_path: str)
               'verification_cpu_seconds', 'memory_bytes', 'pids_max', 'output_bytes', 'seed'}
     config = RunConfig(**{key: value for key, value in raw.items() if key in wanted},
                        execution_mode='real')
+    benchmark = benchmark_for(config.benchmark)
+    live = benchmark.live(config)
+    evaluator = live.evaluator(runner=DockerRunner(benchmark.image(config)),
+                              artifact_store=None, cpu_pool=GlobalCpuPool(config.cpu_workers))
+    preflight = getattr(evaluator, 'preflight', None)
+    if not callable(preflight):
+        raise MaestroError('Final evaluation requires benchmark preflight')
+    preflight()
     root = Path(root).resolve()
     with Ledger(root / 'authority' / 'ledger.sqlite') as ledger:
         context = SimpleNamespace(root=root, config=config, ledger=ledger)
-        return benchmark_for(config.benchmark).evaluate_final(context, episode_id, manifest_path)
+        return benchmark.evaluate_final(context, episode_id, manifest_path)

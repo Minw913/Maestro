@@ -53,8 +53,8 @@ def verify_ledger(root,episode_id=None):
             if stable_hash(config)!=episode['config_hash']:
                 raise IntegrityError('Episode configuration tampered')
             e=episode['id']
-            from maestro.market.round_extension import latest_config
-            effective_config,extensions=latest_config(db,episode)
+            from maestro.market.round_extension import recorded_horizon
+            effective_rounds,extensions=recorded_horizon(db,episode)
             prior_rounds=config['rounds']
             expected_extension_keys=set()
             for extension in extensions:
@@ -93,11 +93,11 @@ def verify_ledger(root,episode_id=None):
             if actual_extension_keys!=expected_extension_keys:
                 raise IntegrityError('Unanchored Market extension funding')
             latest=db.execute('SELECT MAX(round_index) FROM rounds WHERE episode_id=?',(e,)).fetchone()[0]
-            if episode['policy']!='warm' and latest is not None and latest>=effective_config.rounds:
+            if episode['policy']!='warm' and latest is not None and latest>=effective_rounds:
                 raise IntegrityError('Market ran beyond its declared round horizon')
             if episode['policy']!='warm' and episode['status']=='COMPLETED':
                 completed=db.execute("SELECT COUNT(*) FROM rounds WHERE episode_id=? AND status='SETTLED'",(e,)).fetchone()[0]
-                if completed!=effective_config.rounds:
+                if completed!=effective_rounds:
                     raise IntegrityError('Completed Market round count differs from declared horizon')
             regime_events=db.execute("SELECT payload FROM events WHERE episode_id=? AND kind='REGIME_CONTRACT_FROZEN'",(e,)).fetchall()
             if regime_events:

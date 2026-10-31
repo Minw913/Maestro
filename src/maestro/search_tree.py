@@ -74,10 +74,9 @@ def load_search_tree(root, regime, *, episode=None, benchmark=None, model=None):
             raise ValueError(f'Expected one {regime} episode; found {len(matches)}. Use --episode to disambiguate.')
         market = matches[0]
         config = json.loads(market['config_json'])
-        from maestro.market.round_extension import latest_config
+        from maestro.market.round_extension import recorded_horizon
         if 'config_hash' in market.keys():
-            effective_config, extension_events = latest_config(db,market)
-            effective_rounds=effective_config.rounds
+            effective_rounds, extension_events = recorded_horizon(db,market)
         else:
             # Minimal read-only visualization fixtures predate the authority
             # configuration hash and cannot contain round-extension events.

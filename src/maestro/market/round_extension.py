@@ -7,10 +7,28 @@ import json
 
 from maestro.config import RunConfig
 from maestro.market.credit import money
-from maestro.types import IntegrityError
+from maestro.types import IntegrityError, stable_hash
 
 
 EVENT_KIND = 'MARKET_ROUNDS_EXTENDED'
+
+
+def recorded_horizon(db, episode):
+    """Read archives without interpreting retired settings as a new RunConfig."""
+    from maestro.execution.pipeline import pipeline_version, RETIRED
+    raw = json.loads(episode['config_json'])
+    if stable_hash(raw) != episode['config_hash']:
+        raise IntegrityError('Episode configuration tampered')
+    if pipeline_version(raw) == RETIRED:
+        if db.execute('SELECT 1 FROM events WHERE episode_id=? AND kind=?',
+                      (episode['id'], EVENT_KIND)).fetchone():
+            raise IntegrityError('Retired episodes cannot have Market round extensions')
+        rounds = raw['rounds']
+        if type(rounds) is not int or rounds < 1:
+            raise IntegrityError('Invalid archived round horizon')
+        return rounds, []
+    config, events = latest_config(db, episode)
+    return config.rounds, events
 
 
 def _fixed_settings(config: RunConfig):

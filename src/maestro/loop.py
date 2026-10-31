@@ -52,10 +52,13 @@ def _receipt_value(receipt,name,default=None):
 
 
 class ExperimentEngine(PrebidPipeline):
-    def __init__(self, root, config: RunConfig, *, backend=None, evaluator=None):
+    def __init__(self, root, config: RunConfig, *, backend=None, evaluator=None, evaluation_only=False):
         from maestro.execution.pipeline import require_prebid,require_prebid_root
         require_prebid(config)
         require_prebid_root(root)
+        if evaluation_only and (config.execution_mode != 'real' or backend is None):
+            raise ValueError('Evaluation-only setup requires real execution and an injected runner backend')
+        self.evaluation_only = evaluation_only
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.config = config
@@ -92,6 +95,10 @@ class ExperimentEngine(PrebidPipeline):
         if config.experiment_stage:
             (self.root / 'authority' / f'config.{config.experiment_stage}.resolved.json').write_text(canonical_json(config.to_dict()),encoding='utf-8')
 
+    def _require_search(self):
+        if self.evaluation_only:
+            raise MaestroError('Evaluation-only setup cannot bootstrap, run or resume agents')
+
     def _prepare_live(self):
         """Every production prerequisite is explicit; there is no mock fallback."""
         benchmark = benchmark_for(self.config.benchmark)
@@ -106,8 +113,9 @@ class ExperimentEngine(PrebidPipeline):
             module,name = factory.split(':',1)
             self.backend = getattr(importlib.import_module(module),name)(self.config,self.root)
         self.backend.preflight(self.config)
-        if (not getattr(self.backend,'supports_runtime_only_repair',False)
-                or not callable(getattr(self.backend,'activate_frozen_candidate',None))):
+        if (not self.evaluation_only and
+                (not getattr(self.backend,'supports_runtime_only_repair',False)
+                 or not callable(getattr(self.backend,'activate_frozen_candidate',None)))):
             raise MaestroError('prebid_v2 requires separated implementation, frozen checking and runtime repair')
         if self.evaluator is None:
             runner = getattr(self.backend,'candidate_runner',None)
@@ -180,6 +188,7 @@ class ExperimentEngine(PrebidPipeline):
         return {a:self._agent_payload(s,purpose) for a,s in states.items()}
 
     def bootstrap(self):
+        self._require_search()
         from maestro.execution.pipeline import require_prebid
         require_prebid(self.config)
         self._check_pause()
@@ -286,6 +295,7 @@ class ExperimentEngine(PrebidPipeline):
 
     def run(self, checkpoint, policy='first_price_naive', *, episode_id=None,
             legacy_warm_import=False):
+        self._require_search()
         from maestro.execution.pipeline import require_prebid
         require_prebid(self.config)
         self._check_pause()
@@ -1083,6 +1093,7 @@ class ExperimentEngine(PrebidPipeline):
 
     def resume(self,episode_id):
         """Resume only from a fully settled boundary; reconcile in-flight jobs first."""
+        self._require_search()
         db=self.ledger.connection
         row=db.execute('SELECT * FROM episodes WHERE id=?',(episode_id,)).fetchone()
         if not row:

@@ -34,8 +34,8 @@ def report(root,episode_id=None):
             stats=db.execute('SELECT sum(x) admitted,count(*) decisions FROM final_allocations WHERE episode_id=? AND round_index>=0',(e,)).fetchone()
             invites=db.execute('SELECT count(*) FROM invitations WHERE episode_id=? AND round_index>=0',(e,)).fetchone()[0]
             cfg=json.loads(ep['config_json'])
-            from maestro.market.round_extension import latest_config
-            effective_cfg,round_extensions=latest_config(db,ep)
+            from maestro.market.round_extension import recorded_horizon
+            effective_rounds,round_extensions=recorded_horizon(db,ep)
             row={'episode_id':e,'policy':ep['policy'],'execution_mode':ep['execution_mode'],'benchmark':ep['benchmark'],'status':ep['status'],
                 'candidate_pipeline':cfg.get('coral',{}).get('candidate_pipeline','postbid_v1'),
                 'valuation_discount_factor':cfg.get('valuation_discount_factor'),
@@ -44,7 +44,7 @@ def report(root,episode_id=None):
                 'profile':cfg.get('profile','v1_cooperative'),
                 'experiment_stage':cfg.get('experiment_stage'),
                 'config_hash':ep['config_hash'],'config_sources':cfg.get('config_sources',{}),
-                'initial_rounds':cfg['rounds'],'effective_rounds':effective_cfg.rounds,
+                'initial_rounds':cfg['rounds'],'effective_rounds':effective_rounds,
                 'round_extensions':[json.loads(item['payload']) for item in round_extensions],
                 'inference_budget_unit':'session_turn' if cfg.get('profile')=='codex_session_pilot' else 'provider_request',
                 'warm_id':ep['bootstrap_id'],'final_training_score':checkpoint.get('board',{}).get('champion_score'),

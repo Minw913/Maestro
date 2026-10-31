@@ -120,3 +120,36 @@ def test_real_ale_config_names_its_prerequisites() -> None:
 def test_manifest_rejects_unexpected_case_keys(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match='exactly input_sha256 and reference_score'):
         _ = ale.AleManifest.load(manifest(tmp_path, cases=[{'input_sha256': 'x', 'reference_score': 1, 'extra': 0}]))
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_final_eval_checks_ale_checkout_before_launch(tmp_path, monkeypatch, changed):
+    from maestro.storage import Ledger
+    from maestro.tasks.final import evaluate_frozen_final
+    from maestro.types import canonical_json, stable_hash
+    frozen = config(tmp_path, manifest(tmp_path))
+    candidate = tmp_path / 'candidate'
+    candidate.mkdir()
+    (candidate / 'Main.cpp').write_text('int main(){}')
+    digest = candidate_tree_hash(candidate)
+    checkpoint = {'board': {'champion_hash': digest}}
+    with Ledger(tmp_path / 'authority/ledger.sqlite') as ledger:
+        ledger.create_episode('source', 'uniform', frozen, {})
+        ledger.record_candidate(digest, {'candidate_hash': digest, 'candidate_path': str(candidate)})
+        with ledger.transaction() as db:
+            db.execute("UPDATE episodes SET status='COMPLETED' WHERE id='source'")
+            db.execute('INSERT INTO checkpoints VALUES(?,?,?,?)',
+                       ('source', 0, stable_hash(checkpoint), canonical_json(checkpoint)))
+    monkeypatch.setattr(ale, 'ale_revision', lambda path: 'changed-checkout' if changed else 'rev')
+    launches = []
+    def worker(*args, **kwargs):
+        launches.append(True)
+        return {'rank': 1, 'performance': 1, 'overall_absolute_score': 1, 'cases': []}
+    monkeypatch.setattr(ale, 'worker_call', worker)
+    if changed:
+        with pytest.raises(IntegrityError, match='checkout differs'):
+            evaluate_frozen_final(tmp_path, 'source', 'unused')
+        assert launches == []
+    else:
+        assert evaluate_frozen_final(tmp_path, 'source', 'unused')['rank'] == 1
+        assert launches == [True]

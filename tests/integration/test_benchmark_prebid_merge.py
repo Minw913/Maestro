@@ -1,5 +1,6 @@
 """Offline coverage for benchmark adapters combined with the prebid Market."""
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -61,12 +62,17 @@ def test_final_eval_dispatches_adapter_without_constructing_search(tmp_path, mon
         assert episode == 'source' and manifest == 'private-panel'
         seen.append(episode)
         return {'ok': True}
-    monkeypatch.setattr(type(benchmark_for(benchmark)), 'evaluate_final', final)
+    adapter_type = type(benchmark_for(benchmark))
+    evaluator = SimpleNamespace(preflight=lambda: seen.append('preflight'))
+    live = SimpleNamespace(evaluator=lambda **kwargs: evaluator)
+    monkeypatch.setattr(adapter_type, 'live', lambda *args: live)
+    monkeypatch.setattr(adapter_type, 'image', lambda *args: 'offline')
+    monkeypatch.setattr(adapter_type, 'evaluate_final', final)
     def forbidden(*args, **kwargs):
         pytest.fail('final evaluation constructed a search backend')
     monkeypatch.setattr('maestro.loop.ExperimentEngine', forbidden)
     assert main(['--root', str(tmp_path), 'final-eval', '--episode', 'source', '--manifest', 'private-panel']) == 0
-    assert seen == ['source']
+    assert seen == ['preflight', 'source']
     with Ledger(tmp_path / 'authority' / 'ledger.sqlite', read_only=True) as ledger:
         stored = ledger.connection.execute("SELECT config_json FROM episodes WHERE id='source'").fetchone()[0]
         assert json.loads(stored) == raw

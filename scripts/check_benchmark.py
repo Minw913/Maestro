@@ -3,6 +3,7 @@ seed through the engine's own path (ticket, dispatcher, evaluator). Writes only 
 import argparse
 import json
 import time
+from decimal import Decimal
 
 from maestro.backends.coral.workspace import WorkspaceStore
 from maestro.config import RunConfig, load_config
@@ -33,11 +34,11 @@ def main(experiment: str, root: str) -> None:
     print(json.dumps({'precheck': passed, 'reason': reason, 'seconds': round(time.monotonic() - started, 1)}))
     if not passed:
         raise SystemExit('the seed fails its own precheck')
-    engine = ExperimentEngine(root, config, backend=NoModelBackend(runner))
+    engine = ExperimentEngine(root, config, backend=NoModelBackend(runner), evaluation_only=True)
     try:
         candidate = WorkspaceStore(engine.root / 'work', engine.root / 'cas').freeze(benchmark.seed_solver(config))
         candidate_hash = fields.text(candidate, 'candidate_hash')
-        states = {'agent-1': AgentState('agent-1', candidate_hash, 0.0, config.initial_wealth)}
+        states = {'agent-1': AgentState('agent-1', candidate_hash, 0.0, Decimal(0))}
         engine.ledger.create_episode('check', 'warm', config, states)
         engine.ledger.record_candidate(candidate_hash, candidate)
         started = time.monotonic()
